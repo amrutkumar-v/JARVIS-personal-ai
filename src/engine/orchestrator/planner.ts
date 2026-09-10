@@ -66,14 +66,47 @@ const DOWNLOAD_VERBS = /\b(download|save)\b/i
 const BATTERY_INTENT = /\b(battery|charge|health|status of)\b/i
 const APP_DEVICE_TARGET = /\s+(?:on|in|at|to)\s+(?:my|the)\s+/i
 const APP_SUBSEQUENT = /\s+(?:and|and then|then|so|while)\s+/i
+const TYPE_VERBS = /\b(type|write|enter|input)\b/i
+const CLIPBOARD_VERBS = /\b(clipboard|copy(?:ed)?|paste|cut)\b/i
+const CLOSE_VERBS = /\b(close|quit|exit|terminate|kill)\b/i
+const VERIFY_VERBS = /\b(verify|check|confirm|validate|ensure)\b/i
 
 /** Extract a bounded, schema-valid search query from free text. */
 export function extractSearchQuery(text: string): string {
   const clean = (text ?? '').replace(/[.!?]+$/g, '').trim()
-  const match = clean.match(
-    /^(?:please\s+)?(?:search|look up|find|google|bing|duckduckgo)(?:\s+the\s+(?:web|internet))?(?:\s+for)?\s+(.+)$/i,
+
+  // Quoted query wins first: "search for \"X\"" / "open browser and search for 'X'"
+  const quoted = clean.match(/\b(?:search|look up|find|google|bing|duckduckgo)(?:\s+for)?\s+["']([^"']+)["']/i)
+  if (quoted?.[1]) return quoted[1].trim()
+
+  // Any 'search for X' / 'look up X' / 'find X' phrase: capture what follows
+  // the verb and stop the query at a scheduling conjunction (and/but/so/then).
+  const capture = clean.match(
+    /\b(?:search|look up|find|google|bing|duckduckgo)(?:\s+(?:for|about))?\s+(.+)$/i,
   )
-  return (match ? match[1] : clean).trim()
+  if (capture?.[1]) {
+    const query = capture[1]
+      .split(/\s+(?:and|but|so|,|then|while)\s+(?:also\s+)?(?:search|open|launch|start|type|write|copy|paste|close|quit|exit|verify|check|confirm)\b/i)[0]
+      .replace(/\s+in\s+the\s+(?:browser|web|internet)$/i, '')
+      .replace(/\s+on\s+the\s+(?:browser|web|internet)$/i, '')
+      .trim()
+    if (query.length > 0) return query
+  }
+
+  // Single-verb phrase: "search for X"
+  const simple = clean.match(
+    /^(?:please\s+)?(?:search|look up|find|google|bing|duckduckgo)(?:\s+the\s+(?:web|internet|browser))?(?:\s+for)?\s+(.+)$/i,
+  )
+  if (simple?.[1]) return simple[1].trim()
+
+  // Last resort: strip orchestration prefixes/suffixes and keep what remains.
+  const stripped = clean
+    .replace(/^(please\s+)?(open|launch|start|run)\s+(the\s+)?(browser|app|application|web)\s+(and|then|,)+\s*/i, '')
+    .replace(/^(in|on|via|through)\s+the\s+(browser|web|internet)\s*/i, '')
+    .split(/\s+(?:then|while|after that)\s+/)[0]
+    .replace(/"+/g, '')
+    .trim()
+  return stripped.length > 0 ? stripped : clean
 }
 
 /** Extract a bounded application name after an open/launch/start/run verb. */
@@ -101,6 +134,51 @@ export function extractNotifyTitle(text: string): string | undefined {
   if (!match) return undefined
   const title = match[1].trim()
   return title.length === 0 ? undefined : title
+}
+
+/** Extract text to type from a type/write/enter verb phrase. */
+export function extractTypeText(text: string): string | undefined {
+  const t = (text ?? '').replace(/[.!?]+$/g, '').trim()
+  // Match quoted text first
+  const quotedMatch = t.match(/\b(?:type|write|enter|input)\s+"([^"]+)"/i)
+  if (quotedMatch) return quotedMatch[1].trim()
+  const singleQuotedMatch = t.match(/\b(?:type|write|enter|input)\s+'([^']+)'/i)
+  if (singleQuotedMatch) return singleQuotedMatch[1].trim()
+  // Match unquoted text, stopping at conjunctions that indicate next actions
+  const unquotedMatch = t.match(/\b(?:type|write|enter|input)\s+(.+?)(?:\s+(?:and\s+(?:then\s+)?)?(?:copy|clipboard|select|verify|close|quit|exit)|\s*$)/i)
+  if (unquotedMatch) {
+    const extracted = unquotedMatch[1].trim()
+    return extracted.length > 0 ? extracted : undefined
+  }
+  return undefined
+}
+
+/** Detect compound: "type X and copy" or "type X, copy it". */
+export function hasCopyIntent(text: string): boolean {
+  return /\b(?:and\s+)?(?:copy|clipboard)\b/i.test(text) ||
+    /\b(?:copy|clipboard)\s+(?:it|text|everything|all)\b/i.test(text)
+}
+
+/** Detect compound: "type X and verify clipboard". */
+export function hasClipboardVerifyIntent(text: string): boolean {
+  return /\b(?:verify|check|confirm)\s+(?:the\s+)?(?:clipboard|copied)\b/i.test(text) ||
+    (TYPE_VERBS.test(text) && CLIPBOARD_VERBS.test(text) && VERIFY_VERBS.test(text))
+}
+
+/** Detect close intent for a specific app. */
+export function hasCloseIntent(text: string): boolean {
+  return CLOSE_VERBS.test(text)
+}
+
+/** Extract app name after a close/quit/exit verb. */
+export function extractCloseAppName(text: string): string | undefined {
+  const t = (text ?? '').replace(/[.!?]+$/g, '').trim()
+  const match = t.match(/\b(?:close|quit|exit|terminate|kill)\s+([^,;.]+)/i)
+  if (!match) return undefined
+  let phrase = match[1].trim().split(APP_SUBSEQUENT)[0].trim()
+  phrase = phrase.replace(/^(?:the|a|an)\s+/i, '').trim()
+  if (phrase.length === 0) return undefined
+  return phrase.toLowerCase()
 }
 
 function isUrl(value: string): boolean {
@@ -270,11 +348,6 @@ export function planRequest(
     }
     if (SEARCH_VERBS.test(text) && DOWNLOAD_VERBS.test(text) && can('web_search') && can('web_download')) {
       const query = extractSearchQuery(text)
-      // web.download REQUIRES a real `url`, which only exists after a search
-      // returns. A two-step search→download plan can embed the URL only when a
-      // REAL prior result already committed it (deictic follow-up); without one,
-      // the plan runs the search and hands the download back as a follow-up.
-      // The planner never emits a payload the executing tool would reject.
       const urlArtifact = context?.artifacts?.find((a) => a.type === 'url' && isUrl(a.value))
       if (urlArtifact) {
         return {
@@ -293,6 +366,130 @@ export function planRequest(
         reason: 'The top search result is committed and the download can run as a follow-up.',
       }
     }
+
+    // Phase 5 — Compound: "open X, type Y, copy, verify clipboard"
+    // Optionally appends a trailing browser.search (mixed multi-capability flow).
+    if (OPEN_VERBS.test(text) && TYPE_VERBS.test(text) && CLIPBOARD_VERBS.test(text) && can('open_application') && can('type_text') && can('clipboard_read')) {
+      const app = extractAppName(text) ?? 'notepad'
+      const typeText = extractTypeText(text)
+      if (typeText) {
+        const steps: OrchestrationPlanStep[] = [
+          { id: 'step-1', capability: 'open_application', description: `Launch ${app}.`, payload: { application_id: app } },
+          { id: 'step-2', capability: 'type_text', description: `Type "${typeText.slice(0, 40)}${typeText.length > 40 ? '...' : ''}".`, payload: { text: typeText }, dependsOn: [0] },
+          { id: 'step-3', capability: 'clipboard_read', description: 'Read clipboard to verify.', payload: {}, dependsOn: [1] },
+        ]
+        if (SEARCH_VERBS.test(text) && can('browser_search') && steps.length < ORCHESTRATION_PLAN_LIMITS.maxSteps) {
+          const query = extractSearchQuery(text)
+          steps.push({ id: `step-${steps.length + 1}`, capability: 'browser_search', description: `Search for "${query.slice(0, 40)}${query.length > 40 ? '...' : ''}".`, payload: { query } })
+        }
+        return { goal, verdict: 'ok', steps }
+      }
+    }
+
+    // Phase 5 — Compound: "launch X and (verify|check) it is running"
+    if (OPEN_VERBS.test(text) && VERIFY_VERBS.test(text) && can('open_application') && can('application_status')) {
+      const app = extractAppName(text)
+      if (app) {
+        return {
+          goal,
+          verdict: 'ok',
+          steps: [
+            { id: 'step-1', capability: 'open_application', description: `Launch ${app}.`, payload: { application_id: app } },
+            { id: 'step-2', capability: 'application_status', description: `Verify ${app} is running.`, payload: { application_id: app }, dependsOn: [0] },
+          ],
+        }
+      }
+    }
+
+    // Phase 5 — Compound: "open X, type Y" (without clipboard)
+    if (OPEN_VERBS.test(text) && TYPE_VERBS.test(text) && can('open_application') && can('type_text')) {
+      const app = extractAppName(text) ?? 'notepad'
+      const typeText = extractTypeText(text)
+      if (typeText) {
+        return {
+          goal,
+          verdict: 'ok',
+          steps: [
+            { id: 'step-1', capability: 'open_application', description: `Launch ${app}.`, payload: { application_id: app } },
+            { id: 'step-2', capability: 'type_text', description: `Type "${typeText.slice(0, 40)}${typeText.length > 40 ? '...' : ''}".`, payload: { text: typeText }, dependsOn: [0] },
+          ],
+        }
+      }
+    }
+
+    // Phase 5 — Compound: "open browser, search for X" (browser.open + browser.search)
+    // Must come BEFORE the browser_search-only pattern to match compound goals.
+    if (OPEN_VERBS.test(text) && SEARCH_VERBS.test(text) && can('browser_open') && can('browser_search')) {
+      const query = extractSearchQuery(text)
+      return {
+        goal,
+        verdict: 'ok',
+        steps: [
+          { id: 'step-1', capability: 'browser_open', description: 'Open browser.', payload: { url: 'about:blank' } },
+          { id: 'step-2', capability: 'browser_search', description: `Search for "${query.slice(0, 40)}${query.length > 40 ? '...' : ''}".`, payload: { query }, dependsOn: [0] },
+        ],
+      }
+    }
+
+    // Phase 5 — Compound: "search for X in browser" (browser.search)
+    if (SEARCH_VERBS.test(text) && can('browser_search')) {
+      const query = extractSearchQuery(text)
+      return {
+        goal,
+        verdict: 'ok',
+        steps: [
+          { id: 'step-1', capability: 'browser_search', description: `Search for "${query.slice(0, 40)}${query.length > 40 ? '...' : ''}".`, payload: { query } },
+        ],
+      }
+    }
+
+    // Phase 5 — Compound: "write X to clipboard" (clipboard.write + clipboard.read verify)
+    if (CLIPBOARD_VERBS.test(text) && can('clipboard_write')) {
+      const match = text.match(/\b(?:write|set|put|copy)\s+(?:"([^"]+)"|'([^']+)'|(.+?))\s+(?:to|into|on)\s+(?:the\s+)?clipboard/i)
+      if (match) {
+        const clipText = (match[1] ?? match[2] ?? match[3] ?? '').trim()
+        if (clipText.length > 0) {
+          return {
+            goal,
+            verdict: 'ok',
+            steps: [
+              { id: 'step-1', capability: 'clipboard_write', description: `Write "${clipText.slice(0, 40)}${clipText.length > 40 ? '...' : ''}" to clipboard.`, payload: { text: clipText } },
+              { id: 'step-2', capability: 'clipboard_read', description: 'Read clipboard to verify.', payload: {}, dependsOn: [0] },
+            ],
+          }
+        }
+      }
+    }
+
+    // Phase 5 — Compound: "close X" (close_application)
+    if (CLOSE_VERBS.test(text) && can('close_application')) {
+      const app = extractCloseAppName(text)
+      if (app) {
+        return {
+          goal,
+          verdict: 'ok',
+          steps: [
+            { id: 'step-1', capability: 'close_application', description: `Close ${app}.`, payload: { application_id: app } },
+          ],
+        }
+      }
+    }
+
+    // Phase 5 — Compound: "launch X, then close X" (app.launch + app.close)
+    if (OPEN_VERBS.test(text) && CLOSE_VERBS.test(text) && can('open_application') && can('close_application')) {
+      const app = extractCloseAppName(text) ?? extractAppName(text)
+      if (app) {
+        return {
+          goal,
+          verdict: 'ok',
+          steps: [
+            { id: 'step-1', capability: 'open_application', description: `Launch ${app}.`, payload: { application_id: app } },
+            { id: 'step-2', capability: 'close_application', description: `Close ${app}.`, payload: { application_id: app }, dependsOn: [0] },
+          ],
+        }
+      }
+    }
+
     return block('The requested multi-step goal has no fully connected capability sequence right now.')
   }
 

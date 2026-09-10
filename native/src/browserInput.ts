@@ -78,7 +78,10 @@ async function ensureBrowser(): Promise<PwPage> {
       await currentPage.title()
       return currentPage
     } catch {
-      currentPage = null
+      // The page crashed or was detached (common when the Chromium window
+      // lives on a flaky desktop session). Reset the whole browser so the
+      // next operation starts clean instead of leaking contexts.
+      await resetBrowserState()
     }
   }
 
@@ -102,6 +105,42 @@ async function ensureBrowser(): Promise<PwPage> {
   return currentPage
 }
 
+/** Close the shared browser and all its contexts/pages (cleans up leaks). */
+async function resetBrowserState(): Promise<void> {
+  currentPage = null
+  if (browser) {
+    const b = browser
+    browser = null
+    try {
+      await b.close()
+    } catch {
+      /* already gone — ignore */
+    }
+  }
+}
+
+/** True when Playwright lost the page because the renderer died/detached. */
+function isLostFrameError(message: string): boolean {
+  return /closed|detached|crash|destroyed|Target page, context or browser has been closed|Execution context was destroyed/i.test(message)
+}
+
+/**
+ * Run a browser operation with one honest retry when the renderer crashed
+ * mid-operation: the browser is relaunched and the operation re-run for real.
+ */
+async function withCrashRetry<T>(run: () => Promise<T>): Promise<T> {
+  try {
+    return await run()
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    if (isLostFrameError(message)) {
+      await resetBrowserState()
+      return await run()
+    }
+    throw error
+  }
+}
+
 /**
  * Real Playwright browser backend (Phase 4.0).
  *
@@ -119,27 +158,31 @@ export class RealBrowserBackend implements BrowserBackend {
   readonly testsOnly = false
 
   async open(url?: string): Promise<{ success: boolean; url: string }> {
-    const page = await ensureBrowser()
-    if (url) {
-      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: BROWSER_LIMITS.DEFAULT_TIMEOUT_MS })
-    }
-    return { success: true, url: page.url() }
+    return withCrashRetry(async () => {
+      const page = await ensureBrowser()
+      if (url) {
+        await page.goto(url, { waitUntil: 'domcontentloaded', timeout: BROWSER_LIMITS.DEFAULT_TIMEOUT_MS })
+      }
+      return { success: true, url: page.url() }
+    })
   }
 
   async navigate(url: string): Promise<BrowserNavigationResult> {
-    const page = await ensureBrowser()
-    try {
-      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: BROWSER_LIMITS.DEFAULT_TIMEOUT_MS })
-      return {
-        success: true,
-        url: page.url(),
-        title: await page.title(),
-        verified: true,
+    return withCrashRetry(async () => {
+      const page = await ensureBrowser()
+      try {
+        await page.goto(url, { waitUntil: 'domcontentloaded', timeout: BROWSER_LIMITS.DEFAULT_TIMEOUT_MS })
+        return {
+          success: true,
+          url: page.url(),
+          title: await page.title(),
+          verified: true,
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        throw nativeError('io_error', `Navigation failed: ${message}`)
       }
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error)
-      throw nativeError('io_error', `Navigation failed: ${message}`)
-    }
+    })
   }
 
   async back(): Promise<{ success: boolean; url: string }> {
@@ -225,49 +268,53 @@ export class RealBrowserBackend implements BrowserBackend {
   }
 
   async readPage(): Promise<BrowserReadPageResult> {
-    const page = await ensureBrowser()
-    try {
-      const title = await page.title()
-      const url = page.url()
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
-      const text: string = await page.evaluate(
-        "(() => { const el = document.body; if (!el) return ''; return el.innerText || el.textContent || ''; })()",
-      )
-      const bounded = (typeof text === 'string' ? text : '').slice(0, BROWSER_LIMITS.MAX_PAGE_TEXT_CHARS)
-      return { success: true, title, url, text: bounded }
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error)
-      throw nativeError('io_error', `Read page failed: ${message}`)
-    }
+    return withCrashRetry(async () => {
+      const page = await ensureBrowser()
+      try {
+        const title = await page.title()
+        const url = page.url()
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+        const text: string = await page.evaluate(
+          "(() => { const el = document.body; if (!el) return ''; return el.innerText || el.textContent || ''; })()",
+        )
+        const bounded = (typeof text === 'string' ? text : '').slice(0, BROWSER_LIMITS.MAX_PAGE_TEXT_CHARS)
+        return { success: true, title, url, text: bounded }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        throw nativeError('io_error', `Read page failed: ${message}`)
+      }
+    })
   }
 
   async search(query: string): Promise<BrowserSearchResult> {
-    const page = await ensureBrowser()
-    try {
-      const encoded = encodeURIComponent(query)
-      // DuckDuckGo HTML endpoint: returns real results without CAPTCHA to
-      // automated browsers, unlike Google which blocks Playwright traffic.
-      await page.goto(`https://html.duckduckgo.com/html/?q=${encoded}`, {
-        waitUntil: 'domcontentloaded',
-        timeout: BROWSER_LIMITS.DEFAULT_TIMEOUT_MS,
-      })
+    return withCrashRetry(async () => {
+      const page = await ensureBrowser()
+      try {
+        const encoded = encodeURIComponent(query)
+        // DuckDuckGo HTML endpoint: returns real results without CAPTCHA to
+        // automated browsers, unlike Google which blocks Playwright traffic.
+        await page.goto(`https://html.duckduckgo.com/html/?q=${encoded}`, {
+          waitUntil: 'domcontentloaded',
+          timeout: BROWSER_LIMITS.DEFAULT_TIMEOUT_MS,
+        })
 
-      // Use string-based evaluate to avoid DOM type issues in native tsconfig
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
-      const results: Array<{ title: string; url: string; snippet: string }> = await page.evaluate(
-        `(() => { const max = ${BROWSER_LIMITS.MAX_SEARCH_RESULTS}; const items = []; const nodes = document.querySelectorAll('.result'); const arr = Array.from(nodes).slice(0, max); for (const node of arr) { const a = node.querySelector('.result__a'); if (!a) continue; const href = a.getAttribute('href') || ''; const uddg = a.getAttribute('uddg') || ''; const url = uddg ? uddg : href; const title = a.textContent ? a.textContent.trim() : ''; const snip = node.querySelector('.result__snippet'); const snippet = snip && snip.textContent ? snip.textContent.trim() : ''; if (title && url) items.push({ title: title, url: url, snippet: snippet.slice(0, 600) }); } return items; })()`,
-      )
+        // Use string-based evaluate to avoid DOM type issues in native tsconfig
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+        const results: Array<{ title: string; url: string; snippet: string }> = await page.evaluate(
+          `(() => { const max = ${BROWSER_LIMITS.MAX_SEARCH_RESULTS}; const items = []; const nodes = document.querySelectorAll('.result'); const arr = Array.from(nodes).slice(0, max); for (const node of arr) { const a = node.querySelector('.result__a'); if (!a) continue; const href = a.getAttribute('href') || ''; const uddg = a.getAttribute('uddg') || ''; const url = uddg ? uddg : href; const title = a.textContent ? a.textContent.trim() : ''; const snip = node.querySelector('.result__snippet'); const snippet = snip && snip.textContent ? snip.textContent.trim() : ''; if (title && url) items.push({ title: title, url: url, snippet: snippet.slice(0, 600) }); } return items; })()`,
+        )
 
-      return {
-        success: true,
-        url: page.url(),
-        title: await page.title(),
-        results,
+        return {
+          success: true,
+          url: page.url(),
+          title: await page.title(),
+          results,
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        throw nativeError('io_error', `Search failed: ${message}`)
       }
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error)
-      throw nativeError('io_error', `Search failed: ${message}`)
-    }
+    })
   }
 
   async screenshot(): Promise<BrowserScreenshotResult> {
