@@ -14,6 +14,8 @@
  *   JARVIS_BACKEND_SUPERVISE_NATIVE (default true) launch + supervise the agent
  *   JARVIS_NATIVE_CMD              node binary for the supervised agent (default process.execPath)
  *   JARVIS_NATIVE_AGENT            agent script (default <repo>/native/dist/agentMain.js)
+ *   JARVIS_NATIVE_CONFIG           agent config file (default <repo>/native/agent.config.json
+ *                                  when it exists; passed as --config to register apps)
  *   JARVIS_BACKEND_SILENT          (default false) no stdout log lines
  *
  * Single instance: a lock file in the data dir guards against duplicates.
@@ -26,7 +28,7 @@ import { createLogger, type Logger } from './log.js'
 import { DeviceRegistry } from './registry.js'
 import { EventBus } from './events.js'
 import { FileStore } from './files.js'
-import { NativeSupervisor } from './native.js'
+import { buildNativeAgentArgs, NativeSupervisor } from './native.js'
 import { buildHealth } from './health.js'
 import { startHttpServer, type RuntimeContext } from './http.js'
 import { BACKEND_NAME, BACKEND_PROTOCOL, BACKEND_VERSION } from './version.js'
@@ -42,6 +44,7 @@ interface Env {
   nativeToken: string
   superviseNative: boolean
   nativeAgent: string
+  nativeConfig: string
   silent: boolean
 }
 
@@ -66,6 +69,11 @@ function repoRoot(): string {
   return resolve(import.meta.dirname ?? '', '..', '..')
 }
 
+/** Resolve the native agent config file; only pass it when it actually exists. */
+function resolveNativeConfig(candidate: string): string {
+  return existsSync(candidate) ? candidate : ''
+}
+
 function readEnv(): Env {
   const root = repoRoot()
   return {
@@ -79,6 +87,7 @@ function readEnv(): Env {
     nativeToken: envString('JARVIS_BACKEND_NATIVE_TOKEN'),
     superviseNative: envBool('JARVIS_BACKEND_SUPERVISE_NATIVE', true),
     nativeAgent: envString('JARVIS_NATIVE_AGENT', join(root, 'native', 'dist', 'agentMain.js')),
+    nativeConfig: resolveNativeConfig(envString('JARVIS_NATIVE_CONFIG', join(root, 'native', 'agent.config.json'))),
     silent: envBool('JARVIS_BACKEND_SILENT', false),
   }
 }
@@ -167,10 +176,11 @@ class Backend {
     const bus = new EventBus()
     const files = new FileStore({ dir: join(this.env.dataDir, 'files'), now: this.now })
 
-    const nativeArgs: string[] = [`--port`, String(this.env.nativeUrl.match(/:(\d+)/)?.[1] ?? 8765)]
-    nativeArgs.push(this.env.nativeToken ? '--token' : '--no-token')
-    if (this.env.nativeToken) nativeArgs.push(this.env.nativeToken)
-    nativeArgs.push('--root', '{workspace}')
+    const nativeArgs = buildNativeAgentArgs({
+      port: this.env.nativeUrl.match(/:(\d+)/)?.[1] ? Number(this.env.nativeUrl.match(/:(\d+)/)![1]) : 8765,
+      token: this.env.nativeToken,
+      config: this.env.nativeConfig,
+    })
 
     this.supervisor = new NativeSupervisor({
       probeUrl: this.env.nativeUrl,

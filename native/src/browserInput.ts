@@ -61,7 +61,6 @@ async function loadPlaywright(): Promise<any> {
   if (pwFailure) throw pwFailure
   try {
     // Dynamic import — playwright is optional; loaded on first use
-    // @ts-expect-error playwright is an optional runtime dependency
     pw = await import('playwright')
     return pw
   } catch (error) {
@@ -246,7 +245,9 @@ export class RealBrowserBackend implements BrowserBackend {
     const page = await ensureBrowser()
     try {
       const encoded = encodeURIComponent(query)
-      await page.goto(`https://www.google.com/search?q=${encoded}`, {
+      // DuckDuckGo HTML endpoint: returns real results without CAPTCHA to
+      // automated browsers, unlike Google which blocks Playwright traffic.
+      await page.goto(`https://html.duckduckgo.com/html/?q=${encoded}`, {
         waitUntil: 'domcontentloaded',
         timeout: BROWSER_LIMITS.DEFAULT_TIMEOUT_MS,
       })
@@ -254,7 +255,7 @@ export class RealBrowserBackend implements BrowserBackend {
       // Use string-based evaluate to avoid DOM type issues in native tsconfig
       // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
       const results: Array<{ title: string; url: string; snippet: string }> = await page.evaluate(
-        `(() => { const max = ${BROWSER_LIMITS.MAX_SEARCH_RESULTS}; const items = []; const links = document.querySelectorAll('div.g a[href^="http"]'); const arr = Array.from(links).slice(0, max); for (const link of arr) { const href = link.getAttribute('href'); const titleEl = link.querySelector('h3'); const title = titleEl ? titleEl.textContent : ''; if (href && title) { const parent = link.closest('div.g'); const snippetEl = parent ? parent.querySelector('[data-sncf], .VwiC3b, .s') : null; const snippet = snippetEl ? snippetEl.textContent : ''; items.push({ title: title, url: href, snippet: snippet ? snippet.slice(0, 600) : '' }); } } return items; })()`,
+        `(() => { const max = ${BROWSER_LIMITS.MAX_SEARCH_RESULTS}; const items = []; const nodes = document.querySelectorAll('.result'); const arr = Array.from(nodes).slice(0, max); for (const node of arr) { const a = node.querySelector('.result__a'); if (!a) continue; const href = a.getAttribute('href') || ''; const uddg = a.getAttribute('uddg') || ''; const url = uddg ? uddg : href; const title = a.textContent ? a.textContent.trim() : ''; const snip = node.querySelector('.result__snippet'); const snippet = snip && snip.textContent ? snip.textContent.trim() : ''; if (title && url) items.push({ title: title, url: url, snippet: snippet.slice(0, 600) }); } return items; })()`,
       )
 
       return {

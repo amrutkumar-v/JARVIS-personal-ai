@@ -37,6 +37,13 @@ export class RealAppBackend implements ApplicationBackend {
     return this.registry.listRecords().map((r) => this.registry.wireSpec(r))
   }
 
+  resolveProcessName(applicationId: string): string {
+    const record = this.registry.getRecord(applicationId)
+    if (!record || !record.launchable || record.target === '') return ''
+    const image = basename(record.target)
+    return image.toLowerCase().endsWith('.exe') ? image.slice(0, -4) : image
+  }
+
   async status(applicationId: string): Promise<NativeAppStatusResult> {
     const record = this.registry.getRecord(applicationId)
     if (!record) {

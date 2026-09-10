@@ -22,6 +22,8 @@ export interface MemoryAppSeed {
   launchable?: boolean
   /** Details shown as `false` to the engine. */
   launchRule?: 'verified' | 'unverified' | 'refute'
+  /** Process-image name (basename without `.exe`) the app runs as; defaults to the applicationId. */
+  processName?: string
   /** Force `launch` to throw a structured error. */
   failRule?: { code: NativeErrorCode; message?: string }
 }
@@ -34,6 +36,7 @@ interface MemoryAppState {
   enabled: boolean
   launchable: boolean
   launchRule: 'verified' | 'unverified' | 'refute'
+  processName: string
   failRule: { code: NativeErrorCode; message?: string } | undefined
   launchCount: number
 }
@@ -47,6 +50,7 @@ function defaultSeed(applicationId: string): MemoryAppState {
     enabled: true,
     launchable: true,
     launchRule: 'verified',
+    processName: applicationId,
     failRule: undefined,
     launchCount: 0,
   }
@@ -106,6 +110,12 @@ export class MemoryAppBackend implements ApplicationBackend {
       running: launched,
       runningVerified: launched && app.launchRule === 'verified',
     }
+  }
+
+  resolveProcessName(applicationId: string): string {
+    const app = this.apps.get(applicationId)
+    if (!app || !app.launchable) return ''
+    return app.processName
   }
 
   async launch(applicationId: string): Promise<NativeAppLaunchResult> {

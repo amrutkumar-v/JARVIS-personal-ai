@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { ProbeResult } from './jsonrpc.js'
 import { probeNativeAgent } from './jsonrpc.js'
-import { NativeSupervisor } from './native.js'
+import { buildNativeAgentArgs, NativeSupervisor } from './native.js'
 import type { SpawnFactory, SpawnHandle } from './native.js'
 import { nullLogger } from './log.js'
 
@@ -30,6 +30,43 @@ function fakeSpawn(factory: { spawn?: () => SpawnHandle; count?: () => number } 
   }
   return { spawn, current, all: () => spawned }
 }
+
+describe('buildNativeAgentArgs', () => {
+  it('emits port, dev no-token mode, and the workspace root by default', () => {
+    expect(buildNativeAgentArgs({ port: 8765, token: '' })).toEqual([
+      '--port',
+      '8765',
+      '--no-token',
+      '--root',
+      '{workspace}',
+    ])
+  })
+
+  it('uses --token when a token is provided', () => {
+    expect(buildNativeAgentArgs({ port: 9000, token: 's3cret' })).toEqual([
+      '--port',
+      '9000',
+      '--token',
+      's3cret',
+      '--root',
+      '{workspace}',
+    ])
+  })
+
+  it('passes --config only when a config file is set (agent app registration)', () => {
+    const args = buildNativeAgentArgs({ port: 8765, token: '', config: 'D:\\JARVIS\\native\\agent.config.json' })
+    expect(args).toEqual([
+      '--port',
+      '8765',
+      '--no-token',
+      '--root',
+      '{workspace}',
+      '--config',
+      'D:\\JARVIS\\native\\agent.config.json',
+    ])
+    expect(buildNativeAgentArgs({ port: 8765, token: '' }).join(' ')).not.toContain('--config')
+  })
+})
 
 describe('probeNativeAgent', () => {
   it('reports connected when identity succeeds', async () => {

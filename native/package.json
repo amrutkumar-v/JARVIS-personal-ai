@@ -1,0 +1,14 @@
+{
+  "name": "native",
+  "version": "1.0.0",
+  "description": "JARVIS native Windows agent",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "check": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "playwright": "^1.63.0"
+  }
+}

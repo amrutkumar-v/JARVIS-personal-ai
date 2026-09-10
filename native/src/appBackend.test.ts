@@ -79,4 +79,23 @@ describe('RealAppBackend — pre-spawn validation (Phase 1.3)', () => {
     expect((backend as ApplicationBackend).testsOnly).toBeUndefined()
     expect(backend.id).toBe('real-app')
   })
+
+  // Phase 4.1: app.close must target the REGISTRY-PROVEN process image of a
+  // registered app, never an arbitrary name. resolveProcessName is the
+  // registry-only source of that process name.
+  it('resolveProcessName(): registered exe → basename without .exe', () => {
+    expect(backend.resolveProcessName('notepad')).toBe('notepad')
+  })
+
+  it('resolveProcessName(): unknown id → empty (never a process to terminate)', () => {
+    expect(backend.resolveProcessName('nope')).toBe('')
+  })
+
+  it('resolveProcessName(): non-launchable target (script) → empty', () => {
+    expect(backend.resolveProcessName('script')).toBe('')
+  })
+
+  it('resolveProcessName(): launchable app stays resolvable even when disabled (close may still clean it up)', () => {
+    expect(backend.resolveProcessName('locked')).toBe('write')
+  })
 })

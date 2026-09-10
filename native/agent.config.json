@@ -1,0 +1,19 @@
+{
+  "port": 8765,
+  "host": "127.0.0.1",
+  "token": "",
+  "roots": [
+    "{workspace}"
+  ],
+  "discovery": true,
+  "applications": {
+    "notepad": {
+      "name": "Notepad",
+      "target": "{windir}\\System32\\notepad.exe"
+    },
+    "calculator": {
+      "name": "Calculator",
+      "target": "{windir}\\System32\\calc.exe"
+    }
+  }
+}

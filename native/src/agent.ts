@@ -522,8 +522,17 @@ function createHandler(options: AgentOptions): (req: IncomingMessage, res: Serve
         }
         /* ----------------------------------------------------------- app close */
         case 'app.close': {
-          const processName = strParam(params, 'processName')
-          const result = await appClose.close(processName)
+          const applicationId = optStr(params, 'applicationId')
+          const explicitProcessName = optStr(params, 'processName')
+          // Prefer resolving a registered applicationId to its validated
+          // process-image name; the literal `processName` form is kept for
+          // backward compatibility but never preferred over the registry.
+          const resolved = applicationId ? applications.resolveProcessName(applicationId) : ''
+          const processName = resolved || explicitProcessName
+          if (!processName) {
+            throw nativeError('invalid_argument', 'app.close requires "applicationId" of a registered application.')
+          }
+          const result = await appClose.close(processName, applicationId || explicitProcessName)
           return envelope(id, { result })
         }
         /* ------------------------------------------------------------ browser */

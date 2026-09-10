@@ -55,26 +55,31 @@ export interface AppCloseBackend {
   id: string
   testsOnly?: boolean
 
-  /** Close a registered application by its basename (process name). */
-  close(processName: string): Promise<AppCloseResult>
+  /**
+   * Close a registered application by its process-image name. The optional
+   * `applicationId` is the registry id the caller used for closer correlation
+   * (used verbatim in the result; never executed).
+   */
+  close(processName: string, applicationId?: string): Promise<AppCloseResult>
 }
 
 /**
  * Real Windows app-close backend (Phase 4.0).
  *
- * Uses `Stop-Process -Name` with the process basename from the registered
- * application. No arbitrary commands, no shell injection, no unrestricted
- * process termination.
+ * Uses `Stop-Process -Name` with the process basename resolved from a
+ * registered application. No arbitrary commands, no shell injection, no
+ * unrestricted process termination.
  */
 export class RealAppCloseBackend implements AppCloseBackend {
   readonly id = 'real-app-close'
   readonly testsOnly = false
 
-  async close(processName: string): Promise<AppCloseResult> {
+  async close(processName: string, applicationId?: string): Promise<AppCloseResult> {
+    const correlationId = applicationId || processName
     // Strict validation: only allow safe characters (no injection possible)
     if (!SAFE_PROCESS_NAME_RE.test(processName)) {
       return {
-        applicationId: processName,
+        applicationId: correlationId,
         terminated: false,
         verified: false,
         detail: 'Invalid process name: contains disallowed characters.',
@@ -106,7 +111,7 @@ export class RealAppCloseBackend implements AppCloseBackend {
       const terminated = result.includes('ok')
 
       return {
-        applicationId: processName,
+        applicationId: correlationId,
         terminated,
         verified,
         detail: terminated
@@ -118,7 +123,7 @@ export class RealAppCloseBackend implements AppCloseBackend {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       return {
-        applicationId: processName,
+        applicationId: correlationId,
         terminated: false,
         verified: false,
         detail: `Close failed: ${message}`,

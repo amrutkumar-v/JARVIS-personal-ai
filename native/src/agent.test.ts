@@ -9,6 +9,7 @@ import { MemoryAppBackend } from './testingApps.js'
 import { RealAppBackend } from './appBackend.js'
 import { AppRegistry } from './appRegistry.js'
 import type { ApplicationBackend } from './applications.js'
+import type { AppCloseBackend } from './appClose.js'
 import { MemoryObsBackend } from './testingObs.js'
 import { RealObsBackend } from './obsWin32.js'
 import type { ObservationBackend } from './observation.js'
@@ -210,14 +211,30 @@ describe('app.* — application control protocol (Phase 1.3)', () => {
   let agent: Awaited<ReturnType<typeof startAgent>>
   const apps = new MemoryAppBackend([
     { applicationId: 'notepad', name: 'Notepad', launchRule: 'verified' },
+    { applicationId: 'calculator', name: 'Calculator', processName: 'calc', launchRule: 'verified' },
     { applicationId: 'slowapp', name: 'Slow App', launchRule: 'unverified' },
     { applicationId: 'vanisher', name: 'Vanisher', launchRule: 'refute' },
     { applicationId: 'locked', name: 'Locked', enabled: false },
     { applicationId: 'weird', name: 'Not Launchable', launchable: false },
   ])
 
+  let closeCalls: Array<{ processName: string; applicationId: string | undefined }> = []
+  const closeBackend: AppCloseBackend = {
+    id: 'test-app-close',
+    testsOnly: true,
+    close: async (processName, applicationId) => {
+      closeCalls.push({ processName, applicationId })
+      return {
+        applicationId: applicationId ?? processName,
+        terminated: true,
+        verified: true,
+        detail: `Terminated "${processName}".`,
+      }
+    },
+  }
+
   beforeAll(async () => {
-    agent = await startAgent({ roots: [ROOT], token: TOKEN, applications: apps, port: 0 })
+    agent = await startAgent({ roots: [ROOT], token: TOKEN, applications: apps, appClose: closeBackend, port: 0 })
   })
 
   afterAll(async () => {
@@ -231,6 +248,7 @@ describe('app.* — application control protocol (Phase 1.3)', () => {
     if ('error' in body) return
     const { applications } = body.result as { applications: Array<Record<string, unknown>> }
     expect(applications.map((a) => a.applicationId).sort()).toEqual([
+      'calculator',
       'locked',
       'notepad',
       'slowapp',
@@ -335,6 +353,33 @@ describe('app.* — application control protocol (Phase 1.3)', () => {
     const body = await asJson(res)
     if ('error' in body) throw new Error('unexpected error')
     expect(body.result).toMatchObject({ running: true, runningVerified: true })
+  })
+
+  // Phase 4.1: app.close must target the registry-resolved process image of
+  // a registered applicationId — "close Calculator" (id "calculator") has to
+  // terminate the "calc" process, never a literal "calculator" lookup.
+  it('app.close resolves a registered applicationId to its process image name', async () => {
+    closeCalls = []
+    const res = await rpc(agent.baseUrl, 'app.close', { applicationId: 'calculator' }, TOKEN)
+    const body = await asJson(res)
+    expect('error' in body).toBe(false)
+    if ('error' in body) return
+    expect(body.result).toMatchObject({ applicationId: 'calculator', terminated: true, verified: true })
+    expect(closeCalls).toEqual([{ processName: 'calc', applicationId: 'calculator' }])
+  })
+
+  it('app.close without a registered id → invalid_argument (never kills by arbitrary name)', async () => {
+    const res = await rpc(agent.baseUrl, 'app.close', { applicationId: 'ghost' }, TOKEN)
+    expect(errorCode(await asJson(res))).toBe('invalid_argument')
+  })
+
+  it('app.close still accepts an explicit literal processName (backward compatibility)', async () => {
+    closeCalls = []
+    const res = await rpc(agent.baseUrl, 'app.close', { processName: 'calc' }, TOKEN)
+    const body = await asJson(res)
+    expect('error' in body).toBe(false)
+    if ('error' in body) return
+    expect(closeCalls).toEqual([{ processName: 'calc', applicationId: 'calc' }])
   })
 })
 

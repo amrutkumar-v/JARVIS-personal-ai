@@ -23,4 +23,12 @@ export interface ApplicationBackend {
 
   /** Launch a registered application; never arbitrary paths or commands. */
   launch(applicationId: string): Promise<NativeAppLaunchResult>
+
+  /**
+   * Resolve the Windows process-image name (basename without `.exe`) that a
+   * registered application runs as, so `app.close` can target the right
+   * process. Returns '' when the id is not registered or not launchable —
+   * callers must NOT treat '' as a process name to terminate.
+   */
+  resolveProcessName(applicationId: string): string
 }

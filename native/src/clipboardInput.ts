@@ -12,6 +12,12 @@ import { CLIPBOARD_LIMITS } from './clipboard.js'
  * under the hood. This is NOT a simulation — it operates on the REAL
  * Windows clipboard shared by all applications.
  *
+ * The commands are scoped to WINDOWS POWERSHELL 5.1 (`powershell.exe`, the
+ * shell guaranteed on every supported Windows install). The Windows
+ * PowerShell 7-only parameters `-InputObject` / `-AsPlainText` are therefore
+ * NOT used; text is moved over stdin/stdout with the console codepage pinned
+ * to UTF-8 on both sides.
+ *
  * Raw clipboard content is NEVER logged to the task log — only metadata
  * about the operation (success, byte length, verification status).
  *
@@ -20,6 +26,35 @@ import { CLIPBOARD_LIMITS } from './clipboard.js'
  */
 
 const POWERSHELL_TIMEOUT_MS = CLIPBOARD_LIMITS.TIMEOUT_MS
+
+/**
+ * PS 5.1-compatible read command. `Get-Clipboard -Raw` returns the raw
+ * clipboard text (CF_UNICODETEXT) or `$null` when the clipboard holds no
+ * text. `[Console]::Write` emits the text verbatim (no host-added newline)
+ * with the output codepage pinned to UTF-8 so non-ASCII text round-trips
+ * exactly.
+ */
+export function clipboardReadCommand(): string {
+  return (
+    `[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; ` +
+    `$t = Get-Clipboard -Raw; ` +
+    `if ($null -eq $t) { [Console]::Write('') } else { [Console]::Write($t) }`
+  )
+}
+
+/**
+ * PS 5.1-compatible write command. The payload is NOT interpolated into any
+ * command string — it arrives on stdin and is read whole via the raw console
+ * handle. Pinning `InputEncoding` to UTF-8 keeps `[Console]::In` decoding
+ * the UTF-8 bytes Node writes. `Set-Clipboard -Value` accepts the single
+ * string and stores it as CF_UNICODETEXT.
+ */
+export function clipboardWriteCommand(): string {
+  return (
+    `[Console]::InputEncoding = [System.Text.Encoding]::UTF8; ` +
+    `Set-Clipboard -Value ([Console]::In.ReadToEnd())`
+  )
+}
 
 function runPowerShellRead(command: string): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -32,7 +67,7 @@ function runPowerShellRead(command: string): Promise<string> {
           reject(error)
           return
         }
-        resolve(stdout.trim())
+        resolve(stdout)
       },
     )
   })
@@ -42,7 +77,7 @@ function runPowerShellWrite(text: string): Promise<void> {
   return new Promise((resolve, reject) => {
     const proc = execFile(
       'powershell.exe',
-      ['-NoProfile', '-NonInteractive', '-Command', 'Set-Clipboard -InputObject $input'],
+      ['-NoProfile', '-NonInteractive', '-Command', clipboardWriteCommand()],
       { timeout: POWERSHELL_TIMEOUT_MS, maxBuffer: 1024 },
       (error) => {
         if (error) {
@@ -76,7 +111,7 @@ export class RealClipboardBackend implements ClipboardBackend {
   async read(): Promise<ClipboardReadResult> {
     try {
       // PowerShell's Get-Clipboard reads the Windows clipboard (CF_UNICODETEXT)
-      const text = await runPowerShellRead('Get-Clipboard -Format Text -AsPlainText')
+      const text = await runPowerShellRead(clipboardReadCommand())
       const byteLength = text.length * 2 // UTF-16
       return {
         success: true,

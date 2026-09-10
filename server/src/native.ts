@@ -28,6 +28,16 @@ export interface SpawnHandle {
 
 export type SpawnFactory = (script: string, args: string[], env: Record<string, string>) => SpawnHandle
 
+/** Build the supervised agent's CLI args (port/token/root plus optional config). */
+export function buildNativeAgentArgs(options: { port: number; token: string; config?: string }): string[] {
+  const args: string[] = [`--port`, String(options.port)]
+  args.push(options.token ? '--token' : '--no-token')
+  if (options.token) args.push(options.token)
+  args.push('--root', '{workspace}')
+  if (options.config) args.push('--config', options.config)
+  return args
+}
+
 /** Real child-process handle for `node native/dist/agentMain.js`. */
 export function spawnNodeAgent(script: string, args: string[], env: Record<string, string>): SpawnHandle {
   const child = spawn(process.execPath, [script, ...args], {

@@ -97,7 +97,7 @@ export class NativeWindowsApplicationProvider implements ApplicationProvider {
       terminated: boolean
       verified: boolean
       detail: string
-    }>('app.close', { processName: applicationId })
+    }>('app.close', { applicationId })
     return {
       applicationId: entry.applicationId,
       terminated: entry.terminated,
