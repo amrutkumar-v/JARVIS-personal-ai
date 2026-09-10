@@ -1,0 +1,231 @@
+/* ============================================================
+   JARVIS — Global styles / design tokens
+   Deep dark, premium, cinematic. Minimal noise.
+   ============================================================ */
+
+/* ---------- Design tokens ---------- */
+:root {
+  /* Surfaces */
+  --bg-base: #05070d;
+  --bg-deep: #02040a;
+
+  /* Iconic accent */
+  --accent-h: 187;
+  --accent-s: 92%;
+  --accent-l: 52%;
+  --accent: hsl(var(--accent-h) var(--accent-s) var(--accent-l));
+  --accent-soft: hsl(var(--accent-h) var(--accent-s) var(--accent-l) / 0.12);
+  --accent-glow: hsl(var(--accent-h) var(--accent-s) var(--accent-l) / 0.55);
+
+  /* Text */
+  --text-primary: hsl(196 30% 94%);
+  --text-secondary: hsl(195 14% 64%);
+  --text-faint: hsl(196 10% 42%);
+
+  /* Semantic states */
+  --idle: hsl(var(--accent-h) 70% 60%);
+  --listening: hsl(152 72% 55%);
+  --thinking: hsl(214 88% 66%);
+  --speaking: hsl(var(--accent-h) 92% 60%);
+  --executing: hsl(28 95% 62%);
+  --success: hsl(145 72% 48%);
+  --warning: hsl(42 96% 58%);
+  --error: hsl(0 75% 55%);
+
+  /* Lines / borders */
+  --hairline: hsl(192 40% 82% / 0.1);
+  --hairline-strong: hsl(192 40% 82% / 0.2);
+
+  /* Typography — technical + clean pairing */
+  --font-display: 'Rajdhani', 'Segoe UI', system-ui, sans-serif;
+  --font-body: 'Manrope', 'Segoe UI', system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', 'Cascadia Code', 'Consolas', monospace;
+
+  /* Layout */
+  --app-max: 1480px;
+  --gap: 18px;
+
+  /* Motion */
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-in-out: cubic-bezier(0.76, 0, 0.24, 1);
+
+  --sidebar-w: 268px;
+  --radius-l: 16px;
+  --radius-m: 12px;
+  --radius-s: 8px;
+}
+
+/* ---------- Reset ---------- */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--bg-base);
+  color: var(--text-primary);
+  font-family: var(--font-body);
+  font-size: 15px;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  overflow: hidden;
+  -webkit-tap-highlight-color: transparent;
+}
+
+h1, h2, h3, h4, p {
+  margin: 0;
+}
+
+button {
+  font-family: inherit;
+  color: inherit;
+  background: none;
+  border: none;
+  cursor: pointer;
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent-glow);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+::selection {
+  background: hsl(var(--accent-h) var(--accent-s) var(--accent-l) / 0.35);
+}
+
+/* ---------- Scrollbars ---------- */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: hsl(192 40% 82% / 0.14);
+  border-radius: 8px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: hsl(192 40% 82% / 0.25);
+}
+
+/* ---------- Motion preferences ---------- */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* ============================================================
+   Phase 2.5 — Theme system
+   Presentation ONLY. Themes override design tokens (accent hue,
+   palette, glow) on the `.jarvis-app` element; they never touch
+   execution, permissions or capabilities. The Arc Reactor exists
+   in every theme.
+   ============================================================ */
+
+/* Theme overrides are declared as @layer so component styles (which use the
+   base tokens) pick up the new values, while any hairlines/surfaces that opt
+   into theme-specific tokens below resolve cleanly. */
+/* Theme overrides sit AFTER :root in source order with equal specificity, so
+   they win the cascade; component styles consume var() tokens and just pick up
+   the active theme. */
+.theme-classic {
+  --accent-h: 187;
+  --accent-s: 92%;
+  --accent-l: 52%;
+  --accent: hsl(var(--accent-h) var(--accent-s) var(--accent-l));
+  --accent-soft: hsl(var(--accent-h) var(--accent-s) var(--accent-l) / 0.12);
+  --accent-glow: hsl(var(--accent-h) var(--accent-s) var(--accent-l) / 0.55);
+  --theme-surface-1: hsla(192 40% 90% / 0.04);
+  --theme-surface-2: hsla(192 40% 90% / 0.07);
+  --theme-line: var(--hairline);
+}
+
+/* Cyber — neon magenta over smoked glass */
+.theme-cyber {
+  --accent-h: 316;
+  --accent-s: 96%;
+  --accent-l: 62%;
+  --accent: hsl(var(--accent-h) var(--accent-s) var(--accent-l));
+  --accent-soft: hsl(var(--accent-h) var(--accent-s) var(--accent-l) / 0.14);
+  --accent-glow: hsl(var(--accent-h) var(--accent-s) var(--accent-l) / 0.55);
+  --bg-base: #12070e;
+  --bg-deep: #0a0307;
+  --theme-surface-1: hsla(316 90% 75% / 0.05);
+  --theme-surface-2: hsla(316 90% 75% / 0.09);
+  --theme-line: hsla(316 90% 78% / 0.16);
+  --text-primary: hsl(320 40% 95%);
+  --text-secondary: hsl(316 18% 70%);
+  --text-faint: hsl(316 12% 48%);
+}
+
+/* Stealth — muted gunmetal, low glow, quiet operation */
+.theme-stealth {
+  --accent-h: 155;
+  --accent-s: 18%;
+  --accent-l: 60%;
+  --accent: hsl(var(--accent-h) var(--accent-s) var(--accent-l));
+  --accent-soft: hsl(var(--accent-h) var(--accent-s) var(--accent-l) / 0.08);
+  --accent-glow: hsl(var(--accent-h) 12% 62% / 0.32);
+  --bg-base: #090b0d;
+  --bg-deep: #040607;
+  --theme-surface-1: hsla(155 10% 80% / 0.03);
+  --theme-surface-2: hsla(155 10% 80% / 0.06);
+  --theme-line: hsla(155 10% 80% / 0.07);
+  --text-primary: hsl(160 15% 88%);
+  --text-secondary: hsl(158 10% 62%);
+  --text-faint: hsl(158 8% 42%);
+}
+
+/* Holographic — iridescent teal-violet, soft holo bleed */
+.theme-holographic {
+  --accent-h: 172;
+  --accent-s: 100%;
+  --accent-l: 66%;
+  --accent: hsl(var(--accent-h) var(--accent-s) var(--accent-l));
+  --accent-soft: hsl(var(--accent-h) var(--accent-s) 66% / 0.16);
+  --accent-glow: hsl(var(--accent-h) 96% 64% / 0.55);
+  --accent-2: hsl(266 92% 70%);
+  --bg-base: #070a13;
+  --bg-deep: #03040c;
+  --theme-surface-1: hsla(266 90% 80% / 0.05);
+  --theme-surface-2: hsla(172 90% 80% / 0.08);
+  --theme-line: hsla(266 90% 82% / 0.14);
+  --text-primary: hsl(180 30% 94%);
+  --text-secondary: hsl(176 16% 66%);
+  --text-faint: hsl(266 14% 46%);
+}
+
+/* Minimal — stripped-back monochrome, clarity over spectacle */
+.theme-minimal {
+  --accent-h: 0;
+  --accent-s: 0%;
+  --accent-l: 82%;
+  --accent: hsl(var(--accent-h) var(--accent-s) var(--accent-l));
+  --accent-soft: hsl(0 0% 82% / 0.08);
+  --accent-glow: hsl(0 0% 82% / 0.28);
+  --bg-base: #050505;
+  --bg-deep: #000000;
+  --theme-surface-1: hsla(0 0% 90% / 0.03);
+  --theme-surface-2: hsla(0 0% 90% / 0.05);
+  --theme-line: hsla(0 0% 90% / 0.08);
+  --text-primary: hsl(0 0% 92%);
+  --text-secondary: hsl(0 0% 62%);
+  --text-faint: hsl(0 0% 44%);
+}

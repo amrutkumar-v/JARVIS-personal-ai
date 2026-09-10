@@ -1,0 +1,41 @@
+{
+  "name": "jarvis",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && npm run build:backend && vite build",
+    "build:backend": "tsc -p server/tsconfig.build.json",
+    "backend": "node server/dist/index.js",
+    "backend:check": "tsc --noEmit -p server/tsconfig.json",
+    "backend:watch": "tsc -w -p server/tsconfig.json",
+    "lint": "oxlint",
+    "test": "vitest run",
+    "preview": "vite preview",
+    "install:startup": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/windows/install-startup.ps1",
+    "uninstall:startup": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/windows/uninstall-startup.ps1",
+    "native:check": "tsc -p native/tsconfig.json",
+    "native:build": "tsc -p native/tsconfig.build.json",
+    "native:agent": "node native/dist/agentMain.js"
+  },
+  "dependencies": {
+    "@react-three/drei": "^10.7.8",
+    "@react-three/fiber": "^9.7.0",
+    "koffi": "^2.16.3",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "three": "^0.185.1",
+    "zustand": "^5.0.15"
+  },
+  "devDependencies": {
+    "@types/node": "^24.13.3",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.4",
+    "@vitejs/plugin-react": "^6.1.0",
+    "oxlint": "^1.79.0",
+    "typescript": "~6.0.2",
+    "vite": "^8.2.2",
+    "vitest": "^5.0.0"
+  }
+}
