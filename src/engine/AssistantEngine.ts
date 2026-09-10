@@ -62,6 +62,10 @@ import { createDeviceTools } from '../device'
 import type { DeviceProvider } from '../device'
 import { createWebTools } from '../web'
 import type { WebProvider } from '../web'
+import { createClipboardTools } from '../clipboard'
+import type { ClipboardProvider } from '../clipboard'
+import { createBrowserTools } from '../browser'
+import type { BrowserProvider } from '../browser'
 import { CapabilityRegistry, DEFAULT_CAPABILITIES, toCapabilityDefinition, recordReliability } from './capabilities'
 import type { CapabilityContext, CapabilityPreview, CapabilityReliabilityIndex } from './capabilities'
 import { discoverCapabilities } from './orchestrator/capabilityDiscovery'
@@ -72,6 +76,11 @@ import { planRequest } from './orchestrator/planner'
 import type { OrchestrationPlanStep, OrchestrationPlannedRequest, OrchestrationPlanContext } from './orchestrator/planner'
 import type { OrchestrationExecutionResult, OrchestrationExecutionStatus, OrchestrationStepOutcome, OrchestrationVerificationStatus } from './orchestrator/execution'
 import type { OrchestrationRequest, PersonalAICoreView } from './orchestrator/types'
+import { defaultAutonomy, isAutonomyLevel, autonomyAllowsAuto } from './autonomy/policy'
+import type { AutonomyLevel } from './autonomy/policy'
+import { AUTONOMY_LEVEL_LABELS } from './autonomy/policy'
+import { InMemoryTaskLog, createTaskId } from './observability/taskLog'
+import type { TaskLog, TaskLogEntry, TaskLogStep, TaskLogFailure } from './observability/taskLog'
 import {
   GOAL_LIMITS,
   taskBudgetExceeded,
@@ -230,6 +239,15 @@ export class AssistantEngine {
   // seam providers: without a reachable native Windows agent it is absent and
   // no web.* tools are ever registered.
   private web: WebProvider | undefined
+  // Phase 4.0 — the clipboard capability seam. OPTIONAL in the same way as the
+  // other seam providers: without a reachable native Windows agent it is absent
+  // and no clipboard.* tools are ever registered.
+  private clipboard: ClipboardProvider | undefined
+  // Phase 4.0 — the browser automation capability seam. OPTIONAL in the same
+  // way as the other seam providers: without a reachable native Windows agent
+  // or Playwright not installed, it is absent and no browser.* tools are
+  // ever registered.
+  private browser: BrowserProvider | undefined
   // Phase 3.0 — task context store for follow-up resolution and deictic references.
   private taskContextStore: TaskContextStore
   // Phase 3.0A — one stateless central orchestration core shared across runs.
@@ -293,13 +311,22 @@ export class AssistantEngine {
   /** Phase 2.6 — run facts captured when the action layer routes ONE request;
    * committed (with real outcome + artifacts) when the run terminates. */
   private actionRun: ExecutionRunFacts | null = null
+  // Phase 3.0 — bounded autonomy policy (engine-owned; the model can never
+  // raise it). Default `assisted` reproduces pre-Phase-3.0 behavior exactly.
+  private autonomyLevel: AutonomyLevel = defaultAutonomy()
+  // Phase 3.0 — structured task-execution log (injectable for tests/future sync).
+  private taskLog: TaskLog
 
-  constructor(options?: { providers?: AIProvider[]; fileSystem?: FileSystemProvider; applications?: ApplicationProvider; observation?: ObservationProvider; desktop?: DesktopProvider; vision?: VisionProvider; camera?: CameraController | null; device?: DeviceProvider; web?: WebProvider; goalLimits?: Partial<GoalLimits>; capabilities?: CapabilityDefinition[] }) {
+  constructor(options?: { providers?: AIProvider[]; fileSystem?: FileSystemProvider; applications?: ApplicationProvider; observation?: ObservationProvider; desktop?: DesktopProvider; vision?: VisionProvider; camera?: CameraController | null; device?: DeviceProvider; web?: WebProvider; clipboard?: ClipboardProvider; browser?: BrowserProvider; goalLimits?: Partial<GoalLimits>; capabilities?: CapabilityDefinition[]; autonomyLevel?: AutonomyLevel; taskLog?: TaskLog }) {
     // Phase 1.0 — provider injection seam: tests inject a scripted provider;
     // production defaults to the configured provider stack unchanged.
     const providers = options?.providers && options.providers.length ? [...options.providers] : createProviders()
     this.available = [...providers]
     this.provider = providers[0]
+    this.autonomyLevel = options?.autonomyLevel !== undefined && isAutonomyLevel(options.autonomyLevel)
+      ? options.autonomyLevel
+      : defaultAutonomy()
+    this.taskLog = options?.taskLog ?? new InMemoryTaskLog()
     // Phase 2.0 — goal budget limits are ADMIN-configured engine state. They
     // can never be lowered by the model; only engine construction may tune
     // the conservative defaults (see goal/budget.ts for the justification).
@@ -362,6 +389,15 @@ export class AssistantEngine {
     // Windows agent is unreachable, no web.* tools exist and the model can
     // never claim internet access it does not have.
     this.syncWeb(options?.web)
+    // Phase 4.0 — the clipboard capability seam (never fabricated). When the
+    // native Windows agent is unreachable, no clipboard.* tools exist and the
+    // model can never claim clipboard access it does not have.
+    this.syncClipboard(options?.clipboard)
+    // Phase 4.0 — the browser automation capability seam (never fabricated).
+    // When the native Windows agent is unreachable or Playwright is not
+    // installed, no browser.* tools exist and the model can never claim
+    // browser access it does not have.
+    this.syncBrowser(options?.browser)
     // Phase 3.0 — task context store for follow-up resolution.
     this.taskContextStore = new TaskContextStore()
     // Phase 2.3 — register the default capability catalogue, but ONLY those
@@ -448,6 +484,60 @@ export class AssistantEngine {
     }
   }
 
+  /** Phase 4.0 — (mid-session) bind or unbind the real clipboard provider.
+   * Safe to call at any time: it (re)registers clipboard tools and the
+   * clipboard capability cluster only while at least one real tool exists.
+   * Without a live provider the clipboard.* tools simply do not exist. */
+  attachClipboard(clipboard: ClipboardProvider | undefined): void {
+    this.syncClipboard(clipboard)
+  }
+
+  private syncClipboard(clipboard: ClipboardProvider | undefined): void {
+    const capIds = new Set(
+      DEFAULT_CAPABILITIES.filter((d) => d.category === 'clipboard').map((d) => d.id),
+    )
+    if (this.clipboard) {
+      for (const tool of createClipboardTools(this.clipboard)) this.registry.unregister(tool.id)
+      for (const id of capIds) this.capabilities.unregister(id)
+    }
+    this.clipboard = clipboard
+    if (clipboard) {
+      for (const tool of createClipboardTools(clipboard)) this.registry.register(tool)
+      for (const def of DEFAULT_CAPABILITIES) {
+        if (def.category === 'clipboard' && def.tools.some((id) => this.registry.get(id) !== undefined) && !this.capabilities.has(def.id)) {
+          this.capabilities.register(def)
+        }
+      }
+    }
+  }
+
+  /** Phase 4.0 — (mid-session) bind or unbind the real browser provider.
+   * Safe to call at any time: it (re)registers browser tools and the
+   * browser capability cluster only while at least one real tool exists.
+   * Without a live provider the browser.* tools simply do not exist. */
+  attachBrowser(browser: BrowserProvider | undefined): void {
+    this.syncBrowser(browser)
+  }
+
+  private syncBrowser(browser: BrowserProvider | undefined): void {
+    const capIds = new Set(
+      DEFAULT_CAPABILITIES.filter((d) => d.category === 'browser').map((d) => d.id),
+    )
+    if (this.browser) {
+      for (const tool of createBrowserTools(this.browser)) this.registry.unregister(tool.id)
+      for (const id of capIds) this.capabilities.unregister(id)
+    }
+    this.browser = browser
+    if (browser) {
+      for (const tool of createBrowserTools(browser)) this.registry.register(tool)
+      for (const def of DEFAULT_CAPABILITIES) {
+        if (def.category === 'browser' && def.tools.some((id) => this.registry.get(id) !== undefined) && !this.capabilities.has(def.id)) {
+          this.capabilities.register(def)
+        }
+      }
+    }
+  }
+
   /** Phase 2.3 — registered capability definitions the model may name.
    * Snapshot only: the model can never vote to add or change these. */
   capabilityCatalog(): CapabilityDefinition[] {
@@ -459,6 +549,22 @@ export class AssistantEngine {
    * model cannot reach this — engine construction and admin code only. */
   registerCapability(def: CapabilityDefinition): void {
     this.capabilities.register(def)
+  }
+
+  /** Phase 3.0 — the engine-owned autonomy policy (never model-controlled). */
+  autonomyProfile(): { level: AutonomyLevel; label: string } {
+    return { level: this.autonomyLevel, label: AUTONOMY_LEVEL_LABELS[this.autonomyLevel] }
+  }
+
+  /** Phase 3.0 — set the autonomy level. Validated; the hard floor (destructive /
+   * external / unknown categories) is still never waived at any level. */
+  setAutonomyLevel(level: AutonomyLevel): void {
+    if (isAutonomyLevel(level)) this.autonomyLevel = level
+  }
+
+  /** Phase 3.0 — bounded, content-free structured task-execution log. */
+  taskExecutionLog(): readonly TaskLogEntry[] {
+    return this.taskLog.entries()
   }
 
   /** Phase 3.0 — discover capabilities across all connected devices. */
@@ -560,25 +666,37 @@ export class AssistantEngine {
     if (request.requestClass === 'cancellation') {
       if (this.running || this.hasPendingConfirmation || this.orchestrationActive) {
         this.cancelCurrentTask()
-        return this.makeResult(request, 'cancelled', [], 'Cancelled via the existing cancellation rail.')
+        const result = this.makeResult(request, 'cancelled', [], 'Cancelled via the existing cancellation rail.')
+        this.recordTaskLogFor(request, result)
+        return result
       }
-      return this.makeResult(request, 'completed', [], 'No active task was running to cancel.')
+      const result = this.makeResult(request, 'completed', [], 'No active task was running to cancel.')
+      this.recordTaskLogFor(request, result)
+      return result
     }
 
     if (this.running) {
-      return this.makeResult(request, 'blocked', [], 'Another task is already running through the assistant loop.')
+      const result = this.makeResult(request, 'blocked', [], 'Another task is already running through the assistant loop.')
+      this.recordTaskLogFor(request, result)
+      return result
     }
     if (this.orchestrationActive) {
-      return this.makeResult(request, 'blocked', [], 'Another orchestrated plan is already executing.')
+      const result = this.makeResult(request, 'blocked', [], 'Another orchestrated plan is already executing.')
+      this.recordTaskLogFor(request, result)
+      return result
     }
 
     // Confirmation relay: a plain confirmation while the engine awaits one is
     // surfaced honestly — the engine itself still holds the decision.
     if (request.requestClass === 'confirmation') {
       if (this.hasPendingConfirmation) {
-        return this.makeResult(request, 'requires_confirmation', [], 'The engine is already awaiting an explicit confirmation.')
+        const result = this.makeResult(request, 'requires_confirmation', [], 'The engine is already awaiting an explicit confirmation.')
+        this.recordTaskLogFor(request, result)
+        return result
       }
-      return this.makeResult(request, 'completed', [], 'No pending confirmation to resolve.')
+      const result = this.makeResult(request, 'completed', [], 'No pending confirmation to resolve.')
+      this.recordTaskLogFor(request, result)
+      return result
     }
 
     this.orchestrationActive = true
@@ -587,16 +705,24 @@ export class AssistantEngine {
       // Plan (deterministic, bounded, composition-only).
       const plan = this.planOrchestrated(request)
       if (plan.verdict === 'clarification') {
-        return this.makeResult(request, 'requires_clarification', plan.steps, plan.reason)
+        const result = this.makeResult(request, 'requires_clarification', plan.steps, plan.reason)
+        this.recordTaskLogFor(request, result)
+        return result
       }
       if (plan.verdict === 'blocked') {
-        return this.makeResult(request, 'blocked', plan.steps, plan.reason)
+        const result = this.makeResult(request, 'blocked', plan.steps, plan.reason)
+        this.recordTaskLogFor(request, result)
+        return result
       }
       if (plan.verdict === 'empty') {
-        return this.makeResult(request, 'completed', plan.steps, plan.reason ?? 'No capability execution required.')
+        const result = this.makeResult(request, 'completed', plan.steps, plan.reason ?? 'No capability execution required.')
+        this.recordTaskLogFor(request, result)
+        return result
       }
       if (plan.steps.length === 0) {
-        return this.makeResult(request, 'blocked', plan.steps, 'Planned request produced no executable steps.')
+        const result = this.makeResult(request, 'blocked', plan.steps, 'Planned request produced no executable steps.')
+        this.recordTaskLogFor(request, result)
+        return result
       }
 
       // Untrusted provider-facing steps from the plan (capability-level). The
@@ -622,12 +748,14 @@ export class AssistantEngine {
       const rejected = preflight.verdicts.filter((v) => !v.ok)
       if (rejected.length > 0) {
         const first = rejected[0]
-        return this.makeResult(
+        const result = this.makeResult(
           request,
           'blocked',
           plan.steps,
           `Plan validation rejected "${first.toolId}": ${first.reason}`,
         )
+        this.recordTaskLogFor(request, result)
+        return result
       }
 
       // Prepared run context, mirroring process() reset semantics so budgets,
@@ -658,7 +786,7 @@ export class AssistantEngine {
         }
       }
 
-      return this.makeResult(
+      const result = this.makeResult(
         request,
         'completed',
         plan.steps,
@@ -667,16 +795,56 @@ export class AssistantEngine {
         failures,
         preflight.resolutions,
       )
+      this.recordTaskLogFor(request, result, failures, preflight.resolutions)
+      return result
     } catch (error) {
-      return this.makeResult(
+      const result = this.makeResult(
         request,
         'failed',
         [],
         error instanceof Error ? error.message : 'Unexpected bridge failure.',
       )
+      this.recordTaskLogFor(request, result)
+      return result
     } finally {
       this.orchestrationActive = false
     }
+  }
+
+  /** Phase 3.0 — append one bounded, content-free entry for an orchestration
+   * outcome to the task-execution log. Resolutions only include capabilities
+   * that really resolved to a tool; steps mirror the executed/refused outcome. */
+  private recordTaskLogFor(
+    request: OrchestrationRequest,
+    result: OrchestrationExecutionResult,
+    failures?: StepFailure[],
+    resolutions?: PlanStepResolution[],
+  ): void {
+    const now = new Date().toISOString()
+    const steps: TaskLogStep[] = result.steps.map((s) => ({
+      capability: s.capability,
+      toolId: s.toolId,
+      status: s.status,
+    }))
+    const recordedFailures: TaskLogFailure[] = (failures ?? []).map((f) => ({
+      toolId: f.toolId,
+      errorKind: f.errorKind,
+      summary: f.summary,
+    }))
+    const recordedResolutions = (resolutions ?? [])
+      .map((r) => ({ capability: r.capability, toolId: r.toolId, fallback: r.fallback }))
+    this.taskLog.record({
+      taskId: createTaskId(),
+      startedAt: now,
+      finishedAt: now,
+      goal: request.originalText,
+      autonomy: this.autonomyLevel,
+      resolutions: recordedResolutions,
+      steps,
+      failures: recordedFailures,
+      verdict: result.status,
+      reason: result.reason,
+    })
   }
 
   /**
@@ -693,7 +861,7 @@ export class AssistantEngine {
     reason?: string,
     trace?: AgentTrace,
     failures?: StepFailure[],
-    resolutions?: Array<{ stepIndex: number; toolId: string }>,
+    resolutions?: PlanStepResolution[],
   ): OrchestrationExecutionResult {
     const finishedAt = Date.now()
     const traceSteps = trace?.steps ?? []
@@ -1092,7 +1260,10 @@ export class AssistantEngine {
       // same recognition surface, so a real recognizer implies wake capability.
       wakeWordAvailable: canHear(),
       voiceInteractionAvailable: canHear() || canSpeak(),
-      aiConfigured: this.provider.isConfigured(),
+      // Phase 3.0 — truthfulness: the clearly-labelled dev mock provider is NOT
+      // an AI service, so it must never count as "AI configured/connected".
+      // `aiConfigured`/`aiConnected` are true ONLY for a real configured provider.
+      aiConfigured: this.provider.isConfigured() && this.provider.id !== 'mock',
       memoryEnabled: true,
       toolsEnabled: this.registry.size > 0,
       callingEnabled: false,
@@ -1111,7 +1282,7 @@ export class AssistantEngine {
     useJarvisStore.getState().setCapabilities(caps)
 
     const reachable = await this.provider.isReachable()
-    useJarvisStore.getState().setCapabilities({ aiConnected: reachable })
+    useJarvisStore.getState().setCapabilities({ aiConnected: reachable && this.provider.id !== 'mock' })
     this.emit({ type: 'status', status: 'idle' })
 
     if (this.provider.id === 'mock') {
@@ -1851,6 +2022,8 @@ export class AssistantEngine {
       this.replansUsed += 1
       this.tracer.recordEvent({ type: 'replan_accepted', at: Date.now() })
       this.setReplanContext(chosen.failure, chosen.kind, chosen.action, chosen.reason)
+      // Phase 3.0 — surface the real RECOVERING execution state (bounded replan).
+      this.setStatus('recovering')
       this.emit({
         type: 'notice',
         kind: 'info',
@@ -1869,6 +2042,8 @@ export class AssistantEngine {
       at: Date.now(),
     })
     const failure = chosen.failure
+    // Phase 3.0 — surface the real RECOVERING execution state (reobservation).
+    this.setStatus('recovering')
     this.setReplanContext(failure, chosen.kind, chosen.action, chosen.reason)
     this.priorFailedPlanSignature = roundSignature
     return null
@@ -2212,7 +2387,10 @@ export class AssistantEngine {
         this.setStatus('executing')
       }
 
-      // Permission gate
+      // Permission gate — Phase 3.0: a bounded, non-destructive, non-external,
+      // LOCAL tool that asks for confirmation may auto-run at a raised autonomy
+      // level. Destructive/external/unknown categories and every `high_risk`
+      // tool (already refused above) are NEVER derated by any autonomy level.
       const decision = decidePermission(tool, userText, input)
 
       if (decision.kind === 'denied') {
@@ -2240,7 +2418,7 @@ export class AssistantEngine {
         continue
       }
 
-      if (decision.kind === 'confirm') {
+      if (decision.kind === 'confirm' && !autonomyAllowsAuto(this.autonomyLevel, tool)) {
         // Tool requires explicit user confirmation
         this.setStatus('waiting_for_confirmation')
         this.emit({
@@ -2650,6 +2828,8 @@ export class AssistantEngine {
         return lastResult
       }
 
+      // Phase 3.0 — surface the real RETRYING execution state.
+      this.setStatus('retrying')
       // Brief backoff before retry
       await new Promise((r) => setTimeout(r, retryDecision.backoffMs))
     }

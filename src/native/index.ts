@@ -5,6 +5,8 @@ import type { ObservationProvider } from '../observation'
 import type { DesktopProvider } from '../desktop'
 import type { VisionProvider } from '../vision'
 import type { WebProvider } from '../web/provider'
+import type { ClipboardProvider } from '../clipboard/provider'
+import type { BrowserProvider } from '../browser/provider'
 import { createVisionProviderFromConfig, VISION_UNAVAILABLE_MESSAGE } from '../vision'
 import { NativeAgentRpc } from './nativeRpc'
 import { NativeWindowsFileSystemProvider } from './NativeWindowsFileSystemProvider'
@@ -12,6 +14,8 @@ import { NativeWindowsApplicationProvider } from './NativeWindowsApplicationProv
 import { NativeWindowsObservationProvider } from './NativeWindowsObservationProvider'
 import { NativeWindowsDesktopProvider } from './NativeWindowsDesktopProvider'
 import { NativeWindowsWebProvider } from './NativeWindowsWebProvider'
+import { NativeWindowsClipboardProvider } from './NativeWindowsClipboardProvider'
+import { NativeWindowsBrowserProvider } from './NativeWindowsBrowserProvider'
 
 /**
  * Web-side app bootstrap (Phase 1.2/1.3/1.4/1.5).
@@ -123,10 +127,46 @@ export function createDefaultAppVisionProvider(): VisionProvider | undefined {
   return createVisionProviderFromConfig()
 }
 
+/**
+ * Clipboard capability surface (Phase 4.0): a real provider when the native
+ * agent is configured, otherwise `undefined` (browser mode has no clipboard
+ * access). The engine only registers clipboard.* tools when this returns a
+ * provider.
+ */
+export function createDefaultAppClipboardProvider(): ClipboardProvider | undefined {
+  const env = (import.meta as unknown as { env?: Record<string, string | undefined> }).env ?? {}
+  const nativeUrl = env.VITE_NATIVE_AGENT_URL?.trim()
+  if (!nativeUrl) return undefined
+  return new NativeWindowsClipboardProvider({
+    baseUrl: nativeUrl,
+    token: env.VITE_NATIVE_AGENT_TOKEN ?? '',
+  })
+}
+
+/**
+ * Browser automation capability surface (Phase 4.0): a real provider when the
+ * native agent is configured, otherwise `undefined` (browser mode has no
+ * browser automation). The engine only registers browser.* tools when this
+ * returns a provider.
+ */
+export function createDefaultAppBrowserProvider(): BrowserProvider | undefined {
+  const env = (import.meta as unknown as { env?: Record<string, string | undefined> }).env ?? {}
+  const nativeUrl = env.VITE_NATIVE_AGENT_URL?.trim()
+  if (!nativeUrl) return undefined
+  return new NativeWindowsBrowserProvider({
+    baseUrl: nativeUrl,
+    token: env.VITE_NATIVE_AGENT_TOKEN ?? '',
+  })
+}
+
 export { NativeWindowsFileSystemProvider, isNativeWindowsProvider } from './NativeWindowsFileSystemProvider'
 export type { NativeBridgeOptions } from './NativeWindowsFileSystemProvider'
 export { NativeWindowsApplicationProvider, isNativeApplicationProvider } from './NativeWindowsApplicationProvider'
 export { NativeWindowsObservationProvider, isNativeObservationProvider } from './NativeWindowsObservationProvider'
 export { NativeWindowsDesktopProvider, isNativeDesktopProvider, unsupportedWebDesktopCapabilities } from './NativeWindowsDesktopProvider'
 export { NativeWindowsWebProvider } from './NativeWindowsWebProvider'
+export { NativeWindowsClipboardProvider } from './NativeWindowsClipboardProvider'
+export { NativeWindowsBrowserProvider } from './NativeWindowsBrowserProvider'
 export type { WebProvider, WebCapabilities, WebSearchOptions, WebFetchOptions, WebSearchResponse, WebDocument, WebDownloadResult } from '../web/provider'
+export type { ClipboardProvider, ClipboardCapabilities, ClipboardReadResult, ClipboardWriteResult } from '../clipboard/provider'
+export type { BrowserProvider, BrowserCapabilities, BrowserNavResult, BrowserReadPageResult, BrowserSearchResult } from '../browser/provider'

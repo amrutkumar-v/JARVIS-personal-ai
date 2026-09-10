@@ -10,7 +10,7 @@ import { BrowserTextToSpeechProvider } from '../voice/ttsProvider'
 import { useJarvisStore } from '../state/jarvis.store'
 import { syncGoalRun } from '../state/goalRun'
 import { canHear } from '../utils/capabilities'
-import { createDefaultAppFileSystemProvider, createDefaultAppApplicationProvider, createDefaultAppObservationProvider, createDefaultAppDesktopProvider, createDefaultAppVisionProvider, createDefaultAppWebProvider } from '../native'
+import { createDefaultAppFileSystemProvider, createDefaultAppApplicationProvider, createDefaultAppObservationProvider, createDefaultAppDesktopProvider, createDefaultAppVisionProvider, createDefaultAppWebProvider, createDefaultAppClipboardProvider, createDefaultAppBrowserProvider } from '../native'
 import { BackendClient } from '../backend/BackendClient'
 import { getBackendConfig } from '../backend/config'
 import type { BackendHealth } from '../backend/types'
@@ -40,6 +40,8 @@ const engine = useMemo(
         desktop: createDefaultAppDesktopProvider(),
         vision: createDefaultAppVisionProvider(),
         web: createDefaultAppWebProvider(),
+        clipboard: createDefaultAppClipboardProvider(),
+        browser: createDefaultAppBrowserProvider(),
       })
     },
     [],

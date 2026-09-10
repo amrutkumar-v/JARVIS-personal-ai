@@ -20,6 +20,8 @@ export const PARAMS: Record<JarvisStatus, VisualParams> = {
   executing:                 { color: new Color('#ffae5c'), active: 1.25, speed: 1.15, pulse: 2.60, speech: 0 },
   observing:                 { color: new Color('#3ecfe0'), active: 0.95, speed: 0.90, pulse: 2.30, speech: 0 },
   verifying:                 { color: new Color('#57e0a2'), active: 1.05, speed: 0.72, pulse: 2.85, speech: 0 },
+  recovering:                { color: new Color('#ffd166'), active: 1.10, speed: 0.85, pulse: 2.60, speech: 0 },
+  retrying:                  { color: new Color('#ffae5c'), active: 1.20, speed: 1.05, pulse: 2.45, speech: 0 },
   speaking:                  { color: new Color('#62e3ff'), active: 1.00, speed: 0.70, pulse: 2.30, speech: 1 },
   waiting_for_confirmation:  { color: new Color('#ffd166'), active: 0.90, speed: 0.48, pulse: 2.10, speech: 0 },
   success:                   { color: new Color('#57e0a2'), active: 1.10, speed: 0.90, pulse: 3.10, speech: 0 },

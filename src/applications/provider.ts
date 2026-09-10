@@ -56,6 +56,15 @@ export interface ApplicationProvider {
   list(): Promise<AppSpec[]>
   status(applicationId: string): Promise<AppStatus>
   launch(applicationId: string): Promise<AppLaunchResult>
+  /** Close a registered application by its id. Optional — only when the native agent supports it. */
+  close?(applicationId: string): Promise<AppCloseResult>
+}
+
+export interface AppCloseResult {
+  applicationId: string
+  terminated: boolean
+  verified: boolean
+  detail: string
 }
 
 /** Id charset matches APP_ID_PATTERN (dashboard-style, never a path). */

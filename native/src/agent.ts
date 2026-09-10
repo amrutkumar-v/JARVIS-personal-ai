@@ -34,6 +34,12 @@ import type { DesktopInteractionBackend } from './desktop.js'
 import { RealDesktopInteractionBackend } from './desktopInput.js'
 import type { WebBackend } from './web.js'
 import { RealWebBackend, WEB_LIMITS } from './web.js'
+import type { ClipboardBackend } from './clipboard.js'
+import { RealClipboardBackend } from './clipboardInput.js'
+import type { AppCloseBackend } from './appClose.js'
+import { RealAppCloseBackend } from './appClose.js'
+import type { BrowserBackend } from './browser.js'
+import { RealBrowserBackend } from './browserInput.js'
 
 /**
  * Native Windows Agent — JSON-RPC over loopback HTTP (Phase 1.2 + 1.5).
@@ -64,6 +70,12 @@ export interface AgentOptions {
   desktop?: DesktopInteractionBackend
   /** Web backend (Phase 2.9); defaults to the real bounded public-web backend. */
   web?: WebBackend
+  /** Clipboard backend (Phase 4.0); defaults to the real Win32 clipboard. */
+  clipboard?: ClipboardBackend
+  /** App-close backend (Phase 4.0); defaults to the real process termination. */
+  appClose?: AppCloseBackend
+  /** Browser backend (Phase 4.0); defaults to the real Playwright browser. */
+  browser?: BrowserBackend
   log?: (line: string) => void
 }
 
@@ -283,6 +295,9 @@ function createHandler(options: AgentOptions): (req: IncomingMessage, res: Serve
   const observation: ObservationBackend = options.observation ?? new RealObsBackend()
   const desktop: DesktopInteractionBackend = options.desktop ?? new RealDesktopInteractionBackend()
   const web: WebBackend = options.web ?? new RealWebBackend()
+  const clipboard: ClipboardBackend = options.clipboard ?? new RealClipboardBackend()
+  const appClose: AppCloseBackend = options.appClose ?? new RealAppCloseBackend()
+  const browser: BrowserBackend = options.browser ?? new RealBrowserBackend()
   const token = options.token ?? ''
   const requestTimeoutMs = options.requestTimeoutMs ?? NATIVE_LIMITS.REQUEST_TIMEOUT_MS
   const maxBodyBytes = options.maxBodyBytes ?? NATIVE_LIMITS.MAX_BODY_BYTES
@@ -493,6 +508,76 @@ function createHandler(options: AgentOptions): (req: IncomingMessage, res: Serve
             maxBytes: webBoundedNumber(params, 'maxBytes', WEB_LIMITS.MAX_DOWNLOAD_MAX_BYTES),
             timeoutMs: webBoundedNumber(params, 'timeoutMs', WEB_LIMITS.MAX_REQUEST_TIMEOUT_MS),
           })
+          return envelope(id, { result })
+        }
+        /* ----------------------------------------------------------- clipboard */
+        case 'clipboard.read': {
+          const result = await clipboard.read()
+          return envelope(id, { result })
+        }
+        case 'clipboard.write': {
+          const text = strParam(params, 'text')
+          const result = await clipboard.write(text)
+          return envelope(id, { result })
+        }
+        /* ----------------------------------------------------------- app close */
+        case 'app.close': {
+          const processName = strParam(params, 'processName')
+          const result = await appClose.close(processName)
+          return envelope(id, { result })
+        }
+        /* ------------------------------------------------------------ browser */
+        case 'browser.open': {
+          const url = optStr(params, 'url')
+          const result = await browser.open(url)
+          return envelope(id, { result })
+        }
+        case 'browser.navigate': {
+          const url = webUrlParam(params)
+          const result = await browser.navigate(url)
+          return envelope(id, { result })
+        }
+        case 'browser.back': {
+          const result = await browser.back()
+          return envelope(id, { result })
+        }
+        case 'browser.forward': {
+          const result = await browser.forward()
+          return envelope(id, { result })
+        }
+        case 'browser.refresh': {
+          const result = await browser.refresh()
+          return envelope(id, { result })
+        }
+        case 'browser.click': {
+          const selector = strParam(params, 'selector')
+          if (selector.length > 500) throw nativeError('invalid_argument', 'Selector too long.')
+          const result = await browser.click(selector)
+          return envelope(id, { result })
+        }
+        case 'browser.type': {
+          const selector = strParam(params, 'selector')
+          const text = strParam(params, 'text')
+          if (selector.length > 500) throw nativeError('invalid_argument', 'Selector too long.')
+          if (text.length > 10_000) throw nativeError('too_large', 'Text too long.')
+          const result = await browser.type(selector, text)
+          return envelope(id, { result })
+        }
+        case 'browser.readPage': {
+          const result = await browser.readPage()
+          return envelope(id, { result })
+        }
+        case 'browser.search': {
+          const query = webQueryParam(params)
+          const result = await browser.search(query)
+          return envelope(id, { result })
+        }
+        case 'browser.screenshot': {
+          const result = await browser.screenshot()
+          return envelope(id, { result })
+        }
+        case 'browser.close': {
+          const result = await browser.close()
           return envelope(id, { result })
         }
         default:

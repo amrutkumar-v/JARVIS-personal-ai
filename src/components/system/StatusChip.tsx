@@ -12,6 +12,8 @@ const LABELS: Record<JarvisStatus, string> = {
   cancelling: 'CANCELLING',
   speaking: 'SPEAKING',
   waiting_for_confirmation: 'CONFIRMATION',
+  recovering: 'RECOVERING',
+  retrying: 'RETRYING',
   success: 'DONE',
   warning: 'WARNING',
   error: 'ERROR',

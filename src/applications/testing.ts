@@ -1,5 +1,5 @@
 import { fsError } from '../filesystem'
-import type { AppLaunchResult, AppOp, AppSource, AppSpec, AppStatus, ApplicationCapabilities, ApplicationProvider } from './provider'
+import type { AppCloseResult, AppLaunchResult, AppOp, AppSource, AppSpec, AppStatus, ApplicationCapabilities, ApplicationProvider } from './provider'
 
 /**
  * Deterministic in-memory application provider for TESTS ONLY.
@@ -46,6 +46,7 @@ export class FakeApplicationProvider implements ApplicationProvider {
   private readonly store = new Map<string, SeedState>()
   private readonly failures = new Map<string, NonNullable<AppSeed['fail']>>()
   private readonly launches = new Map<string, number>()
+  private readonly closed = new Set<string>()
   private available = true
 
   constructor(seeds: AppSeed[] = []) {
@@ -130,6 +131,22 @@ export class FakeApplicationProvider implements ApplicationProvider {
       verified: false,
       detail: `Launch succeeded but the process was not observed running.`,
     })
+  }
+
+  async close(applicationId: string): Promise<AppCloseResult> {
+    this.checkFail('launch', applicationId)
+    const state = this.store.get(applicationId)
+    if (!state) throw fsError('not_found', `No approved application with id "${applicationId}".`, applicationId)
+    const wasRunning = this.launchCount(applicationId) > 0 && !this.closed.has(applicationId)
+    this.closed.add(applicationId)
+    return {
+      applicationId,
+      terminated: wasRunning,
+      verified: wasRunning,
+      detail: wasRunning
+        ? `Closed "${applicationId}" and confirmed it is no longer running.`
+        : `"${applicationId}" was not running.`,
+    }
   }
 
   /* ------------------------------------------------ internals */

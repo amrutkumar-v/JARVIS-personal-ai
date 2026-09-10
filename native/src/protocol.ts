@@ -30,6 +30,7 @@ export type NativeMethod =
   | 'app.list'
   | 'app.status'
   | 'app.launch'
+  | 'app.close'
   | 'window.list'
   | 'window.status'
   | 'desktop.screenshot'
@@ -48,6 +49,19 @@ export type NativeMethod =
   | 'web.search'
   | 'web.fetch'
   | 'web.download'
+  | 'clipboard.read'
+  | 'clipboard.write'
+  | 'browser.open'
+  | 'browser.navigate'
+  | 'browser.back'
+  | 'browser.forward'
+  | 'browser.refresh'
+  | 'browser.click'
+  | 'browser.type'
+  | 'browser.readPage'
+  | 'browser.search'
+  | 'browser.screenshot'
+  | 'browser.close'
 
 /** Allow-list: the ONLY methods the agent will ever dispatch. */
 export const NATIVE_METHODS: readonly NativeMethod[] = [
@@ -66,6 +80,7 @@ export const NATIVE_METHODS: readonly NativeMethod[] = [
   'app.list',
   'app.status',
   'app.launch',
+  'app.close',
   'window.list',
   'window.status',
   'desktop.screenshot',
@@ -84,6 +99,19 @@ export const NATIVE_METHODS: readonly NativeMethod[] = [
   'web.search',
   'web.fetch',
   'web.download',
+  'clipboard.read',
+  'clipboard.write',
+  'browser.open',
+  'browser.navigate',
+  'browser.back',
+  'browser.forward',
+  'browser.refresh',
+  'browser.click',
+  'browser.type',
+  'browser.readPage',
+  'browser.search',
+  'browser.screenshot',
+  'browser.close',
 ]
 
 /**
@@ -406,4 +434,82 @@ export interface NativeDownloadResponse {
   truncated: boolean
   size: number
   fetchedAt: number
+}
+
+/* ----------------------------------------------------------- clipboard */
+
+export interface NativeClipboardReadResult {
+  success: boolean
+  /** The clipboard text content (UTF-16 on Windows). */
+  text: string
+  /** Byte length of the UTF-16 text read. */
+  byteLength: number
+  /** True when the read was verified. */
+  verified: boolean
+}
+
+export interface NativeClipboardWriteResult {
+  success: boolean
+  /** Byte length of the UTF-16 text written. */
+  byteLength: number
+  /** True when the write was verified by reading back. */
+  verified: boolean
+}
+
+/* ----------------------------------------------------------- app close */
+
+export interface NativeAppCloseResult {
+  applicationId: string
+  terminated: boolean
+  /** True when the process was confirmed not running. */
+  verified: boolean
+  /** Provider-safe explanation. */
+  detail: string
+}
+
+/* ------------------------------------------------------------ browser */
+
+export interface NativeBrowserOpenResult {
+  success: boolean
+  url: string
+}
+
+export interface NativeBrowserNavResult {
+  success: boolean
+  url: string
+  title: string
+  verified: boolean
+}
+
+export interface NativeBrowserActionResult {
+  success: boolean
+  url: string
+  title: string
+}
+
+export interface NativeBrowserTypeResult {
+  success: boolean
+  verified: boolean
+}
+
+export interface NativeBrowserReadPageResult {
+  success: boolean
+  title: string
+  url: string
+  text: string
+}
+
+export interface NativeBrowserSearchResult {
+  success: boolean
+  url: string
+  title: string
+  results: Array<{ title: string; url: string; snippet: string }>
+}
+
+export interface NativeBrowserScreenshotResult {
+  success: boolean
+  width: number
+  height: number
+  bytes: string
+  format: 'png'
 }

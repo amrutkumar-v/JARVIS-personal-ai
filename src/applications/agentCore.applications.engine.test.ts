@@ -81,7 +81,7 @@ describe('Applications agent (engine-level, scripted provider)', () => {
     const apps = new FakeApplicationProvider([{ applicationId: 'notepad' }])
     const engine = new AssistantEngine({ providers: [new ScriptedProvider([])], applications: apps })
     const ids = engine.tools.ids().filter((id) => id.startsWith('app.'))
-    expect(ids).toEqual(['app.list', 'app.status', 'app.launch'])
+    expect(ids).toEqual(['app.list', 'app.status', 'app.launch', 'app.close'])
     expect(engine.applicationProvider).toBe(apps)
     expect((engine.applicationProvider as unknown as { testsOnly?: boolean }).testsOnly).toBe(true)
   })

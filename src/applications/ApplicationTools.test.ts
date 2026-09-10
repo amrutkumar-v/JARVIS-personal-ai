@@ -176,3 +176,44 @@ describe('E — browser mode registers no app tools', () => {
     expect(createApplicationTools(undefined)).toEqual([])
   })
 })
+
+/* ---------------------------------------------------------------- close */
+
+describe('F — app.close', () => {
+  it('registers app.close tool when provider has close method', () => {
+    expect(tools.has('app.close')).toBe(true)
+  })
+
+  it('app.close is user_confirmation and verifiable', () => {
+    const closeTool = tools.get('app.close')!
+    expect(closeTool.permission).toBe('user_confirmation')
+    expect(closeTool.verifiable).toBe(true)
+    expect(requiresUserConfirmation(closeTool)).toBe(true)
+  })
+
+  it('closes a running application', async () => {
+    await call(tools.get('app.launch')!, { application_id: 'notepad' })
+    const result = await call(tools.get('app.close')!, { application_id: 'notepad' })
+    expect(result.ok).toBe(true)
+    expect(result.message).toContain('Closed')
+  })
+
+  it('handles closing an already-closed application', async () => {
+    const result = await call(tools.get('app.close')!, { application_id: 'notepad' })
+    expect(result.ok).toBe(false)
+    expect(result.message).toContain('not running')
+  })
+
+  it('requires application_id', async () => {
+    const result = await call(tools.get('app.close')!, {})
+    expect(result.ok).toBe(false)
+    expect(result.message).toContain('application_id')
+  })
+
+  it('returns unavailable when provider is disconnected', async () => {
+    provider.setAvailable(false)
+    const result = await call(tools.get('app.close')!, { application_id: 'notepad' })
+    expect(result.ok).toBe(false)
+    expect(result.message).toMatch(/not available/i)
+  })
+})

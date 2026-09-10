@@ -15,3 +15,5 @@ export type {
   ToolRetryPolicy,
 } from './Tool'
 export type { ToolDefinition, ToolCallRecord, ToolResultRecord } from '../engine/provider'
+export { createClipboardTools } from '../clipboard'
+export { createBrowserTools } from '../browser'

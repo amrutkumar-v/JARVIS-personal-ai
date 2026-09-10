@@ -224,8 +224,87 @@ export class AppLaunchTool extends AppTool {
   }
 }
 
+/* ---------------------------------------------------------------- close */
+
+export class AppCloseTool extends AppTool {
+  readonly id = 'app.close'
+  readonly name = 'Close application'
+  readonly description =
+    'Closes a running application by its registered application id. The native agent resolves the process and terminates it safely. Verification confirms the process is no longer running.'
+  readonly permission: ToolPermission = 'user_confirmation'
+  readonly verifiable = true
+  readonly inputSchema: ToolInputSchema = {
+    type: 'object',
+    properties: {
+      application_id: { type: 'string', description: 'Application id from app.list.' },
+    },
+    required: ['application_id'],
+  }
+
+  canRun(query: string): boolean {
+    return /\b(close|quit|exit|kill|shut\s*down|stop)\b/i.test(query) &&
+      /\b(app|application|program|notepad|court|calendar|browser)\b/i.test(query)
+  }
+
+  async execute(input: ToolInput): Promise<ToolResult> {
+    const blocker = availabilityBlocker(this.provider)
+    if (blocker) return blocker
+    if (!this.provider.close) {
+      return { ok: false, message: 'Application close is not supported by the current provider.' }
+    }
+    const raw = paramStr(input, 'application_id')
+    if (!raw) return { ok: false, message: 'Close which application? Provide application_id.', data: { kind: 'invalid_input' } }
+    const parsed = normalizeApplicationId(raw)
+    if ('error' in parsed) return { ok: false, message: parsed.error, data: { kind: 'invalid_input' } }
+    try {
+      const result = await this.provider.close(parsed.id)
+      if (!result.terminated) {
+        return { ok: false, message: result.detail, data: result }
+      }
+      return {
+        ok: true,
+        message: result.verified
+          ? result.detail
+          : `${result.detail} (verification not available)`,
+        data: result,
+      }
+    } catch (error) {
+      return appFailure(error)
+    }
+  }
+
+  verify(input: ToolInput): Promise<ToolVerification> {
+    const raw = paramStr(input, 'application_id')
+    const parsed = raw ? normalizeApplicationId(raw) : undefined
+    const id = parsed && 'id' in parsed ? parsed.id : undefined
+    if (!id) {
+      return Promise.resolve({ ok: false, message: 'No valid application_id to verify.' })
+    }
+    return this.provider
+      .status(id)
+      .then((status) =>
+        !status.running && status.runningVerified
+          ? { ok: true, message: `Confirmed "${status.displayName}" is no longer running.`, checks: ['process terminated'] }
+          : status.running
+            ? { ok: false, message: `Verification failed: "${status.applicationId}" is still running.` }
+            : {
+                ok: false,
+                message: `Verification unavailable: the platform cannot confirm running state for "${status.applicationId}".`,
+              },
+      )
+      .catch((error) => {
+        const message = error instanceof Error ? error.message : 'Unknown verification failure.'
+        return { ok: false, message: `Verification failed: ${message}` }
+      })
+  }
+}
+
 /** All application tools bound to one provider (empty when none supplied). */
 export function createApplicationTools(provider: ApplicationProvider | undefined): Tool[] {
   if (!provider) return []
-  return [new AppListTool(provider), new AppStatusTool(provider), new AppLaunchTool(provider)]
+  const tools: Tool[] = [new AppListTool(provider), new AppStatusTool(provider), new AppLaunchTool(provider)]
+  if (provider.close) {
+    tools.push(new AppCloseTool(provider))
+  }
+  return tools
 }

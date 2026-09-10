@@ -1,7 +1,7 @@
 export interface Capabilities {
   /** Configured AI provider is reachable enough to answer. */
   aiConnected: boolean
-  /** A configured provider is dialled in (mock provider => true). */
+  /** A configured REAL AI provider is dialled in (mock provider ≠ AI). */
   aiConfigured: boolean
   /** Real speech recognition surface is available. */
   speechRecognitionAvailable: boolean

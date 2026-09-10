@@ -19,6 +19,8 @@ export type JarvisStatus =
   | 'cancelling'
   | 'speaking'
   | 'waiting_for_confirmation'
+  | 'recovering'
+  | 'retrying'
   | 'success'
   | 'warning'
   | 'error'

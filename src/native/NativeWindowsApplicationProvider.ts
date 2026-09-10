@@ -1,4 +1,5 @@
 import type {
+  AppCloseResult,
   AppLaunchResult,
   AppOp,
   AppSource,
@@ -85,6 +86,21 @@ export class NativeWindowsApplicationProvider implements ApplicationProvider {
       applicationId: entry.applicationId,
       started: entry.started,
       pid: entry.pid,
+      verified: entry.verified,
+      detail: entry.detail,
+    }
+  }
+
+  async close(applicationId: string): Promise<AppCloseResult> {
+    const entry = await this.rpc.call<{
+      applicationId: string
+      terminated: boolean
+      verified: boolean
+      detail: string
+    }>('app.close', { processName: applicationId })
+    return {
+      applicationId: entry.applicationId,
+      terminated: entry.terminated,
       verified: entry.verified,
       detail: entry.detail,
     }
