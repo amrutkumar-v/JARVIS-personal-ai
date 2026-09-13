@@ -10,7 +10,7 @@
  */
 
 export const NATIVE_PROTOCOL = 'jarvis-native-1'
-export const NATIVE_AGENT_VERSION = '2.9.0'
+export const NATIVE_AGENT_VERSION = '2.9.1'
 export const NATIVE_DEFAULT_PORT = 8765
 export const NATIVE_DEFAULT_HOST = '127.0.0.1'
 
@@ -31,6 +31,7 @@ export type NativeMethod =
   | 'app.status'
   | 'app.launch'
   | 'app.close'
+  | 'app.refresh'
   | 'window.list'
   | 'window.status'
   | 'desktop.screenshot'
@@ -81,6 +82,7 @@ export const NATIVE_METHODS: readonly NativeMethod[] = [
   'app.status',
   'app.launch',
   'app.close',
+  'app.refresh',
   'window.list',
   'window.status',
   'desktop.screenshot',
@@ -150,6 +152,10 @@ export type NativeErrorCode =
   /** A change did not hold after execution (verification phase). */
   | 'verification_failed'
   | 'io_error'
+  /** The request's browser origin is not in the agent's CORS allow-list. */
+  | 'origin_denied'
+  /** A claimed application name matched more than one registered application. */
+  | 'ambiguous'
 
 export interface NativeRequest {
   jsonrpc: '2.0'
@@ -206,11 +212,37 @@ export interface NativeAppSpec {
   name: string
   displayName: string
   /** Where the entry came from. */
-  source: 'configured' | 'discovered'
+  source: 'configured' | 'discovered' | 'appPaths' | 'packaged' | 'system'
   /** Explicit allow-list flag; disabled apps never launch. */
   enabled: boolean
   /** True when the agent can actually start the resolved target. */
   launchable: boolean
+  /**
+   * How the agent starts this application. `exe` spawns a real executable;
+   * `aumid` routes a packaged/Store app through `explorer.exe
+   * shell:AppsFolder\<aumid>`; `uri` routes a safe URI (e.g. `ms-settings:`)
+   * through `explorer.exe`. Never built from user text — always validated.
+   */
+  launchMechanism?: 'exe' | 'aumid' | 'uri'
+  /** Extra names the registry can resolve for this application (never targets). */
+  aliases?: string[]
+  /**
+   * Actual process-image name (basename without `.exe`) used for running-state
+   * observation. Absent when the platform cannot observe the app's process
+   * (e.g. packaged/Store apps observed only through a host process).
+   */
+  processImage?: string
+}
+
+export interface NativeAppRefreshResult {
+  /** Total records after the refresh (configured + discovered). */
+  total: number
+  /** Count of discovered entries alive after the refresh. */
+  discovered: number
+  /** Count of configured entries. */
+  configured: number
+  /** Wall-clock time the refresh finished. */
+  refreshedAt: number
 }
 
 export interface NativeAppStatusResult extends NativeAppSpec {

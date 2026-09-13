@@ -34,6 +34,7 @@ export {
 export {
   OpenAIEmbeddingProvider,
   openAIEmbeddingProvider,
+  isEmbeddingEndpointExplicitlyConfigured,
 } from './openaiEmbeddingProvider'
 export type { BackfillResult, DeduplicationResult } from './embeddingManager'
 export {
@@ -41,6 +42,7 @@ export {
   createEmbeddingManager,
   getDefaultEmbeddingManager,
   resetDefaultEmbeddingManager,
+  resolveDefaultEmbeddingProvider,
 } from './embeddingManager'
 export {
   hybridScore,

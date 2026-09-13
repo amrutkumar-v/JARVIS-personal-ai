@@ -4,6 +4,7 @@ import type { EngineOutMessage, ToolConfirmationRequest, MemoryConfirmRequest, T
 import { BrowserVoiceInput } from '../voice/VoiceInput'
 import type { VoiceOutput } from '../voice/VoiceOutput'
 import { VoiceManager } from '../voice/voiceManager'
+import { VoiceDiagnostics } from '../voice/diagnostics'
 import { BrowserWakeWordProvider } from '../voice/wakeWordProvider'
 import { BrowserSpeechToTextProvider } from '../voice/speechProvider'
 import { BrowserTextToSpeechProvider } from '../voice/ttsProvider'
@@ -16,6 +17,9 @@ import { getBackendConfig } from '../backend/config'
 import type { BackendHealth } from '../backend/types'
 import { BackendDeviceProvider } from '../device'
 import { WebCameraController } from '../camera'
+import { GestureController, createMediaPipeTracker, GESTURE_ACTION_MAP } from '../gesture'
+import { LocalScheduler } from '../scheduling/scheduler'
+import type { ScheduledItem } from '../scheduling/scheduler'
 
 export type ConfirmationRequest = ToolConfirmationRequest | MemoryConfirmRequest
 
@@ -54,6 +58,32 @@ const engine = useMemo(
    */
   const deviceProviderRef = useRef<BackendDeviceProvider | null>(null)
 
+  /* ---- Phase 11 reminders: one REAL LocalScheduler per session ----
+   * Attached to the engine so scheduling.* tools exist; due reminders fire
+   * through the SAME single engine entry point as text/voice/device. Missed
+   * runs are caught up honestly (fired once, marked missed). The scheduler
+   * only runs while the app is open — there is no background OS timer.
+   */
+  useEffect(() => {
+    const scheduler = new LocalScheduler()
+    engine.attachScheduling(scheduler)
+    const refreshScheduled = () => {
+      useJarvisStore.getState().setSchedule(engine.scheduledItems())
+    }
+    scheduler.start((item: ScheduledItem, missed: boolean) => {
+      const s = useJarvisStore.getState()
+      s.pushNotice(missed ? 'warning' : 'info', missed ? `Missed then re-run: "${item.text}"` : `Reminder: "${item.text}"`)
+      refreshScheduled()
+      void engine.process(item.text, { channel: 'scheduled' })
+    })
+    refreshScheduled()
+    return () => {
+      scheduler.stop()
+      engine.attachScheduling(undefined)
+      useJarvisStore.getState().setSchedule([])
+    }
+  }, [engine])
+
   useEffect(() => {
     const client = new BackendClient()
     backendClientRef.current = client
@@ -68,8 +98,11 @@ const engine = useMemo(
   const inputRef = useRef<BrowserVoiceInput | null>(null)
   const outputRef = useRef<VoiceOutput | null>(null)
   const voiceManagerRef = useRef<VoiceManager | null>(null)
+  const voiceDiagRef = useRef<VoiceDiagnostics | null>(null)
   // Phase 2.7 — the REAL browser webcam controller (never a mock).
   const cameraRef = useRef<WebCameraController | null>(null)
+  // Phase 10 — the REAL hand-gesture controller (never a mock).
+  const gestureRef = useRef<GestureController | null>(null)
   const [confirmation, setConfirmation] = useState<ConfirmationRequest | null>(null)
   const [task, setTask] = useState<TaskSnapshot>({ active: false, label: '', step: 0, total: 0, status: 'COMPLETED' })
 
@@ -78,12 +111,15 @@ const engine = useMemo(
     // Phase 2.1 — the Goal panel mirrors ONLY engine getters. Refreshed on
     // every engine message (and on mount) so live plan/running states, budgets
     // and the final verdict all come from the engine, never from the UI.
-    const refreshGoalRun = () =>
+    const refreshGoalRun = () => {
       syncGoalRun(
         engine,
         () => useJarvisStore.getState().goalMode,
         (snapshot) => useJarvisStore.getState().setGoalRun(snapshot),
       )
+      // Phase 11 — keep the live reminder list mirrored (real engine state).
+      useJarvisStore.getState().setSchedule(engine.scheduledItems())
+    }
 
     const off = engine.on((m: EngineOutMessage) => {
       const s = useJarvisStore.getState()
@@ -117,6 +153,9 @@ const engine = useMemo(
         case 'error':
           s.pushNotice('error', m.message)
           break
+        case 'capabilities':
+          useJarvisStore.getState().setCapCatalog(m.capabilities)
+          break
         case 'transcript':
         case 'tool':
         case 'memory':
@@ -134,6 +173,7 @@ const engine = useMemo(
           break
         case 'task':
           setTask(m.task)
+          useJarvisStore.getState().setTask(m.task)
           break
       }
       refreshGoalRun()
@@ -164,6 +204,65 @@ const engine = useMemo(
       controller.dispose()
       engine.attachCamera(null)
       cameraRef.current = null
+    }
+  }, [engine])
+
+  /* ---- Phase 10 hand gestures: one REAL controller wired to the camera + engine ---- */
+  useEffect(() => {
+    const camera = cameraRef.current
+    if (!camera) return
+    let mounted = true
+    let lastCameraActive = camera.capabilities().active
+    const controller = new GestureController({
+      camera,
+      trackerFactory: () => createMediaPipeTracker(),
+      videoHost: typeof document !== 'undefined' ? document.body : null,
+      onIntent: (intent) => {
+        // Gesture → command → the SAME normalized engine action surface
+        // voice + UI already reach; recognition ≠ action, the engine verifies.
+        engine.runSelfAction(GESTURE_ACTION_MAP[intent.gesture])
+      },
+      onStatus: (status) => {
+        if (!mounted) return
+        useJarvisStore.getState().setGesture({
+          active: status.active,
+          modelReady: status.modelReady,
+          hands: status.hands,
+          quality: status.quality,
+          phase: status.phase,
+          lastGesture: status.lastGesture,
+          error: status.error,
+        })
+      },
+    })
+    gestureRef.current = controller
+    useJarvisStore.getState().setGesture({
+      modelReady: false,
+      error: undefined,
+    })
+
+    // Gestures are ON BY DEFAULT — there is no separate toggle. The controller
+    // runs on the SAME camera stream the operator already controls: it starts
+    // the moment the camera becomes active and stops the moment it is released.
+    // Starting the camera is itself a user action, so this never triggers an
+    // autoplay-permission prompt on load.
+    const syncToCamera = (active: boolean): void => {
+      if (lastCameraActive === active) return
+      lastCameraActive = active
+      if (!mounted) return
+      if (active) void controller.start()
+      else controller.stop()
+    }
+    const unsubCamera = useJarvisStore.subscribe((s) => {
+      syncToCamera(s.camera.active)
+    })
+    syncToCamera(lastCameraActive)
+
+    return () => {
+      mounted = false
+      unsubCamera()
+      gestureRef.current = null
+      controller.dispose()
     }
   }, [engine])
 
@@ -296,10 +395,14 @@ const engine = useMemo(
         return tts.supported
       },
     }
+    // Phase 13 — voice diagnostics feed the runtime readiness/self-test surface.
+    const voiceDiag = new VoiceDiagnostics()
+    voiceDiagRef.current = voiceDiag
     const manager = new VoiceManager({
       wake: new BrowserWakeWordProvider(),
       stt: new BrowserSpeechToTextProvider(),
       tts,
+      diagnostics: voiceDiag,
       callbacks: {
         submitCommand: (text) => {
           // Phase 2.5 — the wake/voice session feeds the SAME engine entry.
@@ -478,6 +581,7 @@ const disarmWake = useCallback(() => {
     isRecognizing: useJarvisStore.use.isRecognizing(),
     interimText: useJarvisStore.use.interimText(),
     capabilities: useJarvisStore.use.capabilities(),
+    catalog: useJarvisStore.use.capCatalog(),
     preferences: useJarvisStore.use.preferences(),
     profile: useJarvisStore.use.profile(),
     activities: useJarvisStore.use.activities(),
@@ -486,7 +590,9 @@ const disarmWake = useCallback(() => {
     voiceState: useJarvisStore.use.voiceState(),
     voiceArmed: useJarvisStore.use.voiceArmed(),
     camera: useJarvisStore.use.camera(),
+    gesture: useJarvisStore.use.gesture(),
     backend: useJarvisStore.use.backend(),
+    schedule: useJarvisStore.use.schedule(),
     engine,
     confirmation,
     acceptConfirmation,

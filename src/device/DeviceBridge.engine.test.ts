@@ -95,6 +95,14 @@ class FakeDeviceProvider implements DeviceProvider {
   sendFile(name: string) {
     return Promise.resolve({ ok: true, file: { id: 'f-1', name, size: 3, url: '/api/files/f-1' } })
   }
+
+  openUrl(_deviceId: string, _url: string) {
+    return Promise.resolve({ success: true })
+  }
+
+  refreshDevices(): Promise<DeviceRecord[]> {
+    return Promise.resolve([DEVICE])
+  }
 }
 
 describe('Phase 2.8 — device bridge seams', () => {

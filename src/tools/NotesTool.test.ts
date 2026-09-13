@@ -50,13 +50,13 @@ describe('NotesTool (memory-backed)', () => {
   })
 
   it('recalls a matching note', async () => {
-    memory.addNote('The password hint is sky-blue')
+    memory.addNote('my favorite coffee order is a flat white with oat milk')
     const res = await tool.execute(
-      { query: 'what do you remember', params: { action: 'recall', query: 'password hint' } },
+      { query: 'what do you remember', params: { action: 'recall', query: 'coffee order' } },
       ctx,
     )
     expect(res.ok).toBe(true)
-    expect(res.message).toContain('sky-blue')
+    expect(res.message).toContain('oat milk')
   })
 
   it('reports honestly when nothing matches', async () => {

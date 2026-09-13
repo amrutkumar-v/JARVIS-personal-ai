@@ -33,6 +33,30 @@ export function looksLikeCredential(text: string): boolean {
   return false
 }
 
+/**
+ * HIGH-CONFIDENCE credential detector, enforced at the memory WRITE BOUNDARY.
+ *
+ * `looksLikeCredential` is intentionally broad (it powers the auto-capture
+ * safety net and the memory tool), so a false positive only means "don't
+ * auto-remember this sentence". At `MemoryManager.remember/update` we must
+ * NEVER reject a legitimately remembered sentence, so only unambiguous
+ * credential phrasing counts — generic prose uses of "secret"/"token" (e.g.
+ * "kept secret", "token ring") remain storable, while anything carrying an
+ * actual password/api-key/bearer/otp/private-key/connection-string marker or
+ * a high-entropy blob is refused.
+ */
+export function looksLikeHighRiskCredential(text: string): boolean {
+  const low = text.toLowerCase()
+  const markers =
+    /\b(password|passwd|pwd|api[ _-]?key|api-key|authorization|bearer|client[ _-]?secret|private[ _-]?key|connection[ _-]?string|otp|one[- ]?time[ -]?passcode|2fa|two[- ]?factor)\b/i
+  if (markers.test(low)) return true
+  // 20+ char base64-ish blob in the same string as a key-like word.
+  if (/[A-Za-z0-9+/]{20,}={0,2}/.test(low) && /\b(key|token|secret|pass)\b/i.test(low)) return true
+  // A bearer/authorization prefix is never prose.
+  if (/^bearer\s+/i.test(low) || /^authorization\s*:/i.test(low)) return true
+  return false
+}
+
 const MEMORY_COMMANDS = /\b(remember|recall|remembered|recalled|forget|forgot|search|list|clear)\b/i
 
 /**
@@ -120,9 +144,44 @@ export function isDurableFact(content: string): boolean {
   return /\bmy\b|\bi am\b|\bi prefer\b|\bi work|\bi study|\bi live|\bi use\b/i.test(c)
 }
 
+/**
+ * Determine the ORIGIN of a durable fact from its content.
+ *
+ * The architecture models three sources (`MemorySource`):
+ *   - 'user'     — the fact was voiced by the user (explicit memory command or
+ *                  a first-person personal claim/preference).
+ *   - 'inferred' — JARVIS derived the fact (in-passing capture, third-person
+ *                  summaries with no user voice).
+ *   - 'system'   — written by a system process.
+ *
+ * Only content is available here, so 'system' is never returned: a system
+ * origin cannot be honestly detected from free text. Callers that know the
+ * write path (e.g. the engine's auto-capture) pass an explicit source instead.
+ */
 export function detectSource(content: string): MemorySource {
-  if (/\bremember\b/i.test(content)) return 'user'
-  return 'user'
+  const clean = (content ?? '').trim()
+  if (!clean) return 'user'
+  // JARVIS-authored narration ("jarvis recalled…", "the user …") is JARVIS's
+  // summary → inferred. A vocative ("jarvis, …") means the USER is addressing
+  // JARVIS, so those fall through to the command/voice checks below.
+  if (!/^jarvis[,:!]/i.test(clean) && /\b(the user|jarvis)\b/i.test(clean)) return 'inferred'
+  // Explicit "remember/save/..." phrasing always originates from the user.
+  if (isExplicitMemoryCommand(clean)) return 'user'
+  // First-person personal statements are the user's own words.
+  if (hasUserVoice(clean)) return 'user'
+  // No user voice (detached summary) → JARVIS derived it.
+  return 'inferred'
+}
+
+/** First-person cues that mark a fact as explicitly voiced by the user. */
+function hasUserVoice(content: string): boolean {
+  return (
+    PROFILE_PATTERNS.some((re) => re.test(content)) ||
+    PREFERENCE_PATTERNS.some((re) => re.test(content)) ||
+    FACT_PATTERNS.some((re) => re.test(content)) ||
+    /\bmy\b/i.test(content) ||
+    /\bi['’]m\b|\bi am\b|\bi work\b|\bi live\b|\bi prefer\b|\bi use\b|\bi like\b|\bi play\b|\bi study\b|\bi code\b|\bi started\b/i.test(content)
+  )
 }
 
 /** Normalize a durable fact caught mid-sentence, e.g. "remember that X". */

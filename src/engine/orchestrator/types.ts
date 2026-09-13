@@ -59,11 +59,12 @@ export interface PersonalAICoreView {
       }
     | undefined
   hasActiveTask(): boolean
-  fileSystemProvider: unknown
-  applicationProvider: unknown
-  observationProvider: unknown
-  desktopProvider: unknown
-  visionProvider: unknown
-  cameraProvider: unknown
-  webProvider: unknown
+  fileSystem: unknown
+  applications: unknown
+  observation: unknown
+  desktop: unknown
+  vision: unknown
+  camera: unknown
+  web: unknown
+  clipboard: unknown
 }

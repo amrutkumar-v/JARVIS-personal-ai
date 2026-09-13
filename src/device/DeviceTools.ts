@@ -1,6 +1,6 @@
 import type { Tool, ToolCategory, ToolContext, ToolContextId, ToolInput, ToolPermission, ToolResult, ToolVerification } from '../tools/Tool'
 import type { ToolInputSchema } from '../engine/provider'
-import type { DeviceRecord } from '../backend/types'
+import type { DeviceErrorKind, DeviceRecord } from '../backend/types'
 import type { DeviceProvider } from './provider'
 import { resolveDeviceTarget, TRUSTED_DEVICE_ORDER } from './trusted'
 import { routeDeviceTarget } from './router'
@@ -133,7 +133,7 @@ export class DeviceListTool extends DeviceTool {
         data: { devices: ordered, count: ordered.length, online },
       }
     } catch (error) {
-      return { ok: false, message: error instanceof Error ? error.message : 'Could not list devices.' }
+      return { ok: false, message: error instanceof Error ? error.message : 'Could not list devices.', data: { deviceError: 'device_unavailable' } }
     }
   }
 }
@@ -169,20 +169,29 @@ export class DeviceStatusTool extends DeviceTool {
       }
       const rawTarget = paramStr(input, 'device')?.trim()
       const resolved = resolveTargetInput(rawTarget)
-      if (resolved.error) return { ok: false, message: resolved.error, data: { kind: 'invalid_target' } }
+      if (resolved.error)
+        return { ok: false, message: resolved.error, data: { kind: 'invalid_target', deviceError: 'device_not_found' } }
 
       const ordered = [...devices].sort((a, b) => TRUSTED_DEVICE_ORDER.indexOf(a.id) - TRUSTED_DEVICE_ORDER.indexOf(b.id))
       const focus = resolved.deviceId
         ? ordered.find((d) => d.id === resolved.deviceId)
         : undefined
       if (resolved.deviceId && !focus) {
-        return { ok: false, message: `"${resolved.deviceId}" is not registered with JARVIS Core right now.`, data: { deviceId: resolved.deviceId } }
+        return {
+          ok: false,
+          message: `"${resolved.deviceId}" is not registered with JARVIS Core right now.`,
+          data: { deviceId: resolved.deviceId, deviceError: 'device_not_found' },
+        }
       }
       const shown = focus ? [focus] : ordered
       const lines = shown.map(deviceLine)
       return { ok: true, message: lines.join('\n'), data: { devices: shown, count: ordered.length, online: ordered.filter((d) => d.online).length } }
     } catch (error) {
-      return { ok: false, message: error instanceof Error ? error.message : 'Could not read device status.' }
+      return {
+        ok: false,
+        message: error instanceof Error ? error.message : 'Could not read device status.',
+        data: { deviceError: 'device_unavailable' },
+      }
     }
   }
 }
@@ -221,7 +230,7 @@ export class DeviceNotifyTool extends DeviceTool {
       return { ok: false, message: 'A notification needs both a title and a message.', data: { kind: 'invalid_input' } }
     }
     const resolved = resolveTargetInput(paramStr(input, 'device'))
-    if (resolved.error) return { ok: false, message: resolved.error, data: { kind: 'invalid_target' } }
+    if (resolved.error) return { ok: false, message: resolved.error, data: { kind: 'invalid_target', deviceError: 'device_not_found' } }
     try {
       const devices = await this.provider.refresh()
       const route = routeDeviceTarget(devices, resolved.deviceId)
@@ -229,7 +238,7 @@ export class DeviceNotifyTool extends DeviceTool {
         return {
           ok: false,
           message: `The notification was not sent: ${route.reason ?? 'no route to that device right now.'}`,
-          data: { delivered: false, reason: route.reason },
+          data: { delivered: false, reason: route.reason, deviceError: 'device_disconnected' },
         }
       }
       const result = await this.provider.notify({
@@ -241,13 +250,13 @@ export class DeviceNotifyTool extends DeviceTool {
         return {
           ok: false,
           message: `The notification could not be delivered: ${result.reason ?? 'no online device accepted it.'}`,
-          data: result,
+          data: { ...result, deviceError: 'device_disconnected' },
         }
       }
       const where = result.deliveredTo.length > 0 ? ` to ${result.deliveredTo.join(', ')}` : ''
       return { ok: true, message: `Notification delivered${where}.`, data: result }
     } catch (error) {
-      return { ok: false, message: error instanceof Error ? error.message : 'Could not send the notification.' }
+      return { ok: false, message: error instanceof Error ? error.message : 'Could not send the notification.', data: { deviceError: 'device_unavailable' } }
     }
   }
 
@@ -295,16 +304,24 @@ export class DeviceSendFileTool extends DeviceTool {
       return { ok: false, message: 'A file transfer needs both a file name and base64 content.', data: { kind: 'invalid_input' } }
     }
     const resolved = resolveTargetInput(paramStr(input, 'device'))
-    if (resolved.error) return { ok: false, message: resolved.error, data: { kind: 'invalid_target' } }
+    if (resolved.error) return { ok: false, message: resolved.error, data: { kind: 'invalid_target', deviceError: 'device_not_found' } }
     try {
       const devices = await this.provider.refresh()
       const route = routeDeviceTarget(devices, resolved.deviceId)
       if (!route.available && route.deviceId !== 'all' && !resolved.deviceId) {
-        return { ok: false, message: `The file was not stored: ${route.reason ?? 'no route to a device right now.'}`, data: { ok: false } }
+        return {
+          ok: false,
+          message: `The file was not stored: ${route.reason ?? 'no route to a device right now.'}`,
+          data: { ok: false, deviceError: 'device_disconnected' },
+        }
       }
       const result = await this.provider.sendFile(name, content, resolved.deviceId)
       if (!result.ok) {
-        return { ok: false, message: `The file could not be stored for transfer: ${result.error ?? 'unknown failure'}`, data: result }
+        return {
+          ok: false,
+          message: `The file could not be stored for transfer: ${result.error ?? 'unknown failure'}`,
+          data: { ...result, deviceError: 'transfer_failed' },
+        }
       }
       const file = result.file as { id: string; name: string; size: number; url: string; deviceId?: string }
       const note =
@@ -317,7 +334,7 @@ export class DeviceSendFileTool extends DeviceTool {
         data: result,
       }
     } catch (error) {
-      return { ok: false, message: error instanceof Error ? error.message : 'Could not send the file.' }
+      return { ok: false, message: error instanceof Error ? error.message : 'Could not send the file.', data: { deviceError: 'transfer_failed' } }
     }
   }
 
@@ -330,8 +347,132 @@ export class DeviceSendFileTool extends DeviceTool {
   }
 }
 
+/* ------------------------------------------------------------ openUrl */
+
+export class DeviceOpenUrlTool extends DeviceTool {
+  readonly id = 'device.openUrl'
+  readonly name = 'Open URL on device'
+  readonly description =
+    'Open a web URL on a companion phone or web page via the JARVIS Core backend. The target device must be online and trusted. ' +
+    'The URL is validated for safety before sending.'
+  readonly permission: ToolPermission = 'low_risk'
+  readonly verifiable = true
+  readonly inputSchema: ToolInputSchema = {
+    type: 'object',
+    properties: {
+      device: { type: 'string', description: 'Target device id or phrase ("my phone").' },
+      url: { type: 'string', description: 'The URL to open (http/https only).' },
+    },
+    required: ['device', 'url'],
+  }
+
+  canRun(query: string): boolean {
+    return /\b(open|launch|go to)\b/i.test(query) && /\b(url|link|website|page)\b/i.test(query) && /\b(phone|device|laptop|pc)\b/i.test(query)
+  }
+
+  async execute(input: ToolInput): Promise<ToolResult> {
+    const blocker = availabilityBlocker(this.provider)
+    if (blocker) return blocker
+    const url = paramStr(input, 'url')?.trim()
+    if (!url) {
+      return { ok: false, message: 'A URL is required to open on the device.', data: { kind: 'invalid_input' } }
+    }
+    try {
+      const parsed = new URL(url)
+      if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+        return { ok: false, message: 'Only http/https URLs are allowed.', data: { kind: 'invalid_input' } }
+      }
+    } catch {
+      return { ok: false, message: 'Invalid URL format.', data: { kind: 'invalid_input' } }
+    }
+    const resolved = resolveTargetInput(paramStr(input, 'device'))
+    if (resolved.error)
+      return { ok: false, message: resolved.error, data: { kind: 'invalid_target', deviceError: 'device_not_found' } }
+    try {
+      const devices = await this.provider.refresh()
+      const route = routeDeviceTarget(devices, resolved.deviceId)
+      if (!route.available) {
+        return {
+          ok: false,
+          message: `The open-URL command was not accepted: ${route.reason ?? 'no route to that device right now.'}`,
+          data: { success: false, reason: route.reason, deviceError: 'device_disconnected' },
+        }
+      }
+      const result = await this.provider.openUrl(resolved.deviceId!, url)
+      if (!result.success) {
+        const reason = result.reason ?? result.error ?? 'unknown failure'
+        const deviceError: DeviceErrorKind =
+          result.error === 'device_offline' || (result.reason ?? '').includes('offline') ? 'device_disconnected' : 'device_unavailable'
+        return { ok: false, message: `The open-URL command was not accepted: ${reason}`, data: { ...result, deviceError } }
+      }
+      return { ok: true, message: `Sent an "open in browser" command to ${resolved.deviceId} for "${url}"; the backend confirmed delivery to the online device.`, data: result }
+    } catch (error) {
+      return {
+        ok: false,
+        message: error instanceof Error ? error.message : 'Could not open the URL on the device.',
+        data: { deviceError: 'device_protocol_error' },
+      }
+    }
+  }
+
+  verify(_input: ToolInput, result: ToolResult): ToolVerification {
+    return {
+      ok: result.ok === true,
+      message:
+        result.ok === true
+          ? 'Backend confirmed the open-URL command was delivered to the online device.'
+          : 'Backend reported the open-URL command was not delivered.',
+      checks: ['device-open-url-delivered'],
+    }
+  }
+}
+
+/* ------------------------------------------------------------ refresh */
+
+export class DeviceRefreshTool extends DeviceTool {
+  readonly id = 'device.refresh'
+  readonly name = 'Refresh device state'
+  readonly description =
+    'Force a refresh of the device registry from the JARVIS Core backend, updating online/offline status and capabilities.'
+  readonly permission: ToolPermission = 'read_only'
+  readonly inputSchema: ToolInputSchema = {
+    type: 'object',
+    properties: {
+      device: { type: 'string', description: 'Optional specific device id to refresh. Omit to refresh all.' },
+    },
+    required: [],
+  }
+
+  canRun(query: string): boolean {
+    return /\b(refresh|update|resync)\b/i.test(query) && /\b(device|devices|phone|phones)\b/i.test(query)
+  }
+
+  async execute(_input: ToolInput): Promise<ToolResult> {
+    const blocker = availabilityBlocker(this.provider)
+    if (blocker) return blocker
+    try {
+      const devices = await this.provider.refreshDevices()
+      const online = devices.filter((d) => d.online).length
+      return {
+        ok: true,
+        message: `Device registry refreshed: ${online} of ${devices.length} devices online.`,
+        data: { devices, count: devices.length, online },
+      }
+    } catch (error) {
+      return { ok: false, message: error instanceof Error ? error.message : 'Could not refresh device state.', data: { deviceError: 'device_unavailable' } }
+    }
+  }
+}
+
 /** Bind the device tools to a provider; absent provider => zero tools. */
 export function createDeviceTools(provider: DeviceProvider | undefined): Tool[] {
   if (!provider) return []
-  return [new DeviceListTool(provider), new DeviceStatusTool(provider), new DeviceNotifyTool(provider), new DeviceSendFileTool(provider)]
+  return [
+    new DeviceListTool(provider),
+    new DeviceStatusTool(provider),
+    new DeviceNotifyTool(provider),
+    new DeviceSendFileTool(provider),
+    new DeviceOpenUrlTool(provider),
+    new DeviceRefreshTool(provider),
+  ]
 }

@@ -25,6 +25,12 @@ export type AgenticPhase =
 
 export type StepExecutionState =
   | 'planned'
+  /** Phase 6 — queued behind an unmet dependency or precondition. */
+  | 'pending'
+  /** Phase 6 — all gates passed; ready to execute. */
+  | 'ready'
+  /** Phase 6 — blocked by a failed/skipped dependency. Never runs. */
+  | 'blocked'
   | 'permission_pending'
   | 'executing'
   | 'executed'
@@ -75,6 +81,12 @@ export interface AgenticExecutionState {
   }>
   readonly recoveryAttempts: number
   readonly maxRecoveries: number
+  /** Phase 6 — bounded replanning counter and ceiling. Replans are NEVER a
+   * budget reset; every executed step and recovery still counts. */
+  replanAttempts: number
+  maxReplans: number
+  /** Phase 6 — optional wall-clock goal deadline (ms from start). */
+  deadlineMs?: number
   startedAt: number
   completedAt?: number
   finalResult?: {
@@ -83,6 +95,10 @@ export interface AgenticExecutionState {
     verifiedSteps: number
     failedSteps: number
     totalSteps: number
+    skippedSteps?: number
+    blockedSteps?: number
+    replannedSteps?: number
+    cancelledSteps?: number
   }
 }
 
@@ -96,14 +112,14 @@ export function isTerminalPhase(phase: AgenticPhase): boolean {
   return TERMINAL_PHASES.has(phase)
 }
 
-const VALID_TRANSITIONS: ReadonlyMap<AgenticPhase, ReadonlySet<AgenticPhase>> = new Map([
-  ['thinking', new Set(['planning', 'failed', 'cancelled'])],
-  ['planning', new Set(['executing', 'completed', 'failed', 'cancelled'])],
-  ['executing', new Set(['observing', 'verifying', 'failed', 'cancelled'])],
-  ['observing', new Set(['verifying', 'replanning', 'completed', 'failed', 'cancelled'])],
-  ['verifying', new Set(['completed', 'recovering', 'replanning', 'failed', 'cancelled'])],
-  ['recovering', new Set(['replanning', 'executing', 'failed', 'cancelled'])],
-  ['replanning', new Set(['executing', 'completed', 'failed', 'cancelled'])],
+const VALID_TRANSITIONS = new Map<AgenticPhase, ReadonlySet<AgenticPhase>>([
+  ['thinking', new Set<AgenticPhase>(['planning', 'failed', 'cancelled'])],
+  ['planning', new Set<AgenticPhase>(['executing', 'completed', 'failed', 'cancelled'])],
+  ['executing', new Set<AgenticPhase>(['observing', 'verifying', 'completed', 'failed', 'cancelled'])],
+  ['observing', new Set<AgenticPhase>(['verifying', 'replanning', 'completed', 'failed', 'cancelled'])],
+  ['verifying', new Set<AgenticPhase>(['completed', 'recovering', 'replanning', 'failed', 'cancelled'])],
+  ['recovering', new Set<AgenticPhase>(['replanning', 'executing', 'failed', 'cancelled'])],
+  ['replanning', new Set<AgenticPhase>(['executing', 'completed', 'failed', 'cancelled'])],
 ])
 
 export function canTransitionPhase(from: AgenticPhase, to: AgenticPhase): boolean {
@@ -117,6 +133,7 @@ let executionCounter = 0
 export function createExecutionState(
   goal: string,
   maxRecoveries: number = 2,
+  opts: { maxReplans?: number; deadlineMs?: number } = {},
 ): AgenticExecutionState {
   const id = `exec-${Date.now().toString(36)}-${++executionCounter}`
   return {
@@ -128,8 +145,22 @@ export function createExecutionState(
     permissionEvents: [],
     recoveryAttempts: 0,
     maxRecoveries,
+    replanAttempts: 0,
+    maxReplans: opts.maxReplans ?? 3,
+    deadlineMs: opts.deadlineMs,
     startedAt: Date.now(),
   }
+}
+
+/** Phase 6 — wall-clock deadline check against the run start time. */
+export function deadlineReached(state: Pick<AgenticExecutionState, 'startedAt' | 'deadlineMs'>, now = Date.now()): boolean {
+  if (!state.deadlineMs || state.deadlineMs <= 0) return false
+  return now - state.startedAt >= state.deadlineMs
+}
+
+/** Phase 6 — elapsed execution time (ms) from the run start. */
+export function elapsedMs(state: Pick<AgenticExecutionState, 'startedAt'>, now = Date.now()): number {
+  return Math.max(0, now - state.startedAt)
 }
 
 export function transitionPhase(
@@ -180,6 +211,7 @@ export function updateStepState(
     newState === 'failed' ||
     newState === 'verification_failed' ||
     newState === 'skipped' ||
+    newState === 'blocked' ||
     newState === 'cancelled'
   ) {
     step.completedAt = Date.now()
@@ -191,6 +223,10 @@ export function buildFinalResult(state: AgenticExecutionState): void {
   const failed = state.steps.filter(
     (s) => s.state === 'failed' || s.state === 'verification_failed',
   ).length
+  const skipped = state.steps.filter((s) => s.state === 'skipped').length
+  const blocked = state.steps.filter((s) => s.state === 'blocked').length
+  const cancelled = state.steps.filter((s) => s.state === 'cancelled').length
+  const replanned = state.steps.filter((s) => s.state === 'replanned').length
   const executed = state.steps.filter(
     (s) =>
       s.state === 'verified' ||
@@ -216,6 +252,9 @@ export function buildFinalResult(state: AgenticExecutionState): void {
   } else if (failed > 0) {
     status = verified > 0 ? 'partial' : 'failed'
     summary = `${verified}/${total} steps verified, ${failed} failed.`
+  } else if (blocked > 0) {
+    status = verified > 0 ? 'partial' : 'failed'
+    summary = `${verified}/${total} steps verified, ${blocked} blocked by failed dependencies.`
   } else if (executed === total) {
     status = 'completed'
     summary = `All ${total} steps executed${verified === total ? ' and verified' : ''}.`
@@ -230,5 +269,9 @@ export function buildFinalResult(state: AgenticExecutionState): void {
     verifiedSteps: verified,
     failedSteps: failed,
     totalSteps: total,
+    skippedSteps: skipped,
+    blockedSteps: blocked,
+    replannedSteps: replanned,
+    cancelledSteps: cancelled,
   }
 }

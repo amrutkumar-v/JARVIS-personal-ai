@@ -28,9 +28,12 @@ vector generator for development and tests.
 > requires configuration, and its vectors are only useful for exercising the
 > plumbing deterministically. It must never be mistaken for real semantics.
 
-Fresh `EmbeddingManager` instances (and `getDefaultEmbeddingManager()`) use the
-deterministic provider until a real provider is configured/injected. When the
-deterministic provider is active, `getHealth().fallbackActive === true`.
+Fresh `EmbeddingManager` instances (and `getDefaultEmbeddingManager()`) resolve
+the provider deterministically: when any `VITE_JARVIS_EMBEDDING_*` configuration
+is declared (base URL / proxy / model / dimensions), the real
+`OpenAIEmbeddingProvider` is promoted automatically; otherwise the
+clearly-labelled deterministic provider is used for development and tests. When
+the deterministic provider is active, `getHealth().fallbackActive === true`.
 
 ### Real (production)
 
@@ -38,8 +41,10 @@ deterministic provider is active, `getHealth().fallbackActive === true`.
 OpenAI-compatible `/embeddings` endpoint (OpenAI, Azure, Ollama, LM Studio,
 vLLM, …). See [Configuration](#configuration) below.
 
-In production you should inject the real provider explicitly before running
-backfill / remember flows, e.g.:
+Auto-promotion is conservative: a chat-only AI endpoint is never mistaken for
+"real semantic memory" — a real provider is only appointed when embedding
+configuration is explicitly declared. You can still inject (or swap) the real
+provider explicitly, e.g.:
 
 ```ts
 import { EmbeddingManager, openAIEmbeddingProvider, getDefaultEmbeddingManager } from '../memory'

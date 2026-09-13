@@ -201,3 +201,16 @@ describe('BackendClient', () => {
     expect(calls[0]!.init.headers).toMatchObject({ authorization: 'Bearer s3cret' })
   })
 })
+
+describe('BackendClient default fetch binding (browser Illegal invocation regression)', () => {
+  it('binds the default fetch to globalThis instead of keeping the bare global fetch', () => {
+    // Same browser latent bug the native RPC had: `window.fetch` is a native method
+    // that throws "Illegal invocation" when called with a foreign receiver. The
+    // client calls its stored `fetchImpl` as a plain call, so the default must be
+    // a bound copy of the global fetch, not the bare function.
+    const client = new BackendClient()
+    const impl: unknown = (client as unknown as { fetchImpl: unknown }).fetchImpl
+    expect(typeof impl).toBe('function')
+    expect(impl).not.toBe(globalThis.fetch)
+  })
+})

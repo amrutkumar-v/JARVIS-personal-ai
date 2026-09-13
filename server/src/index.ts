@@ -16,6 +16,9 @@
  *   JARVIS_NATIVE_AGENT            agent script (default <repo>/native/dist/agentMain.js)
  *   JARVIS_NATIVE_CONFIG           agent config file (default <repo>/native/agent.config.json
  *                                  when it exists; passed as --config to register apps)
+ *   JARVIS_AI_BASE_URL             upstream OpenAI-compatible base URL served through the
+ *                                  server-side AI proxy (/api/ai), key kept server-side.
+ *   JARVIS_AI_TIMEOUT_MS           AI proxy upstream timeout (default 60000)
  *   JARVIS_BACKEND_SILENT          (default false) no stdout log lines
  *
  * Single instance: a lock file in the data dir guards against duplicates.
@@ -42,9 +45,13 @@ interface Env {
   publicDir: string
   nativeUrl: string
   nativeToken: string
+  nativeAllowedOrigins: string[]
   superviseNative: boolean
   nativeAgent: string
   nativeConfig: string
+  aiBaseUrl: string
+  aiKey: string
+  aiTimeoutMs: number
   silent: boolean
 }
 
@@ -85,9 +92,16 @@ function readEnv(): Env {
     publicDir: join(root, 'server', 'public'),
     nativeUrl: envString('JARVIS_BACKEND_NATIVE_URL', 'http://127.0.0.1:8765'),
     nativeToken: envString('JARVIS_BACKEND_NATIVE_TOKEN'),
+    nativeAllowedOrigins: envString('JARVIS_BACKEND_NATIVE_ALLOWED_ORIGINS')
+      .split(',')
+      .map((o) => o.trim())
+      .filter((o) => o.length > 0),
     superviseNative: envBool('JARVIS_BACKEND_SUPERVISE_NATIVE', true),
     nativeAgent: envString('JARVIS_NATIVE_AGENT', join(root, 'native', 'dist', 'agentMain.js')),
     nativeConfig: resolveNativeConfig(envString('JARVIS_NATIVE_CONFIG', join(root, 'native', 'agent.config.json'))),
+    aiBaseUrl: envString('JARVIS_AI_BASE_URL'),
+    aiKey: envString('JARVIS_API_KEY'),
+    aiTimeoutMs: envInt('JARVIS_AI_TIMEOUT_MS', 60000),
     silent: envBool('JARVIS_BACKEND_SILENT', false),
   }
 }
@@ -180,6 +194,7 @@ class Backend {
       port: this.env.nativeUrl.match(/:(\d+)/)?.[1] ? Number(this.env.nativeUrl.match(/:(\d+)/)![1]) : 8765,
       token: this.env.nativeToken,
       config: this.env.nativeConfig,
+      allowedOrigins: this.env.nativeAllowedOrigins,
     })
 
     this.supervisor = new NativeSupervisor({
@@ -235,6 +250,9 @@ class Backend {
       staticDir: this.env.staticDir,
       publicDir: this.env.publicDir,
       token: this.env.token,
+      ai: this.env.aiBaseUrl
+        ? { baseUrl: this.env.aiBaseUrl, key: this.env.aiKey, timeoutMs: this.env.aiTimeoutMs }
+        : undefined,
       log: this.logger,
     })
 

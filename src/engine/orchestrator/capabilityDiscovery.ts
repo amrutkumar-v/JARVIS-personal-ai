@@ -4,6 +4,20 @@
  * Dynamically inspects available capabilities across all connected devices
  * and provides a unified view for the orchestrator.
  */
+/** Common interface for capability discovery — satisfied by both AssistantEngine and PersonalAICoreView. */
+interface CapabilityDiscoveryEngine {
+  capabilityCatalog: () => Array<{ id: string }>
+  fileSystem: any
+  applications: any
+  observation: any
+  desktop: any
+  vision: any
+  camera: any
+  deviceProvider: any
+  web: any
+  clipboard: any
+  hasActiveTask?: () => boolean
+}
 
 /**
  * Map capability IDs to human-readable names and categories.
@@ -33,6 +47,7 @@ const CAPABILITY_METADATA: Record<string, { name: string; category: string }> = 
   list_applications: { name: 'List Applications', category: 'applications' },
   application_status: { name: 'Check App Status', category: 'applications' },
   open_application: { name: 'Open Application', category: 'applications' },
+  close_application: { name: 'Close Application', category: 'applications' },
 
   // Desktop/Windows
   list_windows: { name: 'List Windows', category: 'desktop' },
@@ -99,7 +114,9 @@ function getCapabilitiesForDeviceType(deviceType: 'pc' | 'phone', providers: {
 
     // Applications - available if applications provider exists
     if (providers.applications) {
-      capabilities.push('list_applications', 'application_status', 'open_application')
+      capabilities.push(
+        'list_applications', 'application_status', 'open_application', 'close_application',
+      )
     }
 
     // Observation/Desktop - available if providers exist
@@ -153,7 +170,7 @@ function getCapabilityMeta(capabilityId: string): { name: string; category: stri
  * Discover capabilities across all devices.
  */
 export async function discoverCapabilities(
-  engine: { fileSystemProvider: any; applicationProvider: any; observationProvider: any; desktopProvider: any; visionProvider: any; cameraProvider: any; deviceProvider: any; webProvider: any; capabilityCatalog: () => Array<{ id: string }> },
+  engine: CapabilityDiscoveryEngine,
   devices: Array<{ id: string; name: string; type: string; online: boolean; platform: string }>
 ): Promise<{
   devices: Array<{
@@ -172,21 +189,22 @@ export async function discoverCapabilities(
 
   // Get provider availability from engine
   const providers = {
-    fileSystem: !!engine.fileSystemProvider,
-    applications: !!engine.applicationProvider,
-    observation: !!engine.observationProvider,
-    desktop: !!engine.desktopProvider,
-    vision: !!engine.visionProvider,
-    camera: !!engine.cameraProvider,
+    fileSystem: !!engine.fileSystem,
+    applications: !!engine.applications,
+    observation: !!engine.observation,
+    desktop: !!engine.desktop,
+    vision: !!engine.vision,
+    camera: !!engine.camera,
     device: !!engine.deviceProvider,
-    web: !!engine.webProvider,
+    web: !!engine.web,
+    clipboard: !!engine.clipboard,
   }
 
   // Get all registered capabilities from engine
   const registeredCapabilities = engine.capabilityCatalog().map(c => c.id)
 
   // Build per-device snapshots
-  const deviceSnapshots = devices.map(device => {
+  let deviceSnapshots = devices.map(device => {
     const isPc = device.type === 'windows_pc' || device.type === 'desktop'
     const deviceType: 'pc' | 'phone' = isPc ? 'pc' : 'phone'
     const availableCapabilityIds = getCapabilitiesForDeviceType(deviceType, providers)
@@ -216,6 +234,65 @@ export async function discoverCapabilities(
       categories,
     }
   })
+
+  // Fallback: if we have local capability providers but no online devices,
+  // create a default local PC device so local capabilities (applications,
+  // desktop, browser, clipboard, etc.) remain available even when the
+  // device bridge (backend) is disconnected.
+  const hasOnlineDevice = deviceSnapshots.some(d => d.online)
+  const hasLocalProviders = providers.applications || providers.desktop || providers.observation || providers.web || providers.clipboard || providers.fileSystem
+  if (!hasOnlineDevice && hasLocalProviders && deviceSnapshots.length === 0) {
+    // No devices at all from device provider - create default local PC
+    const defaultPcId = 'local-pc'
+    const defaultPcName = 'This PC'
+    const availableCapabilityIds = getCapabilitiesForDeviceType('pc', providers)
+      .filter(id => registeredCapabilities.includes(id))
+
+    const capabilities = availableCapabilityIds.map(id => {
+      const meta = getCapabilityMeta(id)
+      return {
+        id,
+        name: meta.name,
+        category: meta.category,
+        available: true,
+        reason: undefined,
+      }
+    })
+
+    const categories = Array.from(new Set(capabilities.map(c => c.category)))
+
+    deviceSnapshots.push({
+      deviceId: defaultPcId,
+      deviceName: defaultPcName,
+      deviceType: 'pc',
+      online: true,
+      capabilities,
+      categories,
+    })
+  } else if (!hasOnlineDevice && deviceSnapshots.length > 0) {
+    // Devices exist but all offline - mark local capabilities as available on first PC device
+    const firstPc = deviceSnapshots.find(d => d.deviceType === 'pc')
+    if (firstPc) {
+      const localCapabilityIds = getCapabilitiesForDeviceType('pc', providers)
+        .filter(id => registeredCapabilities.includes(id))
+      const existingIds = new Set(firstPc.capabilities.map(c => c.id))
+      for (const id of localCapabilityIds) {
+        if (!existingIds.has(id)) {
+          const meta = getCapabilityMeta(id)
+          firstPc.capabilities.push({
+            id,
+            name: meta.name,
+            category: meta.category,
+            available: true,
+            reason: undefined,
+          })
+        }
+      }
+      firstPc.online = true
+      firstPc.capabilities.forEach(c => { c.available = true; c.reason = undefined })
+      firstPc.categories = Array.from(new Set(firstPc.capabilities.map(c => c.category)))
+    }
+  }
 
   // Build global capability view
   const capabilityToDevices = new Map<string, Set<string>>()

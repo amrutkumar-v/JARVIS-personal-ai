@@ -111,7 +111,7 @@ describe('Phase 2.2 — store mirrors ENGINE recovery counters verbatim (no infe
       maxReplans: 3,
       active: false,
     })
-    expect(snap.limits).toEqual({ maxTaskSteps: 10, maxRecoveryAttempts: 2, maxReplans: 3 })
+    expect(snap.limits).toEqual({ maxTaskSteps: 10, maxRecoveryAttempts: 2, maxReplans: 3, totalExecutionMs: 120000 })
     expect(snap.task?.status).toBe('completed')
     expect(snap.task?.recoveries).toBe(1)
     expect(useJarvisStore.getState().goalRun?.recovery.replans).toBe(1)

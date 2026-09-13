@@ -180,7 +180,6 @@ function planBrowserNavigateObservation(
     retryDelayMs: 1200,
     verify: (obs) => {
       const data = obs as Record<string, unknown> | undefined
-      const pageUrl = String(data?.url ?? '')
       const textLength = Number(data?.textLength ?? 0)
       const hasContent = textLength > 0
       return {

@@ -238,11 +238,12 @@ describe('Phase 2.1 — store ↔ engine lifecycle wiring', () => {
 
     const snap = refresh(engine)
     // Step 1 consumed the single budget slot; step 2 was refused as an
-    // orchestration limit, so the mirror renders it BLOCKED (never ran).
+    // orchestration limit. Multi-step honesty: step 1 verified, step 2 blocked
+    // by budget -> task status PARTIAL (verified progress), never plain blocked.
     expect(snap.plan.steps.map((s) => s.state)).toEqual(['verified', 'blocked'])
-    expect(snap.task?.status).toBe('blocked')
+    expect(snap.task?.status).toBe('partial')
     expect(snap.budget.remaining).toBe(0)
-    expect(useJarvisStore.getState().goalRun?.task?.status).toBe('blocked')
+    expect(useJarvisStore.getState().goalRun?.task?.status).toBe('partial')
   })
 
   it('cancellation: cancel between rounds → the executed step stays visible, nothing after ran', async () => {

@@ -1,10 +1,16 @@
-import { describe, expect, it, beforeEach } from 'vitest'
+import { describe, expect, it, beforeEach, vi } from 'vitest'
 import { AssistantEngine } from '../engine/AssistantEngine'
 import type { AIProvider, AIRequest, AIResponse } from '../engine'
 import { useConversationStore } from '../state/conversation.store'
 import { useJarvisStore } from '../state/jarvis.store'
 import { FakeDesktopInteractionProvider } from './testing'
 import { createDefaultAppDesktopProvider } from '../native'
+
+// Native-agent env read mocked so the default bootstrap deterministically sees
+// NO native URL (the dev server keeps the real one from `.env.local`).
+vi.mock('../native/nativeAgentEnv', () => ({
+  readNativeAgentEnv: () => undefined,
+}))
 
 /**
  * Phase 1.5 — desktop tools through the REAL engine loop (ScriptedProvider +
@@ -115,6 +121,8 @@ describe('Desktop interaction agent (engine-level, scripted provider)', () => {
   })
 
   it('PROOF — the default bootstrap exposes no desktop provider (no native URL)', () => {
+    // `readNativeAgentEnv` is mocked undefined above, so this runs in the
+    // no-native-URL world (the dev server keeps the real URL from `.env.local`).
     expect(createDefaultAppDesktopProvider()).toBeUndefined()
   })
 

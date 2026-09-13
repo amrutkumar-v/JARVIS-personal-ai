@@ -13,6 +13,7 @@
  */
 
 import { tokenize } from '../utils/text'
+import { looksLikeHighRiskCredential } from './detect'
 import {
   hybridScoreFromSimilarity,
   semanticScore,
@@ -357,6 +358,7 @@ export class MemoryManager {
     this.ensureLoaded()
     const clean = (content ?? '').trim()
     if (!clean) throw new Error('Cannot store an empty memory')
+    this.rejectCredentialContent(clean)
     const now = new Date().toISOString()
     const exact = this.findExact(clean)
     if (exact) {
@@ -422,6 +424,7 @@ export class MemoryManager {
     this.ensureLoaded()
     const clean = (content ?? '').trim()
     if (!clean) throw new Error('Cannot store an empty memory')
+    this.rejectCredentialContent(clean)
     const now = new Date().toISOString()
 
     // 1) Exact duplicate — update in place (preserves lexical dedup behavior).
@@ -546,7 +549,11 @@ export class MemoryManager {
     const item = this.memo.items.find((m) => m.id === id)
     if (!item) return null
     const contentChanged = patch.content !== undefined && patch.content !== item.content
-    if (patch.content !== undefined) item.content = String(patch.content).trim()
+    if (patch.content !== undefined) {
+      const next = String(patch.content).trim()
+      this.rejectCredentialContent(next)
+      item.content = next
+    }
     if (patch.type !== undefined) item.type = patch.type
     if (patch.importance !== undefined) item.importance = clampImportance(patch.importance)
     if (patch.source !== undefined) item.source = patch.source
@@ -1031,6 +1038,18 @@ export class MemoryManager {
   private ensureLoaded(): void {
     if (this.loading) return
     this.load()
+  }
+
+  /**
+   * THE memory write boundary for credential-like content. Every durable write
+   * path (remember, rememberSemantic, update) funnels through here — no caller
+   * can bypass it. High-confidence credential phrasing is refused outright;
+   * broad prose (e.g. "kept secret", "token ring") stays storable.
+   */
+  private rejectCredentialContent(content: string): void {
+    if (looksLikeHighRiskCredential(content)) {
+      throw new Error('Refusing to store credential-like content in memory.')
+    }
   }
 
   private persist(): void {

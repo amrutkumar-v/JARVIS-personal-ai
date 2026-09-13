@@ -29,12 +29,20 @@ export interface SpawnHandle {
 export type SpawnFactory = (script: string, args: string[], env: Record<string, string>) => SpawnHandle
 
 /** Build the supervised agent's CLI args (port/token/root plus optional config). */
-export function buildNativeAgentArgs(options: { port: number; token: string; config?: string }): string[] {
+export function buildNativeAgentArgs(options: {
+  port: number
+  token: string
+  config?: string
+  allowedOrigins?: string[]
+}): string[] {
   const args: string[] = [`--port`, String(options.port)]
   args.push(options.token ? '--token' : '--no-token')
   if (options.token) args.push(options.token)
   args.push('--root', '{workspace}')
   if (options.config) args.push('--config', options.config)
+  if (options.allowedOrigins && options.allowedOrigins.length > 0) {
+    args.push('--allowed-origins', options.allowedOrigins.join(','))
+  }
   return args
 }
 
@@ -61,8 +69,14 @@ export function spawnNodeAgent(script: string, args: string[], env: Record<strin
     onError: (cb) => child.once('error', cb),
     onLine: (cb) => lineCallbacks.add(cb),
     kill: () => {
+      const pid = child.pid
       try {
-        child.kill()
+        if (pid !== undefined && process.platform === 'win32') {
+          // Kill the whole process tree so no orphan keeps the port alive.
+          spawn('taskkill', ['/pid', String(pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' })
+        } else {
+          child.kill()
+        }
       } catch {
         // Already gone.
       }
@@ -75,6 +89,9 @@ export interface NativeStatus {
   connected: boolean
   reachable: boolean
   childRunning: boolean
+  /** True when an agent was already running on the port and was ADOPTED
+   * instead of spawning a duplicate (orphan or user-started process). */
+  adopted?: boolean
   childPid?: number
   protocol?: string
   version?: string
@@ -123,6 +140,7 @@ export class NativeSupervisor {
   private probeStatus: ProbeResult = { ok: false, connected: false, reachable: false }
   private lastProbeAt: number | undefined
   private restarts = 0
+  private adopted = false
   private restartTimer: ReturnType<typeof setTimeout> | null = null
   private probeTimer: ReturnType<typeof setInterval> | null = null
   private shuttingDown = false
@@ -136,9 +154,30 @@ export class NativeSupervisor {
 
   /** Start child supervision (when enabled) and the probe loop. */
   start(): void {
-    if (this.options.supervise) this.ensureChild()
+    if (this.options.supervise) void this.ensureChild()
     this.probeTimer = setInterval(() => void this.probe(), this.options.probeIntervalMs ?? 5000)
     void this.probe()
+  }
+
+  /**
+   * Probe-first adoption. Before spawning a duplicate agent, check whether
+   * something ALREADY answers on the port — if it does (a user-started agent
+   * or an orphan from a hard-killed backend), adopt it instead of crashing a
+   * second copy into EADDRINUSE. Only spawn when the port is genuinely dead.
+   */
+  private async ensureChild(): Promise<void> {
+    if (this.child.running || this.restartTimer) return
+    const result = await this.probe()
+    if (result.ok) {
+      this.adopted = true
+      this.log.info('native', 'native agent already running; adopting it instead of spawning a duplicate', {
+        url: this.probeUrl,
+        version: result.version,
+      })
+      return
+    }
+    this.adopted = false
+    this.spawnChild()
   }
 
   /** Bound, rolling-window child restarter. */
@@ -154,6 +193,7 @@ export class NativeSupervisor {
     }
     this.child.handle = handle
     this.child.running = true
+    this.adopted = false
     this.log.info('native', 'native agent child started', { pid: handle.pid })
 
     handle.onExit((code, signal) => {
@@ -176,6 +216,19 @@ export class NativeSupervisor {
     this.child.handle = null
     if (error) this.child.spawnErrorAt = this.now()
     if (this.shuttingDown) return
+    // Re-probe before restarting: if an agent now owns the port (an orphan
+    // survived our redundant spawn), adopt it instead of queuing a duplicate.
+    void this.probe().then((result) => {
+      if (result.ok) {
+        this.adopted = true
+        return
+      }
+      this.adopted = false
+      this.scheduleRestart()
+    })
+  }
+
+  private scheduleRestart(): void {
     const at = this.now()
     this.child.exitTimes = this.child.exitTimes.filter((t) => at - t < (this.options.childRestartWindowMs ?? 60_000))
     this.child.exitTimes.push(at)
@@ -192,12 +245,6 @@ export class NativeSupervisor {
       this.restartTimer = null
       this.spawnChild()
     }, backoffMs)
-  }
-
-  private ensureChild(): void {
-    if (this.child.running) return
-    if (this.restartTimer) return
-    this.spawnChild()
   }
 
   /** Probe the native agent and refresh connection state. */
@@ -220,6 +267,7 @@ export class NativeSupervisor {
       connected: this.probeStatus.ok === true,
       reachable: this.probeStatus.reachable === true,
       childRunning: this.child.running,
+      adopted: this.adopted,
       childPid: this.child.running ? this.child.handle?.pid : undefined,
       protocol: this.probeStatus.protocol,
       version: this.probeStatus.version,

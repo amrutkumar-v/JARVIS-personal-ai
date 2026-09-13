@@ -87,6 +87,7 @@ export class WebCameraController implements CameraController {
   private readonly canvasFactory: () => CameraCanvasLike
   private stream: MediaStream | null = null
   private videoElement: HTMLVideoElement | null = null
+  private readonly extraVideoElements = new Set<HTMLVideoElement>()
   private permission: CameraPermissionState = 'unknown'
   private available: boolean
   private readonly listeners = new Set<(status: CameraCapabilities) => void>()
@@ -133,6 +134,31 @@ export class WebCameraController implements CameraController {
     }
   }
 
+  private bindAll(): void {
+    if (!this.stream) return
+    const apply = (el: HTMLVideoElement) => {
+      try {
+        el.srcObject = this.stream
+      } catch {
+        // Ignore — element may be detached or srcObject unsupported.
+      }
+    }
+    if (this.videoElement) apply(this.videoElement)
+    for (const el of this.extraVideoElements) apply(el)
+  }
+
+  private unbindAll(): void {
+    const clear = (el: HTMLVideoElement) => {
+      try {
+        el.srcObject = null
+      } catch {
+        // Ignore — element may be gone.
+      }
+    }
+    if (this.videoElement) clear(this.videoElement)
+    for (const el of this.extraVideoElements) clear(el)
+  }
+
   async start(): Promise<CameraStartResult> {
     if (!this.mediaDevices) {
       return { ok: false, permission: 'unavailable', reason: CAMERA_UNAVAILABLE_MESSAGE }
@@ -145,13 +171,7 @@ export class WebCameraController implements CameraController {
       const stream = await this.mediaDevices.getUserMedia({ video: true, audio: false })
       this.releaseStream()
       this.stream = stream
-      if (this.videoElement) {
-        try {
-          this.videoElement.srcObject = stream
-        } catch {
-          // srcObject unsupported — the preview element simply stays empty.
-        }
-      }
+      this.bindAll()
       const videoTrack = stream.getVideoTracks()[0]
       videoTrack?.addEventListener('ended', () => {
         // The OS or another app closed the camera — report the honest state.
@@ -179,13 +199,7 @@ export class WebCameraController implements CameraController {
         // Already stopped — fine.
       }
     }
-    if (this.videoElement) {
-      try {
-        this.videoElement.srcObject = null
-      } catch {
-        // Ignore — the preview element may already be gone.
-      }
-    }
+    this.unbindAll()
     this.stream = null
   }
 
@@ -219,6 +233,27 @@ export class WebCameraController implements CameraController {
       } catch {
         // Ignore — preview binding is best-effort; capture uses the stream.
       }
+    }
+  }
+
+  bindVideoElement(element: HTMLVideoElement | null): void {
+    if (!element) return
+    this.extraVideoElements.add(element)
+    if (this.stream) {
+      try {
+        element.srcObject = this.stream
+      } catch {
+        // Ignore — element may be detached.
+      }
+    }
+  }
+
+  unbindVideoElement(element: HTMLVideoElement): void {
+    this.extraVideoElements.delete(element)
+    try {
+      element.srcObject = null
+    } catch {
+      // Ignore — element may already be gone.
     }
   }
 

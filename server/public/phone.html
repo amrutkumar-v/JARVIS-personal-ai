@@ -225,6 +225,11 @@
         });
         es.addEventListener('notify', function (ev) { addNotification(JSON.parse(ev.data)); });
         es.addEventListener('file', function (ev) { addFile(JSON.parse(ev.data)); });
+        es.addEventListener('open-url', function (ev) {
+          var msg = JSON.parse(ev.data);
+          if (!deviceId || (msg.deviceId && msg.deviceId !== deviceId)) return;
+          try { window.open(msg.url, '_blank'); } catch (e) { /* popup blocked — user opens manually */ }
+        });
         es.addEventListener('wake', function () { /* wake registry — informational */ });
         es.onerror = function () {
           setConn('connection lost — reconnecting…', false);

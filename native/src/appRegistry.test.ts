@@ -9,6 +9,11 @@ function tempDir(): string {
   return mkdtempSync(join(tmpdir(), 'jarvis-appregistry-'))
 }
 
+function resolvedId(registry: AppRegistry, claim: string): string | null {
+  const result = registry.resolve(claim)
+  return 'record' in result ? result.record.applicationId : null
+}
+
 describe('AppRegistry — configured allow-list (Phase 1.3)', () => {
   it('registers valid configured apps and marks plain .exe targets launchable', () => {
     const registry = new AppRegistry({
@@ -70,7 +75,7 @@ describe('AppRegistry — bounded Start Menu discovery (Phase 1.3)', () => {
       writeLnkAnsi(dir, 'Notepad.lnk', 'C:\\Windows\\System32\\notepad.exe')
       writeLnkAnsi(join(dir, 'Sub'), 'Calculator.lnk', 'C:\\Windows\\System32\\calc.exe')
 
-      const registry = new AppRegistry({ discoveryDirs: [dir] })
+      const registry = new AppRegistry({ discoveryDirs: [dir], systemApps: false })
       const ids = registry.listRecords().map((r) => ({ id: r.applicationId, source: r.source }))
       expect(ids).toContainEqual({ id: 'visual-studio-code', source: 'discovered' })
       expect(ids).toContainEqual({ id: 'notepad', source: 'discovered' })
@@ -96,15 +101,15 @@ describe('AppRegistry — bounded Start Menu discovery (Phase 1.3)', () => {
     }
   })
 
-  it('survives unreadable/junk shortcut files with launchable: false', () => {
+  it('skips unreadable/junk shortcut files entirely', () => {
     const dir = tempDir()
     try {
       writeLnkAnsi(dir, 'Broken.lnk', 'C:\\Windows\\System32\\cmd.exe') // shell host
       const junk = join(dir, 'Junk.lnk')
       writeFileSync(junk, Buffer.from('this is not a real link at all'))
-      const registry = new AppRegistry({ discoveryDirs: [dir] })
-      expect(registry.getRecord('broken')).toMatchObject({ launchable: false })
-      expect(registry.getRecord('junk')).toMatchObject({ launchable: false })
+      const registry = new AppRegistry({ discoveryDirs: [dir], systemApps: false })
+      expect(registry.getRecord('broken')).toBeUndefined()
+      expect(registry.getRecord('junk')).toBeUndefined()
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
@@ -167,5 +172,154 @@ describe('slugify — shortcut filename → stable applicationId', () => {
 
   it('falls back to "app" when nothing alphanumeric remains', () => {
     expect(slugify('!!!.lnk')).toBe('app')
+  })
+})
+
+describe('AppRegistry — alias + fidelity resolution (Phase 1.3 demoready)', () => {
+  function chromeRegistry() {
+    return new AppRegistry({
+      configured: {
+        notepad: { name: 'Notepad', target: 'C:\\Windows\\System32\\notepad.exe' },
+        chrome: { name: 'Google Chrome', target: 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe', aliases: ['google-chrome'] },
+        'visual-studio-code': {
+          name: 'Visual Studio Code',
+          target: 'C:\\Program Files\\Microsoft VS Code\\Code.exe',
+          aliases: ['vscode', 'code'],
+        },
+      },
+      discover: false,
+    })
+  }
+
+  it('resolves exact ids, declared aliases, curated synonyms and token claims', () => {
+    const registry = chromeRegistry()
+    expect(resolvedId(registry, 'notepad')).toBe('notepad')
+    expect(resolvedId(registry, 'google chrome')).toBe('chrome')
+    expect(resolvedId(registry, 'Google Chrome')).toBe('chrome')
+    expect(resolvedId(registry, 'vscode')).toBe('visual-studio-code')
+    expect(resolvedId(registry, 'code')).toBe('visual-studio-code')
+    expect(resolvedId(registry, 'visual studio code')).toBe('visual-studio-code')
+  })
+
+  it('reports ambiguous when several distinct apps match a single claim', () => {
+    const registry = new AppRegistry({
+      configured: {
+        'chrome-beta': { target: 'C:\\A\\chrome-beta.exe' },
+        'chrome-dev': { target: 'C:\\B\\chrome-dev.exe' },
+        notepad: { target: 'C:\\Windows\\System32\\notepad.exe' },
+      },
+      discover: false,
+    })
+    const result = registry.resolve('chrome')
+    expect('ambiguous' in result).toBe(true)
+    if ('ambiguous' in result) {
+      expect(result.ambiguous.map((r) => r.applicationId).sort()).toEqual(['chrome-beta', 'chrome-dev'])
+    }
+  })
+
+  it('reports missing for unknown claims — never guesses', () => {
+    const registry = chromeRegistry()
+    const result = registry.resolve('does not exist here')
+    expect('missing' in result).toBe(true)
+  })
+
+  it('a claim can never smuggle a path or shell metacharacter', () => {
+    const registry = chromeRegistry()
+    const registered = ['C:\\Windows\\System32\\cmd.exe', 'calc.exe /evil', 'chrome & dir']
+    for (const nasty of registered) {
+      expect(resolvedId(registry, nasty)).toBeNull()
+    }
+    // Even a path-shaped claim resolves ONLY to a registered application id.
+    const sneaky = resolvedId(registry, '..\\..\\chrome')
+    expect(sneaky).toBe('chrome')
+  })
+})
+
+describe('AppRegistry — system + registry sources (Phase 1.3 demoready)', () => {
+  it('seeds verified system tools (win32) and never shell hosts', async () => {
+    const dir = tempDir()
+    try {
+      const exe = join(dir, 'my-tool.exe')
+      writeFileSync(exe, 'binary')
+      const registry = new AppRegistry({
+        platform: 'win32',
+        discoveryDirs: [],
+        systemApps: true,
+        systemAppSeeds: [
+          { id: 'my-tool', displayName: 'My Tool', exe },
+          { id: 'missing-tool', displayName: 'Missing', exe: join(dir, 'nope.exe') },
+          { id: 'settings', displayName: 'Settings', uri: 'ms-settings:' },
+          { id: 'evil', displayName: 'Evil', uri: 'powershell:/x' },
+          { id: 'limited', displayName: 'Limited', uri: 'ms-settings:"x"' },
+        ],
+      })
+      await registry.ready()
+      expect(registry.getRecord('my-tool')).toMatchObject({ source: 'system', mechanism: 'exe', launchable: true })
+      expect(registry.getRecord('missing-tool')).toBeUndefined()
+      expect(registry.getRecord('settings')).toMatchObject({ source: 'system', mechanism: 'uri', uri: 'ms-settings:', launchable: true })
+      expect(registry.getRecord('evil')).toBeUndefined() // scheme not in the allow-list
+      expect(registry.getRecord('limited')).toBeUndefined() // quote smuggled into the uri
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('absorbs App Paths + packaged entries through injected readers and refreshes honestly', async () => {
+    let appPaths: Array<{ name: string; path: string }> = [
+      { name: 'chrome.exe', path: 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe' },
+    ]
+    let packaged: Array<{ aumid: string; displayName: string }> = [
+      { aumid: 'Microsoft.WindowsCalculator_8wekyb3d8bbwe!App', displayName: 'Microsoft.WindowsCalculator' },
+    ]
+    const registry = new AppRegistry({
+      platform: 'win32',
+      configured: { notepad: { target: 'C:\\Windows\\System32\\notepad.exe' } },
+      discoveryDirs: [],
+      systemApps: false,
+      appPathsReader: async () => appPaths,
+      packagedReader: async () => packaged,
+    })
+    await registry.ready()
+
+    expect(registry.getRecord('chrome')).toMatchObject({ source: 'appPaths', mechanism: 'exe', launchable: true })
+    expect(registry.getRecord('microsoft-windowscalculator')).toMatchObject({
+      source: 'packaged',
+      mechanism: 'aumid',
+      aumid: 'Microsoft.WindowsCalculator_8wekyb3d8bbwe!App',
+      launchable: true,
+    })
+    expect(registry.listRecords().map((r) => r.applicationId).sort()).toEqual([
+      'chrome',
+      'microsoft-windowscalculator',
+      'notepad',
+    ])
+
+    // Refresh: chrome vanishes, Edge appears, the configured notepad survives.
+    appPaths = [{ name: 'msedge.exe', path: 'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe' }]
+    packaged = []
+    const result = await registry.refresh()
+    expect(result.total).toBe(2)
+    expect(result.discovered).toBe(1)
+    expect(result.configured).toBe(1)
+    expect(registry.getRecord('chrome')).toBeUndefined()
+    expect(registry.getRecord('msedge')).toMatchObject({ source: 'appPaths', mechanism: 'exe' })
+    expect(registry.getRecord('microsoft-windowscalculator')).toBeUndefined()
+    expect(registry.getRecord('notepad')).toMatchObject({ source: 'configured' })
+  })
+
+  it('registers configured aumid/uri shell routes and drops invalid ones', () => {
+    const registry = new AppRegistry({
+      configured: {
+        'calc-store': { mechanism: 'aumid', aumid: 'Microsoft.WindowsCalculator_8wekyb3d8bbwe!App' },
+        settings: { mechanism: 'uri', uri: 'ms-settings:' },
+        'bad-aumid': { mechanism: 'aumid', aumid: '..\\..\\evil!' },
+        'bad-uri': { mechanism: 'uri', uri: 'powershell:/cmd' },
+      },
+      discover: false,
+    })
+    expect(registry.getRecord('calc-store')).toMatchObject({ mechanism: 'aumid', aumid: 'Microsoft.WindowsCalculator_8wekyb3d8bbwe!App', launchable: true })
+    expect(registry.getRecord('settings')).toMatchObject({ mechanism: 'uri', uri: 'ms-settings:', launchable: true })
+    expect(registry.getRecord('bad-aumid')).toBeUndefined()
+    expect(registry.getRecord('bad-uri')).toBeUndefined()
   })
 })

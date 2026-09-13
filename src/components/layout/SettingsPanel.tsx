@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useJarvisStore } from '../../state/jarvis.store'
+import type { GestureUiState } from '../../state/jarvis.store'
 import { JARVIS_THEMES, THEME_META } from '../../themes'
 import type {
   UserPreferences,
@@ -34,6 +35,9 @@ interface Props {
   modelLabel?: string
   endpointLabel?: string
   memory?: MemoryAPI
+  /** Phase 10 — live gesture mirror (read-only status; the controller is never
+   * toggled here — gestures follow the camera with no separate switch). */
+  gesture?: GestureUiState
 }
 
 function PreferenceRate() {
@@ -344,7 +348,46 @@ function MemorySection({ memory }: { memory: MemoryAPI }) {
   )
 }
 
-export function SettingsPanel({ open, onClose, providerLabel, modelLabel, endpointLabel, memory }: Props) {
+function SchedulingSection() {
+  const schedule = useJarvisStore.use.schedule()
+  return (
+    <section className="settings-block">
+      <div className="settings-block-head">
+        <h3>REMINDERS</h3>
+        <span className="memory-count">
+          {schedule.length} scheduled
+        </span>
+      </div>
+      {schedule.length === 0 ? (
+        <p className="memory-empty">
+          No reminders scheduled. Ask JARVIS to "remind me at 7 PM to water the plants". Reminders run while JARVIS
+          is open; anything missed is re-run once, honestly marked, on the next open.
+        </p>
+      ) : (
+        <ul className="memory-list">
+          {schedule.map((r) => (
+            <li key={r.id} className="memory-item">
+              <span className="memory-badge">{r.kind.toUpperCase()}</span>
+              <div className="memory-item-body">
+                <p className="memory-item-text">{r.text}</p>
+                <p className="memory-item-meta">
+                  next: {new Date(r.nextRun).toLocaleString()}
+                  {r.lastResult === 'missed' ? ' · last run was missed — will re-run once' : ''}
+                </p>
+              </div>
+            </li>
+          ))}
+        </ul>
+      )}
+      <p className="settings-note-inline">
+        Reminders are stored locally (browser storage) and fire only while this app is open — the browser cannot
+        guarantee timers when it is closed.
+      </p>
+    </section>
+  )
+}
+
+export function SettingsPanel({ open, onClose, providerLabel, modelLabel, endpointLabel, memory, gesture }: Props) {
   const prefs = useJarvisStore.use.preferences()
   const caps = useJarvisStore.use.capabilities()
   const setPrefs = useJarvisStore((s) => s.setPreferences)
@@ -501,6 +544,40 @@ export function SettingsPanel({ open, onClose, providerLabel, modelLabel, endpoi
         </section>
 
         <section className="settings-block">
+          <h3>HAND GESTURES</h3>
+          <div className="setting-row">
+            <span>Status</span>
+            <span className="setting-value">
+              {gesture?.error
+                ? `Unavailable — ${gesture.error}`
+                : gesture?.active
+                  ? 'Active'
+                  : 'Off (turn on the camera) — hand gestures follow the camera stream automatically, with no separate toggle.'}
+            </span>
+          </div>
+          <div className="setting-row">
+            <span>Phase</span>
+            <span className="setting-value">{gesture?.phase ?? 'unknown'}</span>
+          </div>
+          <div className="setting-row">
+            <span>Hands detected</span>
+            <span className="setting-value">{gesture?.hands ?? 0}</span>
+          </div>
+          <div className="setting-row">
+            <span>Tracking quality</span>
+            <span className="setting-value">{gesture?.quality ?? 'none'}</span>
+          </div>
+          <p className="settings-note-inline">
+            Hand gestures are ON BY DEFAULT: they run the bundled local
+            hand-tracking model on the SAME camera stream the operator controls
+            and stop the moment the camera is turned off. No data leaves the
+            browser. Zoom In (expand), Zoom Out (contract), Crush (close topmost
+            panel), Theme Change (horizontal swipe) are the only supported
+            gestures. Mapping lives in src/gesture/mapping.ts.
+          </p>
+        </section>
+
+        <section className="settings-block">
           <h3>RENDERING</h3>
           <div className="setting-row">
             <span>Animation intensity</span>
@@ -513,6 +590,8 @@ export function SettingsPanel({ open, onClose, providerLabel, modelLabel, endpoi
         </section>
 
         {memory ? <MemorySection key={open ? 'open' : 'closed'} memory={memory} /> : null}
+
+        <SchedulingSection />
 
         <section className="settings-block">
           <h3>CAPABILITIES</h3>
@@ -527,7 +606,13 @@ export function SettingsPanel({ open, onClose, providerLabel, modelLabel, endpoi
         </section>
 
         <p className="settings-note">
-          Phase 0 development build — the AI provider is a clearly-labelled mock. No keys are stored in this frontend.
+          AI provider: {providerLabel}.
+          {caps.aiConnected
+            ? ' Connected to a real AI endpoint.'
+            : caps.aiConfigured
+              ? ' Configured — the endpoint is currently unreachable, so execution is honestly limited.'
+              : ' Development mode: the clearly-labelled mock provider is active because no real AI configuration was found.'}
+          {' '}No keys are stored in this frontend.
           {!caps.visionAvailable
             ? ' Visual semantic understanding is unavailable until a real VisionProvider is configured.'
             : ''}

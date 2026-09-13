@@ -7,6 +7,8 @@ import speechProviderRaw from './speechProvider.ts?raw'
 import ttsProviderRaw from './ttsProvider.ts?raw'
 import voiceManagerRaw from './voiceManager.ts?raw'
 import testingRaw from './testing.ts?raw'
+import diagnosticsRaw from './diagnostics.ts?raw'
+import voiceOutputRaw from './VoiceOutput.ts?raw'
 
 /**
  * Phase 1.6 — static security/boundary scan of the production voice module.
@@ -29,6 +31,8 @@ const PROD_FILES: Array<[name: string, src: string]> = [
   ['speechProvider.ts', speechProviderRaw],
   ['ttsProvider.ts', ttsProviderRaw],
   ['voiceManager.ts', voiceManagerRaw],
+  ['diagnostics.ts', diagnosticsRaw],
+  ['VoiceOutput.ts', voiceOutputRaw],
 ]
 
 function read(name: string): string {

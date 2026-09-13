@@ -1,11 +1,11 @@
 import { useState } from 'react'
+import type { PanelId } from '../../panel/types'
 import { Header } from './Header'
+import { JarvisTaskbar } from './JarvisTaskbar'
 import { CoreCaption } from '../core/CoreCaption'
 import { ArcReactor } from '../core/ArcReactor'
 import { VoiceButton } from '../voice/VoiceButton'
-import { ActivityPanel } from '../system/ActivityPanel'
 import { Notices } from '../system/Notices'
-import { TranscriptLog } from '../conversation/TranscriptLog'
 import { SettingsPanel } from './SettingsPanel'
 import { ConfirmDialog } from '../system/ConfirmDialog'
 import { TaskIndicator } from '../system/TaskIndicator'
@@ -17,20 +17,37 @@ import type { Episode } from '../../memory/episodes'
 import type { MemoryConfirmRequest, ToolConfirmationRequest } from '../../engine/contracts'
 import { canHear } from '../../utils/capabilities'
 import { useJarvisStore } from '../../state/jarvis.store'
-import type { CameraUiState, BackendUiState } from '../../state/jarvis.store'
-import { CameraPanel } from '../camera/CameraPanel'
-import { ConnectivityStrip } from '../system/ConnectivityStrip'
+import type { CameraUiState, BackendUiState, GestureUiState } from '../../state/jarvis.store'
+import { PanelHost } from '../panel/PanelHost'
 import { BackendStatus } from '../system/BackendStatus'
+import { ConnectivityStrip } from '../system/ConnectivityStrip'
+import { ActivityPanel } from '../system/ActivityPanel'
+import { TranscriptLog } from '../conversation/TranscriptLog'
+import { CameraPanel } from '../camera/CameraPanel'
+import { GestureHud } from '../gesture/GestureHud'
+import { EnvironmentPanel } from '../panel/EnvironmentPanel'
+import { CapabilityPanel } from '../panel/CapabilityPanel'
+import { ApplicationCatalogue } from '../panel/ApplicationCatalogue'
+import type { ApplicationProvider } from '../../applications'
+import {
+  visionRows,
+  devicesRows,
+  filesRows,
+  applicationsRows,
+} from '../panel/capabilityData'
+import { usePanelLayoutStore } from '../../panel/panelStore'
 
 interface AssistantAPI {
   status: ReturnType<typeof useJarvisStore.getState>['status']
   isRecognizing: boolean
   isSpeaking: boolean
   capabilities: ReturnType<typeof useJarvisStore.getState>['capabilities']
+  catalog: ReturnType<typeof useJarvisStore.getState>['capCatalog']
   preferences: ReturnType<typeof useJarvisStore.getState>['preferences']
   voiceState: ReturnType<typeof useJarvisStore.getState>['voiceState']
   voiceArmed: boolean
   camera: CameraUiState
+  gesture: GestureUiState
   backend: BackendUiState
   providerLabel: string
   modelLabel?: string
@@ -43,6 +60,8 @@ interface AssistantAPI {
   onToggleCamera: () => void
   onCaptureCamera: () => void
   onSetCameraVideo: (element: HTMLVideoElement | null) => void
+  /** Live getter for the engine's current application provider (may swap). */
+  applicationProvider: () => ApplicationProvider | undefined
   onStopSpeaking: () => void
   onInterrupt: () => void
 }
@@ -78,10 +97,6 @@ interface Props {
   onCancelTask?: () => void
 }
 
-/**
- * App chrome: topbar, caption, dock (primary voice control), side panels.
- * The 3D viewport sits behind everything at its own z-layer.
- */
 export function JarvisShell({
   assistant,
   memory,
@@ -92,10 +107,8 @@ export function JarvisShell({
   onCancelTask,
 }: Props) {
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const environmentId = usePanelLayoutStore((s) => s.environmentId)
 
-  // Phase 2.7 — unified interrupt surface: the STOP control is live while the
-  // engine is mid-flight (understanding→verifying), cancelling, awaiting
-  // confirmation, speaking, or driving an active goal task.
   const activeStatuses: Array<ReturnType<typeof useJarvisStore.getState>['status']> = [
     'understanding',
     'planning',
@@ -106,31 +119,107 @@ export function JarvisShell({
     'speaking',
     'waiting_for_confirmation',
   ]
-  const canInterrupt = assistant.isSpeaking || activeStatuses.includes(assistant.status) || (task?.active ?? false)
-  const stopLabel = assistant.isSpeaking || assistant.status === 'speaking' ? 'STOP SPEAKING' : 'STOP TASK'
+  const canInterrupt =
+    assistant.isSpeaking ||
+    activeStatuses.includes(assistant.status) ||
+    (task?.active ?? false)
+  const stopLabel =
+    assistant.isSpeaking || assistant.status === 'speaking'
+      ? 'STOP SPEAKING'
+      : 'STOP TASK'
+
+  const renderPanel = (id: PanelId) => {
+    switch (id) {
+      case 'core':
+        return <BackendStatus backend={assistant.backend} />
+      case 'camera':
+        return (
+          <CameraPanel
+            camera={assistant.camera}
+            onToggle={assistant.onToggleCamera}
+            onCapture={assistant.onCaptureCamera}
+            onSetVideo={assistant.onSetCameraVideo}
+          />
+        )
+      case 'conversation':
+        return <TranscriptLog />
+      case 'activity':
+        return <ActivityPanel />
+      case 'system':
+        return (
+          <ConnectivityStrip
+            capabilities={assistant.capabilities}
+            camera={assistant.camera}
+            backend={assistant.backend}
+          />
+        )
+      case 'environments':
+        return <EnvironmentPanel />
+      case 'vision':
+        return (
+          <CapabilityPanel
+            title="VISION"
+            rows={visionRows(assistant.capabilities, assistant.catalog)}
+          />
+        )
+      case 'devices':
+        return (
+          <CapabilityPanel
+            title="DEVICES"
+            rows={devicesRows(assistant.capabilities, assistant.backend, assistant.catalog)}
+          />
+        )
+      case 'files':
+        return (
+          <CapabilityPanel
+            title="FILES"
+            rows={filesRows(assistant.capabilities, assistant.catalog)}
+          />
+        )
+      case 'applications':
+        return (
+          <>
+            <CapabilityPanel
+              title="APPLICATIONS"
+              rows={applicationsRows(assistant.capabilities, assistant.catalog)}
+            />
+            <ApplicationCatalogue provider={assistant.applicationProvider()} />
+          </>
+        )
+      default:
+        return null
+    }
+  }
 
   return (
     <div className="jarvis-shell">
-      <Header status={assistant.status} onOpenSettings={() => setSettingsOpen(true)} />
+      <Header
+        status={assistant.status}
+        onOpenSettings={() => setSettingsOpen(true)}
+      />
+
+      <JarvisTaskbar
+        onOpenSettings={() => setSettingsOpen(true)}
+      />
+
+      <GestureHud gesture={assistant.gesture} />
 
       <main className="jarvis-stage">
-        <ConnectivityStrip capabilities={assistant.capabilities} camera={assistant.camera} backend={assistant.backend} />
-        <BackendStatus backend={assistant.backend} />
-        <CameraPanel
-          camera={assistant.camera}
-          onToggle={assistant.onToggleCamera}
-          onCapture={assistant.onCaptureCamera}
-          onSetVideo={assistant.onSetCameraVideo}
-        />
-        <ArcReactor />
-        <CoreCaption />
+        {environmentId === 'arc' ? <ArcReactor /> : null}
+        {environmentId === 'arc' || environmentId === 'space' || environmentId === 'tunnel' ? (
+          <CoreCaption />
+        ) : null}
         <TaskIndicator />
         <GoalPanel />
       </main>
 
+      <PanelHost renderPanel={renderPanel} />
+
       <footer className="jarvis-dock">
         {!canHear() && !assistant.capabilities.speechSynthesisAvailable ? (
-          <p className="dock-warning">This browser has no voice support — keyboard and text still work.</p>
+          <p className="dock-warning">
+            This browser has no voice support — keyboard and text still work.
+          </p>
         ) : null}
         <VoiceButton
           isListening={assistant.isRecognizing}
@@ -138,16 +227,21 @@ export function JarvisShell({
           onStart={assistant.startListening}
           onStop={assistant.stopListening}
         />
-        {assistant.capabilities.wakeWordAvailable && assistant.preferences.wakeWordEnabled ? (
+        {assistant.capabilities.wakeWordAvailable &&
+        assistant.preferences.wakeWordEnabled ? (
           <button
             type="button"
             className={`wake-chip${assistant.voiceArmed ? ' is-armed' : ''}`}
             aria-pressed={assistant.voiceArmed}
-            aria-label={assistant.voiceArmed ? 'Disarm wake word' : 'Arm wake word'}
+            aria-label={
+              assistant.voiceArmed ? 'Disarm wake word' : 'Arm wake word'
+            }
             onClick={assistant.voiceArmed ? assistant.disarmWake : assistant.armWake}
           >
             <span className="wake-dot" aria-hidden="true" />
-            {assistant.voiceArmed ? assistant.voiceState.replace('_', ' ') : 'WAKE'}
+            {assistant.voiceArmed
+              ? assistant.voiceState.replace('_', ' ')
+              : 'WAKE'}
           </button>
         ) : null}
         <GoalComposer
@@ -157,17 +251,19 @@ export function JarvisShell({
           onCancel={onCancelTask ?? (() => {})}
         />
         {canInterrupt ? (
-          <button type="button" className="stop-all" onClick={assistant.onInterrupt} aria-label={stopLabel}>
+          <button
+            type="button"
+            className="stop-all"
+            onClick={assistant.onInterrupt}
+            aria-label={stopLabel}
+          >
             {stopLabel}
           </button>
         ) : null}
-        <p className="dock-hint">Hold to speak · type to ASK or run a GOAL</p>
+        <p className="dock-hint">
+          Hold to speak · type to ASK or run a GOAL
+        </p>
       </footer>
-
-      <aside className="jarvis-sidebar">
-        <ActivityPanel />
-        <TranscriptLog />
-      </aside>
 
       <Notices />
 

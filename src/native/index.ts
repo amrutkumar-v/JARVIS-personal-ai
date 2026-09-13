@@ -16,6 +16,7 @@ import { NativeWindowsDesktopProvider } from './NativeWindowsDesktopProvider'
 import { NativeWindowsWebProvider } from './NativeWindowsWebProvider'
 import { NativeWindowsClipboardProvider } from './NativeWindowsClipboardProvider'
 import { NativeWindowsBrowserProvider } from './NativeWindowsBrowserProvider'
+import { readNativeAgentEnv } from './nativeAgentEnv'
 
 /**
  * Web-side app bootstrap (Phase 1.2/1.3/1.4/1.5).
@@ -36,15 +37,9 @@ import { NativeWindowsBrowserProvider } from './NativeWindowsBrowserProvider'
  * reachable.
  */
 export function createDefaultAppFileSystemProvider(): FileSystemProvider {
-  const env = (import.meta as unknown as { env?: Record<string, string | undefined> }).env ?? {}
-  const nativeUrl = env.VITE_NATIVE_AGENT_URL?.trim()
-  if (nativeUrl) {
-    return new NativeWindowsFileSystemProvider({
-      baseUrl: nativeUrl,
-      token: env.VITE_NATIVE_AGENT_TOKEN ?? '',
-    })
-  }
-  return createFileSystemProvider()
+  const env = readNativeAgentEnv()
+  if (!env) return createFileSystemProvider()
+  return new NativeWindowsFileSystemProvider(env)
 }
 
 /**
@@ -53,14 +48,9 @@ export function createDefaultAppFileSystemProvider(): FileSystemProvider {
  * The engine only registers app tools when this returns a provider.
  */
 export function createDefaultAppApplicationProvider(): ApplicationProvider | undefined {
-  const env = (import.meta as unknown as { env?: Record<string, string | undefined> }).env ?? {}
-  const nativeUrl = env.VITE_NATIVE_AGENT_URL?.trim()
-  if (!nativeUrl) return undefined
-  const rpc = new NativeAgentRpc({
-    baseUrl: nativeUrl,
-    token: env.VITE_NATIVE_AGENT_TOKEN ?? '',
-  })
-  return new NativeWindowsApplicationProvider(rpc)
+  const env = readNativeAgentEnv()
+  if (!env) return undefined
+  return new NativeWindowsApplicationProvider(new NativeAgentRpc(env))
 }
 
 /**
@@ -70,14 +60,9 @@ export function createDefaultAppApplicationProvider(): ApplicationProvider | und
  * and `desktop.screenshot` still demands explicit user confirmation.
  */
 export function createDefaultAppObservationProvider(): ObservationProvider | undefined {
-  const env = (import.meta as unknown as { env?: Record<string, string | undefined> }).env ?? {}
-  const nativeUrl = env.VITE_NATIVE_AGENT_URL?.trim()
-  if (!nativeUrl) return undefined
-  const rpc = new NativeAgentRpc({
-    baseUrl: nativeUrl,
-    token: env.VITE_NATIVE_AGENT_TOKEN ?? '',
-  })
-  return new NativeWindowsObservationProvider(rpc)
+  const env = readNativeAgentEnv()
+  if (!env) return undefined
+  return new NativeWindowsObservationProvider(new NativeAgentRpc(env))
 }
 
 /**
@@ -87,14 +72,9 @@ export function createDefaultAppObservationProvider(): ObservationProvider | und
  * when this returns a provider.
  */
 export function createDefaultAppDesktopProvider(): DesktopProvider | undefined {
-  const env = (import.meta as unknown as { env?: Record<string, string | undefined> }).env ?? {}
-  const nativeUrl = env.VITE_NATIVE_AGENT_URL?.trim()
-  if (!nativeUrl) return undefined
-  const rpc = new NativeAgentRpc({
-    baseUrl: nativeUrl,
-    token: env.VITE_NATIVE_AGENT_TOKEN ?? '',
-  })
-  return new NativeWindowsDesktopProvider(rpc)
+  const env = readNativeAgentEnv()
+  if (!env) return undefined
+  return new NativeWindowsDesktopProvider(new NativeAgentRpc(env))
 }
 
 /**
@@ -103,13 +83,9 @@ export function createDefaultAppDesktopProvider(): DesktopProvider | undefined {
  * The engine only registers web.* tools when this returns a provider.
  */
 export function createDefaultAppWebProvider(): WebProvider | undefined {
-  const env = (import.meta as unknown as { env?: Record<string, string | undefined> }).env ?? {}
-  const nativeUrl = env.VITE_NATIVE_AGENT_URL?.trim()
-  if (!nativeUrl) return undefined
-  return new NativeWindowsWebProvider({
-    baseUrl: nativeUrl,
-    token: env.VITE_NATIVE_AGENT_TOKEN ?? '',
-  })
+  const env = readNativeAgentEnv()
+  if (!env) return undefined
+  return new NativeWindowsWebProvider(env)
 }
 
 /**
@@ -134,13 +110,9 @@ export function createDefaultAppVisionProvider(): VisionProvider | undefined {
  * provider.
  */
 export function createDefaultAppClipboardProvider(): ClipboardProvider | undefined {
-  const env = (import.meta as unknown as { env?: Record<string, string | undefined> }).env ?? {}
-  const nativeUrl = env.VITE_NATIVE_AGENT_URL?.trim()
-  if (!nativeUrl) return undefined
-  return new NativeWindowsClipboardProvider({
-    baseUrl: nativeUrl,
-    token: env.VITE_NATIVE_AGENT_TOKEN ?? '',
-  })
+  const env = readNativeAgentEnv()
+  if (!env) return undefined
+  return new NativeWindowsClipboardProvider(env)
 }
 
 /**
@@ -150,13 +122,9 @@ export function createDefaultAppClipboardProvider(): ClipboardProvider | undefin
  * returns a provider.
  */
 export function createDefaultAppBrowserProvider(): BrowserProvider | undefined {
-  const env = (import.meta as unknown as { env?: Record<string, string | undefined> }).env ?? {}
-  const nativeUrl = env.VITE_NATIVE_AGENT_URL?.trim()
-  if (!nativeUrl) return undefined
-  return new NativeWindowsBrowserProvider({
-    baseUrl: nativeUrl,
-    token: env.VITE_NATIVE_AGENT_TOKEN ?? '',
-  })
+  const env = readNativeAgentEnv()
+  if (!env) return undefined
+  return new NativeWindowsBrowserProvider(env)
 }
 
 export { NativeWindowsFileSystemProvider, isNativeWindowsProvider } from './NativeWindowsFileSystemProvider'

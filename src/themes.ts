@@ -38,3 +38,14 @@ export const THEME_META: Record<JarvisTheme, ThemeMeta> = {
 export function isJarvisTheme(value: string): value is JarvisTheme {
   return (JARVIS_THEMES as readonly string[]).includes(value)
 }
+
+/**
+ * Phase 10 — the next theme in catalogue order (wraps). Arms the theme-change
+ * surface (gesture/voice/UI) with a single deterministic cycle; the store still
+ * owns the actual set+persist.
+ */
+export function nextTheme(current: JarvisTheme): JarvisTheme {
+  const i = JARVIS_THEMES.indexOf(current)
+  const idx = i === -1 ? 0 : (i + 1) % JARVIS_THEMES.length
+  return JARVIS_THEMES[idx]!
+}

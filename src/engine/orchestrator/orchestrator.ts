@@ -30,6 +30,11 @@ export class PersonalAICore {
     // actually available on at least one online device this pass.
     const availableCapabilities = discovery.globalCapabilities.map((c) => c.id)
 
+    // Prefer a local PC device from discovery if available (fallback for when
+    // the device bridge backend is disconnected but local providers exist).
+    const localPcDevice = discovery.devices.find(d => d.deviceId === 'local-pc' && d.online)
+    const hasLocalPc = !!localPcDevice
+
     const understanding = understandRequest(originalText, {
       devices,
       hasActiveTask: view.hasActiveTask(),
@@ -38,15 +43,23 @@ export class PersonalAICore {
     })
 
     const explicitTargets = understanding.targetDevices
-    const targets: OrchestrationTarget[] = explicitTargets.map((id) => routeDeviceTarget(devices, id))
+    let targets: OrchestrationTarget[] = explicitTargets.map((id) => routeDeviceTarget(devices, id))
 
     let implicitTargetDevice: string | undefined
     if (
       (understanding.class === 'command' || understanding.class === 'device_operation') &&
       targets.length === 0
     ) {
-      implicitTargetDevice = DEFAULT_HOST_DEVICE
-      targets.push(routeDeviceTarget(devices, DEFAULT_HOST_DEVICE))
+      // If we have a local PC from discovery, prefer it over DEFAULT_HOST_DEVICE
+      // when the default host device is not reachable.
+      const defaultHostRoutable = devices.some(d => d.id === DEFAULT_HOST_DEVICE && d.online)
+      if (hasLocalPc && !defaultHostRoutable) {
+        implicitTargetDevice = localPcDevice!.deviceId
+        targets.push({ deviceId: localPcDevice!.deviceId, transport: 'local-host', available: true })
+      } else {
+        implicitTargetDevice = DEFAULT_HOST_DEVICE
+        targets.push(routeDeviceTarget(devices, DEFAULT_HOST_DEVICE))
+      }
     }
 
     return {

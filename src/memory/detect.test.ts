@@ -9,6 +9,7 @@ import {
   isExplicitMemoryCommand,
   looksLikeQuestion,
   shouldAutoCapture,
+  detectSource,
 } from '../memory/detect'
 
 describe('memory detection heuristics', () => {
@@ -62,6 +63,41 @@ describe('memory detection heuristics', () => {
     expect(draft.content).toBe('my name is Aria')
     expect(draft.type).toBe('PROFILE')
     expect(draft.importance).toBeGreaterThan(0.5)
+  })
+})
+
+describe('detectSource — fact origin classification (Work 3)', () => {
+  it('marks explicit memory commands as user-voiced', () => {
+    expect(detectSource('remember my favorite color is teal')).toBe('user')
+    // A vocative ("jarvis, …") is the user addressing JARVIS — still user-voiced.
+    expect(detectSource('jarvis, remember my name is Aria')).toBe('user')
+  })
+
+  it('marks first-person personal statements as user-voiced', () => {
+    expect(detectSource('My name is Aria')).toBe('user')
+    expect(detectSource('I prefer concise replies')).toBe('user')
+    expect(detectSource('I work at Acme on the platform team')).toBe('user')
+    expect(detectSource('my favorite OS is Linux')).toBe('user')
+  })
+
+  it('marks third-person / derived phrasing as inferred (JARVIS-derived)', () => {
+    expect(detectSource('prefers concise replies')).toBe('inferred')
+    expect(detectSource('the user works at Acme')).toBe('inferred')
+    expect(detectSource('jarvis recalled their preference for teal')).toBe('inferred')
+  })
+
+  it('defaults to inferred for detached summaries', () => {
+    expect(detectSource('summary of today')).toBe('inferred')
+    expect(detectSource('session notes')).toBe('inferred')
+  })
+
+  it('never fabricates system origin from free text', () => {
+    expect(detectSource('this looks like it came from a process')).toBe('inferred')
+  })
+
+  it('classifyFact keeps the explicit source on the typed draft', () => {
+    const draft = classifyFact('remember I use Linux')
+    expect(draft.source).toBe('user')
   })
 })
 

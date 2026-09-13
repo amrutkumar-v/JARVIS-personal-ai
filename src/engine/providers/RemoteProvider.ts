@@ -6,36 +6,54 @@ import { getAiConfig, REMOTE_PROVIDER_ID } from '../../config/ai'
 /**
  * Remote provider — OpenAI-compatible Chat Completions.
  *
- * Serves a REAL LLM over HTTP. The key is read from `JARVIS_API_KEY` on
- * `import.meta.env` (from `.env.local`, git-ignored) — never hard-coded and
- * never logged. When `VITE_JARVIS_AI_PROXY_URL` is set, requests go to that
- * same-origin proxy instead, keeping the key entirely server-side.
+ * Serves a REAL LLM over HTTP. The API key NEVER ships in the browser bundle
+ * (Vite exposes only `VITE_*` vars), so the client reaches the endpoint in one
+ * of two honest ways:
+ *
+ *   - **proxy mode** (`VITE_JARVIS_AI_PROXY_URL`, e.g. `/api/ai`): requests go
+ *     to a same-origin proxy that injects `Authorization` server-side (the Vite
+ *     dev proxy in development, or the JARVIS Core backend in production). No
+ *     key is ever attached client-side.
+ *   - **direct keyless mode** (`VITE_JARVIS_AI_BASE_URL`): for local endpoints
+ *     that need no auth (Ollama / LM Studio). When the direct endpoint
+ *     actually requires a key, the 401/403 response is surfaced as an honest
+ *     `auth` ProviderError instead of a misleading success.
+ *
+ * Where a key genuinely IS visible on `import.meta.env` (test/Electron
+ * environments), it is attached directly. Failure behavior is always honest:
+ * config errors, network failure, auth rejection, rate limiting and upstream
+ * 5xx are reported, never silently swapped for the mock provider.
  */
 
-interface RemoteConfig {
+/** Resolved, transport-aware runtime settings for a single request. */
+export interface ResolvedRemoteConfig {
   baseUrl: string
   model: string
   key: string | null
+  proxyMode: boolean
   temperature: number
   maxTokens: number
 }
 
-async function readConfig(): Promise<RemoteConfig> {
+export function resolveRemoteConfig(): ResolvedRemoteConfig {
   const cfg = getAiConfig()
   const env = import.meta.env as Record<string, string | undefined>
-  const proxyUrl = env['VITE_JARVIS_AI_PROXY_URL']?.trim() || ''
+  // The key is only reachable where the runtime actually exposes it (tests /
+  // Electron). In a standard browser it is `undefined` by design.
   const key = env[cfg.apiKeyEnv]?.trim() || null
-  const baseUrl = proxyUrl || (cfg as { baseUrl: string | null }).baseUrl || ''
+  const proxyMode = cfg.transport === 'proxy'
+  const baseUrl = proxyMode ? cfg.proxyUrl || '' : cfg.baseUrl || ''
   return {
     baseUrl,
     model: cfg.model || '',
     key,
+    proxyMode,
     temperature: cfg.temperature,
     maxTokens: cfg.maxTokens,
   }
 }
 
-function resolveEndpoint(baseUrl: string): string {
+export function resolveEndpoint(baseUrl: string): string {
   if (baseUrl.includes('/chat/completions')) return baseUrl
   return `${baseUrl.replace(/\/+$/, '')}/chat/completions`
 }
@@ -112,7 +130,7 @@ export class RemoteProvider implements AIProvider {
 
   async isReachable(): Promise<boolean> {
     try {
-      const cfg = await readConfig()
+      const cfg = resolveRemoteConfig()
       if (!cfg.baseUrl || !cfg.model) return false
       const controller = new AbortController()
       const timer = setTimeout(() => controller.abort(), 8000)
@@ -129,19 +147,16 @@ export class RemoteProvider implements AIProvider {
 
   describe(): AIProviderInfo {
     const cfg = getAiConfig()
-    const env = import.meta.env as Record<string, string | undefined>
-    const proxyUrl = env['VITE_JARVIS_AI_PROXY_URL']?.trim()
-    return { model: cfg.model || undefined, baseUrl: cfg.baseUrl || proxyUrl || undefined }
+    return {
+      model: cfg.model || undefined,
+      baseUrl: cfg.transport === 'proxy' ? cfg.proxyUrl || undefined : cfg.baseUrl || undefined,
+    }
   }
 
   async generate(request: AIRequest, emit: (m: EngineOutMessage) => void): Promise<AIResponse> {
-    const cfg = await readConfig()
+    const cfg = resolveRemoteConfig()
     if (!cfg.baseUrl || !cfg.model) {
-      throw new ProviderError('config', 'Remote provider is not configured. Add base URL and model to `.env.local`.')
-    }
-    const proxyDone = cfg.baseUrl.startsWith('/')
-    if (!cfg.key && !proxyDone) {
-      throw new ProviderError('config', 'Remote provider needs a key. Set JARVIS_API_KEY in `.env.local` (git-ignored).')
+      throw new ProviderError('config', 'Remote provider is not configured. Add a base URL and model to `.env.local`.')
     }
 
     const url = resolveEndpoint(cfg.baseUrl)
@@ -159,7 +174,10 @@ export class RemoteProvider implements AIProvider {
     }
 
     const headers: Record<string, string> = { 'Content-Type': 'application/json' }
-    if (cfg.key) headers.Authorization = `Bearer ${cfg.key}`
+    // Only the proxy (server-side key) or a runtime that actually exposes the
+    // key (tests/Electron) sets an Authorization header — never the browser.
+    // A direct request without a key is a legitimate keyless-local attempt.
+    if (cfg.key && !cfg.proxyMode) headers.Authorization = `Bearer ${cfg.key}`
 
     const controller = new AbortController()
     const timeout = setTimeout(() => controller.abort(), 45000)
@@ -183,7 +201,10 @@ export class RemoteProvider implements AIProvider {
     if (!res.ok) {
       const detail = await res.text().catch(() => '')
       if (res.status === 401 || res.status === 403) {
-        throw new ProviderError('auth', 'The AI service rejected the configured key.')
+        const hint = cfg.key
+          ? 'The AI service rejected the configured key.'
+          : 'The AI service requires authentication. Configure the key server-side (proxy mode), or use a keyless local endpoint.'
+        throw new ProviderError('auth', hint)
       }
       if (res.status === 429) {
         throw new ProviderError('rate_limit', 'The AI service is rate-limited. Wait a moment and try again.')

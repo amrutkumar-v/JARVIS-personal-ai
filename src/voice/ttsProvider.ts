@@ -20,6 +20,8 @@ export interface TextToSpeechProvider {
   pickVoice(): string | null
   readonly speaking: boolean
   readonly supported: boolean
+  /** Fired when the runtime rescues a wedged speech engine (soft recovery). */
+  onRescued?: () => void
   capabilities(): TextToSpeechCapabilities
 }
 
@@ -29,10 +31,12 @@ export class BrowserTextToSpeechProvider implements TextToSpeechProvider {
   private doneHandler: ((ok: boolean) => void) | null = null
 
   readonly supported: boolean
+  onRescued?: () => void
 
   constructor(output: VoiceOutput = new BrowserVoiceOutput()) {
     this.output = output
     this.supported = output.supported
+    output.onRescued = () => this.onRescued?.()
   }
 
   get speaking(): boolean {

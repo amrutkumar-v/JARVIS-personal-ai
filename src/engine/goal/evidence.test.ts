@@ -177,13 +177,77 @@ describe('Phase 2.0 — evidence-based goal verdict', () => {
     expect(result.actionable).toBe(false)
   })
 
-  it('maps orchestration-limit stops to blocked', () => {
+  it('maps orchestration-limit stops with prior verified progress to partial (multi-step honesty)', () => {
     const t = trace('failed', [
       step({ status: 'COMPLETED', verification: { status: 'verified', message: '', durationMs: 1 } }),
       step({ status: 'FAILED', observation: { kind: 'failure', toolId: 'desktop.click', summary: '', errorKind: 'orchestration_limit', attempts: 1, durationMs: 0 } }),
     ])
     const result = evaluateGoalTask(t)
+    expect(result.status).toBe('partial')
+    expect(result.reason).toMatch(/NOT fully achieved/i)
+    expect(result.verifiedSteps).toBe(1)
+    expect(result.executedSteps).toBe(2)
+  })
+
+  it('reports partial when steps 1-3 verified but step 4 failed (never SUCCESS)', () => {
+    const t = trace('failed', [
+      step({ toolId: 'app.launch', status: 'COMPLETED', verification: { status: 'verified', message: '', durationMs: 1 } }),
+      step({ status: 'COMPLETED', verification: { status: 'verified', message: '', durationMs: 1 } }),
+      step({ status: 'COMPLETED', verification: { status: 'verified', message: '', durationMs: 1 } }),
+      step({ status: 'FAILED', observation: { kind: 'failure', toolId: 'desktop.click', summary: 'boom', errorKind: 'tool_failure', attempts: 1, durationMs: 0 } }),
+    ])
+    const result = evaluateGoalTask(t)
+    expect(result.status).toBe('partial')
+    expect(result.verifiedSteps).toBe(3)
+    expect(result.status).not.toBe('completed')
+  })
+
+  it('stays failed when zero steps were verified (no false partial)', () => {
+    const t = trace('failed', [
+      step({ toolId: 'app.launch', status: 'FAILED', observation: { kind: 'failure', toolId: 'app.launch', summary: 'boom', errorKind: 'tool_failure', attempts: 1, durationMs: 0 } }),
+    ])
+    const result = evaluateGoalTask(t)
+    expect(result.status).toBe('failed')
+  })
+
+  it('keeps blocked when a rail stopped before any verification but no verified progress', () => {
+    const t = trace('failed', [
+      step({ status: 'FAILED', observation: { kind: 'failure', toolId: 'desktop.click', summary: '', errorKind: 'plan_rejected', attempts: 1, durationMs: 0 } }),
+    ])
+    const result = evaluateGoalTask(t)
     expect(result.status).toBe('blocked')
+  })
+
+  it('never reports an all-rejected run (hallucinated capability) as completed', () => {
+    const t = trace('completed', [
+      step({ toolId: 'delete_everything', status: 'FAILED', observation: { kind: 'failure', toolId: 'delete_everything', summary: '', errorKind: 'plan_rejected', attempts: 1, durationMs: 0 } }),
+    ])
+    const result = evaluateGoalTask(t)
+    expect(result.status).toBe('blocked')
+    expect(result.status).not.toBe('completed')
+    expect(result.evidence.kind).toBe('none')
+    expect(result.actionable).toBe(false)
+  })
+
+  it('keeps Q&A completed when read-only steps executed alongside rejections', () => {
+    const t = trace('completed', [
+      step({ toolId: 'notes.get', status: 'COMPLETED', observation: { kind: 'informational', toolId: 'notes.get', summary: '', attempts: 1, durationMs: 0 } }),
+      step({ toolId: 'file.read', status: 'FAILED', observation: { kind: 'failure', toolId: 'file.read', summary: '', errorKind: 'plan_rejected', attempts: 1, durationMs: 0 } }),
+    ])
+    const result = evaluateGoalTask(t)
+    expect(result.status).toBe('completed')
+    expect(result.evidence).toEqual({ kind: 'read_only_answer' })
+  })
+
+  it('reports partial when the final action was refuted after earlier verified steps', () => {
+    const t = trace('completed', [
+      step({ toolId: 'app.launch', status: 'COMPLETED', verification: { status: 'verified', message: '', durationMs: 1 } }),
+      step({ status: 'COMPLETED', verification: { status: 'failed', message: 'contradicted', durationMs: 1 } }),
+    ])
+    const result = evaluateGoalTask(t)
+    expect(result.status).toBe('partial')
+    expect(result.verifiedSteps).toBe(1)
+    expect(result.reason).toMatch(/NOT fully achieved/i)
   })
 
   it('maps cancelled traces to cancelled', () => {

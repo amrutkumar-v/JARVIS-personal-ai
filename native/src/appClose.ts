@@ -1,5 +1,4 @@
 import { execFile } from 'node:child_process'
-import { nativeError } from './errors.js'
 
 /**
  * Native Windows Agent — app-close backend (Phase 4.0).

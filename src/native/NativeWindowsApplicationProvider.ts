@@ -2,6 +2,7 @@ import type {
   AppCloseResult,
   AppLaunchResult,
   AppOp,
+  AppRefreshResult,
   AppSource,
   AppSpec,
   AppStatus,
@@ -9,7 +10,12 @@ import type {
   ApplicationProvider,
 } from '../applications'
 import type { NativeAgentRpc } from './nativeRpc'
-import type { NativeAppLaunchResult, NativeAppSpec, NativeAppStatusResult } from '../../native/src/protocol'
+import type {
+  NativeAppLaunchResult,
+  NativeAppRefreshResult,
+  NativeAppSpec,
+  NativeAppStatusResult,
+} from '../../native/src/protocol'
 
 /** Maps the native agent's wire entries onto the web Capabilities surface. */
 function mapSource(source: NativeAppSpec['source']): AppSource {
@@ -41,7 +47,7 @@ export class NativeWindowsApplicationProvider implements ApplicationProvider {
 
   capabilities(): ApplicationCapabilities {
     const connected = this.rpc.knownStatus.connected
-    const ops = Object.fromEntries((['list', 'status', 'launch'] as const).map((op) => [op, connected])) as Record<AppOp, boolean>
+    const ops = Object.fromEntries((['list', 'status', 'launch', 'refresh'] as const).map((op) => [op, connected])) as Record<AppOp, boolean>
     const known = this.rpc.knownStatus
     return {
       available: connected,
@@ -63,7 +69,20 @@ export class NativeWindowsApplicationProvider implements ApplicationProvider {
       source: mapSource(e.source),
       enabled: e.enabled,
       launchable: e.launchable,
+      launchMechanism: e.launchMechanism,
+      aliases: e.aliases,
+      processImage: e.processImage,
     }))
+  }
+
+  async refresh(): Promise<AppRefreshResult> {
+    const res = await this.rpc.call<NativeAppRefreshResult>('app.refresh', {})
+    return {
+      total: res.total,
+      discovered: res.discovered,
+      configured: res.configured,
+      refreshedAt: res.refreshedAt,
+    }
   }
 
   async status(applicationId: string): Promise<AppStatus> {
@@ -75,13 +94,19 @@ export class NativeWindowsApplicationProvider implements ApplicationProvider {
       source: mapSource(entry.source),
       enabled: entry.enabled,
       launchable: entry.launchable,
+      launchMechanism: entry.launchMechanism,
+      aliases: entry.aliases,
+      processImage: entry.processImage,
       running: entry.running,
       runningVerified: entry.runningVerified,
     }
   }
 
-  async launch(applicationId: string): Promise<AppLaunchResult> {
-    const entry = await this.rpc.call<NativeAppLaunchResult>('app.launch', { applicationId })
+  async launch(applicationId: string, options?: { folder?: string }): Promise<AppLaunchResult> {
+    const entry = await this.rpc.call<NativeAppLaunchResult>('app.launch', {
+      applicationId,
+      ...(options?.folder !== undefined ? { folder: options.folder } : {}),
+    })
     return {
       applicationId: entry.applicationId,
       started: entry.started,

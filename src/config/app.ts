@@ -7,11 +7,3 @@ export const APP = {
   /** Short, candidate-aware wink line. */
   coreLine: 'Good evening, sir.',
 } as const
-
-export const CAPABILITIES = {
-  aiEnabled: false,
-  memoryEnabled: true,
-  toolsEnabled: true,
-  callingEnabled: false,
-  computerControlEnabled: false,
-} as const

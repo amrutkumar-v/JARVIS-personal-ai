@@ -103,6 +103,14 @@ class FakeCamera implements CameraController {
     // no-op fake
   }
 
+  bindVideoElement(_element: HTMLVideoElement | null): void {
+    // no-op fake
+  }
+
+  unbindVideoElement(_element: HTMLVideoElement): void {
+    // no-op fake
+  }
+
   async captureFrame(): Promise<ScreenshotResult | null> {
     if (!this.active) return null
     return this.frames[0] ?? null

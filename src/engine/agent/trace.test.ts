@@ -79,4 +79,51 @@ describe('ExecutionTracer', () => {
     expect((second.steps[0].arguments.nested as { b: number }).b).toBe(1)
     expect(second.steps[0].observation!.summary).toBe('done')
   })
+
+  it('updateStepVerification upgrades the LAST matching COMPLETED step (Phase 6)', () => {
+    const tracer = new ExecutionTracer()
+    tracer.begin('goal')
+    tracer.addStep({
+      toolId: 'type_text',
+      action: 'Type',
+      arguments: { text: 'hi' },
+      status: 'COMPLETED',
+      observation: { kind: 'partial', toolId: 'type_text', summary: 'typed, unverified', attempts: 1, durationMs: 3 },
+      verification: { status: 'unverified', message: 'could not confirm', durationMs: 3 },
+    })
+    tracer.addStep({
+      toolId: 'clipboard.read',
+      action: 'Read clipboard',
+      arguments: {},
+      status: 'COMPLETED',
+      observation: { kind: 'success', toolId: 'clipboard.read', summary: 'contains hi', data: { text: 'hi' }, attempts: 1, durationMs: 3 },
+    })
+    const upgraded = tracer.updateStepVerification('type_text', 'COMPLETED', {
+      status: 'verified',
+      message: 'clipboard contained the typed text',
+    })
+    expect(upgraded).toBe(true)
+    const trace = tracer.snapshot()
+    expect(trace.steps[0].verification?.status).toBe('verified')
+    expect(trace.steps[0].verification?.message).toContain('clipboard')
+    // The observe step itself is untouched (it never had verification of its own).
+    expect(trace.steps[1].verification?.status).toBeUndefined()
+  })
+
+  it('updateStepVerification only upgrades a matching step with an observation', () => {
+    const tracer = new ExecutionTracer()
+    tracer.begin('goal')
+    tracer.addStep({ toolId: 'a', action: 'A', arguments: {}, status: 'COMPLETED' })
+    expect(
+      tracer.updateStepVerification('a', 'COMPLETED', { status: 'verified', message: 'x' }),
+    ).toBe(false)
+    expect(tracer.snapshot().steps[0].verification).toBeUndefined()
+  })
+
+  it('updateStepVerification is a no-op when no run is active', () => {
+    const tracer = new ExecutionTracer()
+    expect(
+      tracer.updateStepVerification('a', 'COMPLETED', { status: 'verified', message: 'x' }),
+    ).toBe(false)
+  })
 })

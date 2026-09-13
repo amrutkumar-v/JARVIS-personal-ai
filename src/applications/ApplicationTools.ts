@@ -10,7 +10,7 @@ import type {
 import type { ToolInputSchema } from '../engine/provider'
 import { FileSystemError } from '../filesystem'
 import type { ApplicationProvider } from './provider'
-import { normalizeApplicationId } from './provider'
+import { normalizeAppTarget } from './provider'
 
 /**
  * Application tools (Phase 1.3) — focused, typed, verified.
@@ -50,6 +50,29 @@ function paramStr(input: ToolInput, key: string): string | undefined {
   const value = input.params?.[key]
   return typeof value === 'string' ? value : undefined
 }
+
+/**
+ * Shape a free-form app reference (canonical id, slug, alias or display name
+ * like "Google Chrome") into an app-id target. The native registry is the
+ * authoritative resolver — the web side only ever passes a normalized id
+ * shape, never a path. Returns a human reason when nothing is given.
+ */
+function shapeAppTarget(input: ToolInput, key: string): { id: string } | { error: string } {
+  const raw = paramStr(input, key)
+  if (!raw || raw.trim().length === 0) return { error: `Provide ${key}.` }
+  return { id: normalizeAppTarget(raw) }
+}
+
+/* Directory-shaped inputs are about files, not applications. */
+const FILE_TARGET = /["'][^"']+["']|\b[A-Za-z]:[\\/]|\b[\w.-]+\.(?:pdf|txt|docx?|md|csv|json|xml|png|jpe?g|gif|zip|mp4|mp3|mov)\b/i
+const FILE_NOUN = /\b(file|files|folder|directory|document|documents|sheet|slides|note|notes|downloads?|desktop)\b/i
+
+/* Well-known application names — a STRONG hint that a launch is being asked
+ * for. Authoritative resolution still happens in the native registry. */
+const HINT_APP_TOKEN = /\b(chrome|google chrome|edge|brave|firefox|vscode|visual studio code|code|visual studio|whatsapp|word|excel|powerpoint|outlook|one ?note|notepad|calculator|paint|paint 3d|explorer|file explorer|settings|task manager|spotify|discord|telegram|steam|slack|obs|terminal|command prompt|control panel|snipping tool|mail|calendar|photos|music|microsoft store|store|wsl|power ?shell)\b/i
+const LAUNCH_VERB = /\b(launch|open|start|run|wake)\b/i
+const STATUS_VERB = /\b(is .* (running|open|started)|status (of|for)|check|verify)\b/i
+const CLOSE_VERB = /\b(close|quit|exit|kill|shut\s*down|stop)\b/i
 
 abstract class AppTool implements Tool {
   readonly category: ToolCategory = 'system'
@@ -125,16 +148,13 @@ export class AppStatusTool extends AppTool {
   }
 
   canRun(query: string): boolean {
-    return /\b(is .* (running|open|started)|status (of|for)|check)\b/i.test(query) &&
-      /\b(app|application|program|notepad|court|calendar|browser)\b/i.test(query)
+    return STATUS_VERB.test(query) && (HINT_APP_TOKEN.test(query) || /\b(app|application|program|software)\b/i.test(query))
   }
 
   async execute(input: ToolInput): Promise<ToolResult> {
     const blocker = availabilityBlocker(this.provider)
     if (blocker) return blocker
-    const raw = paramStr(input, 'application_id')
-    if (!raw) return { ok: false, message: 'Status for which application? Provide application_id.', data: { kind: 'invalid_input' } }
-    const parsed = normalizeApplicationId(raw)
+    const parsed = shapeAppTarget(input, 'application_id')
     if ('error' in parsed) return { ok: false, message: parsed.error, data: { kind: 'invalid_input' } }
     try {
       const status = await this.provider.status(parsed.id)
@@ -154,33 +174,38 @@ export class AppLaunchTool extends AppTool {
   readonly id = 'app.launch'
   readonly name = 'Launch application'
   readonly description =
-    'Launches an approved Windows application by id (from the native agent allow-list). The target is resolved and ' +
+    'Launches an approved Windows application by id (from the native agent allow-list); aliases and names like "Google Chrome" are resolved there too. The target is resolved and ' +
     'verified entirely on the native side — the browser never sends an executable path and never uses a shell. ' +
-    'Confirmation is only reported after the launched process is observed running.'
+    'Confirmation is only reported after the launched process is observed running. An optional folder is passed only to folder-capable apps (e.g. File Explorer).'
   readonly permission: ToolPermission = 'low_risk'
   readonly verifiable = true
   readonly inputSchema: ToolInputSchema = {
     type: 'object',
     properties: {
-      application_id: { type: 'string', description: 'Application id from app.list.' },
+      application_id: { type: 'string', description: 'Application id from app.list, or a resolvable name/alias.' },
+      folder: {
+        type: 'string',
+        description: 'Optional absolute directory to open the application in (folder-capable apps only).',
+      },
     },
     required: ['application_id'],
   }
 
   canRun(query: string): boolean {
-    return /\b(launch|open|start|run|wake)\b/i.test(query) &&
-      /\b(app|application|program|notepad|plus|court|calendar|browser)\b/i.test(query)
+    if (!LAUNCH_VERB.test(query)) return false
+    if (HINT_APP_TOKEN.test(query)) return true
+    if (FILE_TARGET.test(query) || FILE_NOUN.test(query)) return false
+    return /\b(app|application|program|software)\b/i.test(query)
   }
 
   async execute(input: ToolInput): Promise<ToolResult> {
     const blocker = availabilityBlocker(this.provider)
     if (blocker) return blocker
-    const raw = paramStr(input, 'application_id')
-    if (!raw) return { ok: false, message: 'Launch which application? Provide application_id.', data: { kind: 'invalid_input' } }
-    const parsed = normalizeApplicationId(raw)
+    const parsed = shapeAppTarget(input, 'application_id')
     if ('error' in parsed) return { ok: false, message: parsed.error, data: { kind: 'invalid_input' } }
+    const folder = paramStr(input, 'folder')
     try {
-      const result = await this.provider.launch(parsed.id)
+      const result = await this.provider.launch(parsed.id, folder !== undefined ? { folder } : undefined)
       if (!result.started) {
         return { ok: false, message: `"${result.applicationId}" could not be launched: ${result.detail}`, data: result }
       }
@@ -198,9 +223,8 @@ export class AppLaunchTool extends AppTool {
   }
 
   verify(input: ToolInput): Promise<ToolVerification> {
-    const raw = paramStr(input, 'application_id')
-    const parsed = raw ? normalizeApplicationId(raw) : undefined
-    const id = parsed && 'id' in parsed ? parsed.id : undefined
+    const parsed = shapeAppTarget(input, 'application_id')
+    const id = 'id' in parsed ? parsed.id : undefined
     if (!id) {
       return Promise.resolve({ ok: false, message: 'No valid application_id to verify.' })
     }
@@ -242,8 +266,10 @@ export class AppCloseTool extends AppTool {
   }
 
   canRun(query: string): boolean {
-    return /\b(close|quit|exit|kill|shut\s*down|stop)\b/i.test(query) &&
-      /\b(app|application|program|notepad|court|calendar|browser)\b/i.test(query)
+    if (!CLOSE_VERB.test(query)) return false
+    if (HINT_APP_TOKEN.test(query)) return true
+    if (FILE_TARGET.test(query) || FILE_NOUN.test(query)) return false
+    return /\b(app|application|program|software)\b/i.test(query)
   }
 
   async execute(input: ToolInput): Promise<ToolResult> {
@@ -252,9 +278,7 @@ export class AppCloseTool extends AppTool {
     if (!this.provider.close) {
       return { ok: false, message: 'Application close is not supported by the current provider.' }
     }
-    const raw = paramStr(input, 'application_id')
-    if (!raw) return { ok: false, message: 'Close which application? Provide application_id.', data: { kind: 'invalid_input' } }
-    const parsed = normalizeApplicationId(raw)
+    const parsed = shapeAppTarget(input, 'application_id')
     if ('error' in parsed) return { ok: false, message: parsed.error, data: { kind: 'invalid_input' } }
     try {
       const result = await this.provider.close(parsed.id)
@@ -274,9 +298,8 @@ export class AppCloseTool extends AppTool {
   }
 
   verify(input: ToolInput): Promise<ToolVerification> {
-    const raw = paramStr(input, 'application_id')
-    const parsed = raw ? normalizeApplicationId(raw) : undefined
-    const id = parsed && 'id' in parsed ? parsed.id : undefined
+    const parsed = shapeAppTarget(input, 'application_id')
+    const id = 'id' in parsed ? parsed.id : undefined
     if (!id) {
       return Promise.resolve({ ok: false, message: 'No valid application_id to verify.' })
     }

@@ -1,17 +1,17 @@
-import { lazy, Suspense } from 'react'
+import { useEffect } from 'react'
 import './App.css'
 import { useAssistant } from './hooks/useAssistant'
 import { JarvisShell } from './components/layout/JarvisShell'
 import { useJarvisStore } from './state/jarvis.store'
-
-const JarvisViewport = lazy(() =>
-  import('./three/JarvisViewport').then((m) => ({ default: m.JarvisViewport })),
-)
+import { ensureLayoutPersistence } from './panel/panelStore'
+import { EnvironmentHost } from './environment/EnvironmentHost'
 
 function App() {
   const assistant = useAssistant()
   const theme = useJarvisStore.use.theme()
   const demoMode = useJarvisStore.use.demoMode()
+
+  useEffect(ensureLayoutPersistence, [])
 
   return (
     <div className={`jarvis-app theme-${theme}${demoMode ? ' is-demo' : ''}`} data-theme={theme}>
@@ -20,11 +20,7 @@ function App() {
         <div className="jarvis-vignette" />
       </div>
 
-      <div className="jarvis-scene-layer" aria-hidden="true">
-        <Suspense fallback={null}>
-          <JarvisViewport />
-        </Suspense>
-      </div>
+      <EnvironmentHost />
 
       <JarvisShell
         assistant={{
@@ -32,10 +28,12 @@ function App() {
           isRecognizing: assistant.isRecognizing,
           isSpeaking: assistant.isSpeaking || assistant.status === 'speaking',
           capabilities: assistant.capabilities,
+          catalog: assistant.catalog,
           preferences: assistant.preferences,
           voiceState: assistant.voiceState,
           voiceArmed: assistant.voiceArmed,
           camera: assistant.camera,
+          gesture: assistant.gesture,
           backend: assistant.backend,
           providerLabel: assistant.engine.activeProvider().label,
           modelLabel: assistant.engine.aiInfo().model,
@@ -45,9 +43,10 @@ function App() {
           stopListening: assistant.stopListening,
           armWake: assistant.armWake,
           disarmWake: assistant.disarmWake,
-          onToggleCamera: () => void assistant.toggleCamera(),
-          onCaptureCamera: () => void assistant.captureCamera(),
+          onToggleCamera: assistant.toggleCamera,
+          onCaptureCamera: assistant.captureCamera,
           onSetCameraVideo: assistant.setCameraVideo,
+          applicationProvider: () => assistant.engine.applicationProvider,
           onStopSpeaking: assistant.stopSpeaking,
           onInterrupt: assistant.interrupt,
         }}

@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "tsc -b && npm run build:backend && vite build",
     "build:backend": "tsc -p server/tsconfig.build.json",
-    "backend": "node server/dist/index.js",
+    "backend": "node --env-file-if-exists=.env.local server/dist/index.js",
     "backend:check": "tsc --noEmit -p server/tsconfig.json",
     "backend:watch": "tsc -w -p server/tsconfig.json",
     "lint": "oxlint",
@@ -20,6 +20,7 @@
     "native:agent": "node native/dist/agentMain.js"
   },
   "dependencies": {
+    "@mediapipe/tasks-vision": "^0.10.17",
     "@react-three/drei": "^10.7.8",
     "@react-three/fiber": "^9.7.0",
     "koffi": "^2.16.3",

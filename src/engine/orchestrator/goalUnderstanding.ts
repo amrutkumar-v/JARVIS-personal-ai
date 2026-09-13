@@ -351,6 +351,31 @@ function classifyRequestClass(
 
   const verb = COMMAND_VERBS.find((v) => lower.includes(v))
   if (verb) {
+    const suggested: string[] = []
+    if (verb === 'open' || verb === 'launch' || verb === 'start') {
+      suggested.push('open_application')
+      if (/\b(type|write|enter|input)\b/i.test(lower) || /\bintroduce (?:yourself|me to yourself)\b/i.test(lower)) {
+        suggested.push('type_text')
+      }
+    } else if (verb === 'close' || verb === 'stop' || verb === 'quit' || verb === 'exit') {
+      suggested.push('close_application')
+    } else if (verb === 'restart' || verb === 'reboot') {
+      suggested.push('close_application', 'open_application')
+    } else if (verb === 'create' || verb === 'write' || verb === 'save') {
+      suggested.push('file_write', 'web_download')
+    } else if (verb === 'delete' || verb === 'remove') {
+      suggested.push('file_delete')
+    } else if (verb === 'copy' || verb === 'move' || verb === 'rename') {
+      suggested.push('file_copy', 'file_move', 'file_rename')
+    } else if (verb === 'send' || verb === 'transfer' || verb === 'push') {
+      suggested.push('device_transfer', 'file_write')
+    } else if (verb === 'turn on' || verb === 'enable') {
+      suggested.push('device_notify')
+    } else if (verb === 'turn off' || verb === 'disable') {
+      suggested.push('device_notify')
+    } else if (verb === 'take' || verb === 'capture' || verb === 'screenshot') {
+      suggested.push('observe_desktop')
+    }
     return {
       class: 'command',
       confidence: 0.7,
@@ -358,7 +383,7 @@ function classifyRequestClass(
       targetDevices,
       entities: { verb },
       requiresContext: false,
-      suggestedCapabilities: [],
+      suggestedCapabilities: suggested,
       isContinuation: false,
       explanation: 'Direct command detected.',
     }

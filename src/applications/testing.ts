@@ -1,5 +1,5 @@
 import { fsError } from '../filesystem'
-import type { AppCloseResult, AppLaunchResult, AppOp, AppSource, AppSpec, AppStatus, ApplicationCapabilities, ApplicationProvider } from './provider'
+import type { AppCloseResult, AppLaunchResult, AppOp, AppRefreshResult, AppSource, AppSpec, AppStatus, ApplicationCapabilities, ApplicationProvider } from './provider'
 
 /**
  * Deterministic in-memory application provider for TESTS ONLY.
@@ -75,12 +75,22 @@ export class FakeApplicationProvider implements ApplicationProvider {
   }
 
   capabilities(): ApplicationCapabilities {
-    const ops = Object.fromEntries((['list', 'status', 'launch'] as const).map((op) => [op, this.available])) as Record<AppOp, boolean>
+    const ops = Object.fromEntries((['list', 'status', 'launch', 'refresh'] as const).map((op) => [op, this.available])) as Record<AppOp, boolean>
     return {
       available: this.available,
       reason: this.available ? undefined : 'The (test) application provider is intentionally marked unavailable.',
       ops,
     }
+  }
+
+  refresh(): Promise<AppRefreshResult> {
+    this.checkFail('refresh', undefined)
+    return Promise.resolve({
+      total: this.store.size,
+      discovered: [...this.store.values()].filter((s) => s.source !== 'configured').length,
+      configured: [...this.store.values()].filter((s) => s.source === 'configured').length,
+      refreshedAt: Date.now(),
+    })
   }
 
   refreshNativeStatus(): Promise<void> {

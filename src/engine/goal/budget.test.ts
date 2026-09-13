@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest'
-import { GOAL_LIMITS, recoveryBudgetExceeded, taskBudgetExceeded, taskBudgetRemaining } from './budget'
+import {
+  GOAL_LIMITS,
+  recoveryBudgetExceeded,
+  taskBudgetExceeded,
+  taskBudgetRemaining,
+  deadlineReached,
+} from './budget'
 
 describe('Phase 2.0 — goal task budget (pure)', () => {
   it('uses a conservative initial ceiling separate from the agent step cap', () => {
@@ -32,5 +38,13 @@ describe('Phase 2.0 — goal task budget (pure)', () => {
     expect(recoveryBudgetExceeded(3)).toBe(true)
     expect(recoveryBudgetExceeded(3, GOAL_LIMITS.maxRecoveryAttempts)).toBe(true)
     expect(recoveryBudgetExceeded(3, 5)).toBe(false)
+  })
+
+  it('Phase 6 exposes a total wall-clock goal ceiling', () => {
+    expect(GOAL_LIMITS.totalExecutionMs).toBeGreaterThan(0)
+    const started = Date.now()
+    expect(deadlineReached(started, 0)).toBe(false)
+    expect(deadlineReached(started, GOAL_LIMITS.totalExecutionMs)).toBe(true)
+    expect(deadlineReached(started, 10, 0)).toBe(false)
   })
 })

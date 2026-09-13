@@ -54,5 +54,11 @@ export interface CameraController {
   captureFrame(): Promise<ScreenshotResult | null>
   /** Bind the preview <video> element used to snapshot the live feed. */
   setVideoElement(element: HTMLVideoElement | null): void
+  /** Phase 10 — bind an ADDITIONAL <video> element mirroring the same live
+   * stream (e.g. the hand-gesture tracker). Multiple consumers may bind at
+   * once; the primary preview set via `setVideoElement` is unaffected. */
+  bindVideoElement(element: HTMLVideoElement | null): void
+  /** Phase 10 — release an additional consumer element. */
+  unbindVideoElement(element: HTMLVideoElement): void
   subscribe(listener: (status: CameraCapabilities) => void): () => void
 }

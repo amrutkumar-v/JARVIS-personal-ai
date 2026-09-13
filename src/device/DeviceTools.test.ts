@@ -46,6 +46,14 @@ class ScriptedDeviceProvider implements DeviceProvider {
   sendFile(name: string, _content: string, deviceId?: string) {
     return Promise.resolve({ ok: true, file: { id: 'f-1', name, size: 3, url: '/api/files/f-1', deviceId } })
   }
+
+  openUrl(_deviceId: string, _url: string) {
+    return Promise.resolve({ success: true })
+  }
+
+  refreshDevices(): Promise<DeviceRecord[]> {
+    return Promise.resolve(this.records)
+  }
 }
 
 function notifyTool(tool: DeviceProvider) {

@@ -11,6 +11,8 @@ import { DEFAULT_THEME } from '../themes'
 import type { CameraPermissionState } from '../camera'
 import type { BackendHealth, DeviceRecord } from '../backend/types'
 import type { ReconnectPhase } from '../backend/reconnect'
+import type { CapabilityCatalogItem } from '../engine/contracts'
+import type { GestureIntent, GesturePhase, GestureTrackingQuality } from '../gesture'
 
 export interface Notice {
   id: number
@@ -48,9 +50,45 @@ export interface BackendUiState {
   lastInboundAt: number | null
 }
 
+/**
+ * Phase 11 — live scheduled reminders, mirrored from the REAL LocalScheduler.
+ * Empty until the scheduler (and the app) exists; never optimistic.
+ */
+export interface ScheduledUiItem {
+  id: string
+  text: string
+  kind: 'once' | 'daily' | 'weekly'
+  at?: number
+  time?: string
+  weekday?: number
+  nextRun: number
+  lastResult?: string
+}
+
+/**
+ * Phase 10 — live hand-gesture state, mirrored from the REAL GestureController.
+ * Every value reflects the actual tracker/gate output — never optimistic.
+ */
+export interface GestureUiState {
+  /** Feature toggled ON (user intent). */
+  active: boolean
+  /** Local MediaPipe model finished loading. */
+  modelReady: boolean
+  /** Honest failure reason when the controller could not start. */
+  error?: string
+  /** Hands observed in the current frame. */
+  hands: number
+  quality: GestureTrackingQuality
+  phase: GesturePhase
+  lastGesture: GestureIntent | null
+}
+
 export interface JarvisState {
   /* ---------- Capabilities ---------- */
   capabilities: Capabilities
+  /** Live registered capability catalogue, aired by the engine (Phase 9).
+   * The single source the capability panels derive their rows from. */
+  capCatalog: CapabilityCatalogItem[]
 
   /* ---------- Status ---------- */
   status: JarvisStatus
@@ -86,8 +124,14 @@ export interface JarvisState {
   /* ---------- Webcam (Phase 2.7 live state) ---------- */
   camera: CameraUiState
 
+  /* ---------- Hand gestures (Phase 10 live mirror) ---------- */
+  gesture: GestureUiState
+
   /* ---------- Persistent backend (Phase 2.8 live mirror) ---------- */
   backend: BackendUiState
+
+  /* ---------- Scheduled reminders (Phase 11 live mirror) ---------- */
+  schedule: ScheduledUiItem[]
 
   /* ---------- Notices (transient user-facing errors/warnings) ---------- */
   notices: Notice[]
@@ -101,6 +145,7 @@ export interface JarvisState {
 
   /* ---------- Store actions ---------- */
   setCapabilities(patch: CapabilityDelta): void
+  setCapCatalog(capabilities: CapabilityCatalogItem[]): void
   setStatus(status: JarvisStatus): void
   setRecognizing(active: boolean): void
   setIsSpeaking(active: boolean): void
@@ -124,6 +169,8 @@ export interface JarvisState {
   resetRun(): void
   setCamera(patch: Partial<CameraUiState>): void
   setBackend(patch: Partial<BackendUiState>): void
+  setSchedule(items: readonly ScheduledUiItem[]): void
+  setGesture(patch: Partial<GestureUiState>): void
   setTheme(theme: JarvisTheme): void
   setDemoMode(enabled: boolean): void
 }
@@ -176,6 +223,15 @@ const DEFAULT_BACKEND: BackendUiState = {
   lastInboundAt: null,
 }
 
+const DEFAULT_GESTURE: GestureUiState = {
+  active: false,
+  modelReady: false,
+  hands: 0,
+  quality: 'none',
+  phase: 'unknown',
+  lastGesture: null,
+}
+
 const DEFAULT_PREFERENCES: UserPreferences = {
   voiceEnabled: true,
   volume: 0.9,
@@ -194,6 +250,7 @@ const DEFAULT_PROFILE: Profile = {
 
 const rawStore = create<JarvisState>()((set, get) => ({
   capabilities: { ...DEFAULT_CAPABILITIES },
+  capCatalog: [],
   status: 'idle',
   isRecognizing: false,
   isSpeaking: false,
@@ -213,7 +270,11 @@ const rawStore = create<JarvisState>()((set, get) => ({
 
   camera: { ...DEFAULT_CAMERA },
 
+  gesture: { ...DEFAULT_GESTURE },
+
   backend: { ...DEFAULT_BACKEND },
+
+  schedule: [],
 
   notices: [],
 
@@ -222,6 +283,8 @@ const rawStore = create<JarvisState>()((set, get) => ({
 
   setCapabilities: (patch) =>
     set({ capabilities: { ...get().capabilities, ...patch } }),
+
+  setCapCatalog: (capabilities) => set({ capCatalog: capabilities }),
 
   setStatus: (status) => set({ status }),
 
@@ -271,6 +334,8 @@ const rawStore = create<JarvisState>()((set, get) => ({
 
   setCamera: (patch) => set({ camera: { ...get().camera, ...patch } }),
   setBackend: (patch) => set({ backend: { ...get().backend, ...patch } }),
+  setSchedule: (items) => set({ schedule: [...items] }),
+  setGesture: (patch) => set({ gesture: { ...get().gesture, ...patch } }),
 
   setTheme: (theme) => set({ theme }),
   setDemoMode: (enabled) => set({ demoMode: enabled }),

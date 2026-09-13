@@ -14,6 +14,10 @@ export type GoalLimits = {
   maxRecoveryAttempts: number
   /** Max bounded replan (recovery continuation) requests per goal run. */
   maxReplans: number
+  /** Phase 6 — max wall-clock time (ms) for the whole goal run. When set,
+   * the execution loop stops once `now - startedAt` reaches this ceiling.
+   * Model-immune: never settable from a tool payload or plan. */
+  totalExecutionMs: number
 }
 
 /**
@@ -40,6 +44,17 @@ export const GOAL_LIMITS: GoalLimits = {
   maxTaskSteps: 10,
   maxRecoveryAttempts: 2,
   maxReplans: 3,
+  totalExecutionMs: 120_000,
+}
+
+/** Phase 6 — TRUE when the run's wall-clock elapsed time reached the ceiling. */
+export function deadlineReached(
+  startedAtMs: number,
+  elapsedMs: number,
+  limitMs: number = GOAL_LIMITS.totalExecutionMs,
+): boolean {
+  if (limitMs <= 0) return false
+  return elapsedMs >= limitMs || Date.now() - startedAtMs >= limitMs
 }
 
 /** True when the goal has already executed `stepCount` steps. */

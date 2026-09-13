@@ -1,5 +1,3 @@
-import { nativeError } from './errors.js'
-
 /**
  * Native Windows Agent — clipboard backend seam (Phase 4.0).
  *

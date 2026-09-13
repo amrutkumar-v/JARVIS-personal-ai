@@ -66,6 +66,16 @@ describe('buildNativeAgentArgs', () => {
     ])
     expect(buildNativeAgentArgs({ port: 8765, token: '' }).join(' ')).not.toContain('--config')
   })
+
+  it('passes --allowed-origins only when an allow-list is configured', () => {
+    const args = buildNativeAgentArgs({
+      port: 8765,
+      token: '',
+      allowedOrigins: ['http://localhost:5173', 'https://jarvis.example'],
+    })
+    expect(args.join(' ')).toContain('--allowed-origins http://localhost:5173,https://jarvis.example')
+    expect(buildNativeAgentArgs({ port: 8765, token: '' }).join(' ')).not.toContain('--allowed-origins')
+  })
 })
 
 describe('probeNativeAgent', () => {
@@ -118,7 +128,7 @@ describe('NativeSupervisor', () => {
     expect(supervisor.status().childRunning).toBe(false)
   })
 
-  it('starts the native agent child when supervision is on', async () => {
+  it('starts the native agent child when supervision is on and the port is dead', async () => {
     const probe = fakeProbe({ ok: false, connected: false, reachable: false })
     const spawned = fakeSpawn()
     const supervisor = new NativeSupervisor({
@@ -131,14 +141,37 @@ describe('NativeSupervisor', () => {
       log: nullLogger(),
     })
     supervisor.start()
+    await new Promise((resolve) => setTimeout(resolve, 10))
     expect(spawned.all().length).toBe(1)
     expect(supervisor.status().childRunning).toBe(true)
+    expect(supervisor.status().adopted).toBe(false)
+    supervisor.stop()
+  })
+
+  it('adopts an agent already running on the port instead of spawning a duplicate', async () => {
+    const probe = fakeProbe({ ok: true, connected: true, reachable: true, protocol: 'jarvis-native-1', version: '2.8.0' })
+    const spawned = fakeSpawn()
+    const supervisor = new NativeSupervisor({
+      probeUrl: 'http://127.0.0.1:8765',
+      supervise: true,
+      agentScript: 'agentMain.js',
+      agentArgs: ['--port', '8765'],
+      probe,
+      spawn: spawned.spawn,
+      log: nullLogger(),
+    })
+    supervisor.start()
+    await new Promise((resolve) => setTimeout(resolve, 10))
+    expect(spawned.all().length).toBe(0)
+    expect(supervisor.status().adopted).toBe(true)
+    expect(supervisor.status().connected).toBe(true)
+    expect(supervisor.status().childRunning).toBe(false)
     supervisor.stop()
   })
 
   it('restarts a crashed child with bounded backoff; stops retrying past the limit', async () => {
     const tick = (ms = 5) => new Promise<void>((resolve) => setTimeout(resolve, ms))
-    const probe = fakeProbe({ ok: true, connected: true, reachable: true })
+    const probe = fakeProbe({ ok: false, connected: false, reachable: false })
     const spawned = fakeSpawn()
     const supervisor = new NativeSupervisor({
       probeUrl: 'http://127.0.0.1:8765',
@@ -153,6 +186,7 @@ describe('NativeSupervisor', () => {
       log: nullLogger(),
     })
     supervisor.start()
+    await tick()
     expect(spawned.all().length).toBe(1)
 
     // Simulate child crashes: exit → supervisor respawns, up to the limit.

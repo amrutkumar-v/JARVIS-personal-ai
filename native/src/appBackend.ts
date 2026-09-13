@@ -1,11 +1,11 @@
 import { execFile, spawn, type ChildProcess } from 'node:child_process'
-import { access } from 'node:fs/promises'
+import { access, stat } from 'node:fs/promises'
 import { basename } from 'node:path'
 import { APP_LIMITS } from './limits.js'
 import { nativeError } from './errors.js'
-import type { NativeAppLaunchResult, NativeAppSpec, NativeAppStatusResult } from './protocol.js'
+import type { NativeAppLaunchResult, NativeAppRefreshResult, NativeAppSpec, NativeAppStatusResult } from './protocol.js'
 import type { ApplicationBackend } from './applications.js'
-import { AppRegistry } from './appRegistry.js'
+import { AppRegistry, type AppRecord } from './appRegistry.js'
 
 /**
  * Native Windows Agent — real application backend (Phase 1.3).
@@ -13,17 +13,27 @@ import { AppRegistry } from './appRegistry.js'
  * `launch` is deliberately narrow:
  *
  *  1. the applicationId must resolve to a registered record (allow-list);
- *  2. the record must be enabled and launchable (plain .exe, not a shell host);
- *  3. the resolved target must exist on disk;
- *  4. Node's `spawn` starts the executable with NO shell (CreateProcess),
- *     detached, hidden from the console, stdio fully detached;
+ *  2. the record must be enabled and launchable;
+ *  3. the launch mechanism is one of:
+ *       - `exe`   — Node's `spawn` starts the executable with NO shell
+ *                  (CreateProcess), detached, hidden, stdio fully detached;
+ *       - `aumid` — `explorer.exe shell:AppsFolder\<aumid>` for validated
+ *                  packaged (Store/MSIX) applications;
+ *       - `uri`   — `explorer.exe <uri>` for a SAFE, allow-listed scheme
+ *                  (currently only `ms-settings:`).
+ *  4. folders are only ever passed to records that declare `allowFolder`
+ *     (File Explorer) and only as a validated absolute directory path;
  *  5. the process is observed over a bounded window with `tasklist` and the
  *     result is reported honestly — `verified` only when really observed alive,
  *     `unverified` when observation was unavailable. A launch is NEVER
- *     reported as success on the spawn event alone.
+ *     reported as success on the spawn event alone. When the spawned process
+ *     defers to an already-running instance (single-instance apps), the image
+ *     name still allows an honest image-level verification.
  *
  * `app.*` never builds a command line with user/model input beyond the fixed
- * executable path; there is no shell host and no arbitrary execution path.
+ * executable path, a validated AUMID, a validated allow-listed URI, or a
+ * validated absolute folder argument; there is no shell host and no arbitrary
+ * execution path.
  */
 export class RealAppBackend implements ApplicationBackend {
   readonly id = 'real-app'
@@ -34,42 +44,56 @@ export class RealAppBackend implements ApplicationBackend {
   }
 
   async list(): Promise<NativeAppSpec[]> {
+    await this.registry.ready()
     return this.registry.listRecords().map((r) => this.registry.wireSpec(r))
   }
 
+  async refresh(): Promise<NativeAppRefreshResult> {
+    return this.registry.refresh()
+  }
+
   resolveProcessName(applicationId: string): string {
-    const record = this.registry.getRecord(applicationId)
-    if (!record || !record.launchable || record.target === '') return ''
+    const result = this.registry.resolve(applicationId)
+    if (!('record' in result) || !result.record.launchable) return ''
+    const record = result.record
+    if (record.processImage) return record.processImage
+    if (record.target === '') return ''
     const image = basename(record.target)
     return image.toLowerCase().endsWith('.exe') ? image.slice(0, -4) : image
   }
 
-  async status(applicationId: string): Promise<NativeAppStatusResult> {
-    const record = this.registry.getRecord(applicationId)
-    if (!record) {
+  /**
+   * Resolve a claim (canonical id, alias, slug or display name) to the single
+   * registered record it names. Unknown claims and genuinely ambiguous claims
+   * surface as structured native errors — the caller never guesses.
+   */
+  private resolveRegistered(applicationId: string): AppRecord {
+    const result = this.registry.resolve(applicationId)
+    if ('record' in result) return result.record
+    if ('ambiguous' in result) {
+      const names = result.ambiguous.map((r) => r.displayName).join(', ')
       throw nativeError(
-        'not_found',
-        `Application "${applicationId}" is not registered, so it cannot be observed.`,
+        'ambiguous',
+        `"${applicationId}" matches several applications (${names}); name one of them exactly.`,
         applicationId,
       )
     }
+    throw nativeError('not_found', `Application "${applicationId}" is not registered.`, applicationId)
+  }
+
+  async status(applicationId: string): Promise<NativeAppStatusResult> {
+    const record = this.resolveRegistered(applicationId)
     const spec = this.registry.wireSpec(record)
-    if (record.target === '') {
+    const image = imageName(record)
+    if (image === '') {
       return { ...spec, running: false, runningVerified: false }
     }
-    const observed = await observeRunning(record.target)
+    const observed = await observeRunning(image)
     return { ...spec, running: observed.running, runningVerified: observed.observed }
   }
 
-  async launch(applicationId: string): Promise<NativeAppLaunchResult> {
-    const record = this.registry.getRecord(applicationId)
-    if (!record) {
-      throw nativeError(
-        'not_found',
-        `Application "${applicationId}" is not registered, so it cannot be launched.`,
-        applicationId,
-      )
-    }
+  async launch(applicationId: string, options?: { folder?: string }): Promise<NativeAppLaunchResult> {
+    const record = this.resolveRegistered(applicationId)
     if (!record.enabled) {
       throw nativeError(
         'permission_denied',
@@ -77,7 +101,7 @@ export class RealAppBackend implements ApplicationBackend {
         applicationId,
       )
     }
-    if (!record.launchable || record.target === '') {
+    if (!record.launchable) {
       throw nativeError(
         'invalid_path',
         `Application "${applicationId}" does not resolve to a launchable target.`,
@@ -85,25 +109,82 @@ export class RealAppBackend implements ApplicationBackend {
       )
     }
 
-    const target = record.target
-    const existing = await safeAccess(target)
-    if (!existing) {
+    const folder = await this.validateFolderArg(record, options?.folder)
+
+    switch (record.mechanism) {
+      case 'aumid': {
+        const aumid = record.aumid ?? ''
+        const child = await spawnDetached(explorerPath(), ['shell:AppsFolder\\' + aumid], applicationId)
+        child.unref()
+        const pid = child.pid
+        return this.reportShellLaunch(record, applicationId, pid)
+      }
+      case 'uri': {
+        const uri = record.uri ?? ''
+        const child = await spawnDetached(explorerPath(), [uri], applicationId)
+        child.unref()
+        const pid = child.pid
+        return this.reportShellLaunch(record, applicationId, pid)
+      }
+      default: {
+        const target = record.target
+        const existing = await safeAccess(target)
+        if (!existing) {
+          throw nativeError(
+            'not_found',
+            `The target for "${applicationId}" no longer exists, so it cannot be launched.`,
+            applicationId,
+          )
+        }
+        const child = await spawnDetached(target, folder ? [folder] : [], applicationId)
+        child.unref()
+        const pid = child.pid
+        return this.reportExeLaunch(record, target, pid)
+      }
+    }
+  }
+
+  private async validateFolderArg(record: AppRecord, raw: unknown): Promise<string | undefined> {
+    if (raw === undefined || raw === null) return undefined
+    if (typeof raw !== 'string') {
+      throw nativeError('invalid_path', 'The folder must be a text path.', record.applicationId)
+    }
+    const folder = raw.trim()
+    if (!record.allowFolder) {
       throw nativeError(
-        'not_found',
-        `The target for "${applicationId}" no longer exists, so it cannot be launched.`,
-        applicationId,
+        'invalid_path',
+        `"${record.applicationId}" does not accept a folder argument.`,
+        record.applicationId,
       )
     }
+    if (record.mechanism !== 'exe') {
+      throw nativeError(
+        'invalid_path',
+        `"${record.applicationId}" cannot be opened on a specific folder.`,
+        record.applicationId,
+      )
+    }
+    if (folder.length === 0 || folder.length > APP_LIMITS.MAX_FOLDER_ARG_LENGTH || !isAbsoluteWinPath(folder)) {
+      throw nativeError('invalid_path', 'The folder must be a short absolute path.', record.applicationId)
+    }
+    try {
+      const st = await stat(folder)
+      if (!st.isDirectory()) {
+        throw nativeError('invalid_path', 'The folder path is not a directory.', record.applicationId)
+      }
+    } catch (err) {
+      if (nativeErrorLike(err)) throw err
+      throw nativeError('not_found', 'The folder path does not exist.', record.applicationId)
+    }
+    return folder
+  }
 
-    const child = await spawnDetached(target, applicationId)
-    child.unref()
-    const pid = child.pid
+  private async reportExeLaunch(record: AppRecord, target: string, pid: number | undefined): Promise<NativeAppLaunchResult> {
     const outcome = await verifyProcess(target, pid)
-
     switch (outcome) {
       case 'verified':
         return {
-          applicationId,
+          applicationId: record.applicationId,
           started: true,
           pid,
           verified: true,
@@ -111,25 +192,93 @@ export class RealAppBackend implements ApplicationBackend {
         }
       case 'unverified':
         return {
-          applicationId,
+          applicationId: record.applicationId,
           started: true,
           pid,
           verified: false,
           detail: `Process launched (pid ${pid}), but its state could not be verified in the observation window.`,
         }
-      case 'refuted':
+      case 'refuted': {
+        // The spawned process may have handed off to an already-running
+        // single-instance app. Fall back to an honest image-level check.
+        const image = imageName(record)
+        if (image !== '') {
+          const observed = await observeRunning(image)
+          if (observed.running && observed.observed) {
+            return {
+              applicationId: record.applicationId,
+              started: true,
+              pid,
+              verified: true,
+              detail: `Process launched and verified running by image (${image}).`,
+            }
+          }
+        }
         return {
-          applicationId,
+          applicationId: record.applicationId,
           started: true,
           pid,
           verified: false,
           detail: `Process launched (pid ${pid}), but it was not observed running in the verification window.`,
         }
+      }
+    }
+  }
+
+  private async reportShellLaunch(record: AppRecord, applicationId: string, pid: number | undefined): Promise<NativeAppLaunchResult> {
+    const image = imageName(record)
+    if (image !== '') {
+      const observed = await observeRunning(image)
+      if (observed.running && observed.observed) {
+        return {
+          applicationId,
+          started: true,
+          pid: undefined,
+          verified: true,
+          detail: `Launched via shell route and verified running by image (${image}).`,
+        }
+      }
+      if (observed.observed) {
+        return {
+          applicationId,
+          started: true,
+          pid: undefined,
+          verified: false,
+          detail: `Launched via shell route, but it was not observed running in the verification window.`,
+        }
+      }
+    }
+    return {
+      applicationId,
+      started: true,
+      pid,
+      verified: false,
+      detail: 'Launched via shell route; its running state could not be verified.',
     }
   }
 }
 
 /* ------------------------------------------------------------ observation */
+
+/** The tasklist image name for a record, when observation is possible. */
+function imageName(record: AppRecord): string {
+  if (record.processImage) return `${record.processImage.replace(/\.exe$/i, '')}.exe`
+  if (record.target === '') return ''
+  return basename(record.target)
+}
+
+function explorerPath(): string {
+  const windir = process.env.windir ?? process.env.SystemRoot ?? 'C:\\Windows'
+  return `${windir}\\explorer.exe`
+}
+
+function isAbsoluteWinPath(path: string): boolean {
+  return /^[A-Za-z]:[\\/]/.test(path) || path.startsWith('\\\\')
+}
+
+function nativeErrorLike(err: unknown): boolean {
+  return err instanceof Error && err.name === 'NativeError'
+}
 
 /** True when the target exists on disk and is a file we can execute. */
 async function safeAccess(target: string): Promise<boolean> {
@@ -181,12 +330,11 @@ function parseCsvLine(line: string): string[] {
   return cells
 }
 
-/** `tasklist /FO CSV /NH /FI "IMAGENAME eq <exe>"` — is any such process up? */
-async function observeRunning(target: string): Promise<RunningObservation> {
+/** `tasklist /FO CSV /NH /FI "IMAGENAME eq <image>"` — is any such process up? */
+async function observeRunning(image: string): Promise<RunningObservation> {
   if (process.platform !== 'win32') {
     return { running: false, observed: false }
   }
-  const image = basename(target)
   const out = await runTasklist(
     ['/FO', 'CSV', '/NH', '/FI', `IMAGENAME eq ${image}`],
     APP_LIMITS.PROCESS_VERIFY_PROBE_TIMEOUT_MS,
@@ -205,7 +353,7 @@ async function observeRunning(target: string): Promise<RunningObservation> {
 
 /* ------------------------------------------------------------------ spawn */
 
-function spawnDetached(target: string, applicationId: string): Promise<ChildProcess> {
+function spawnDetached(target: string, args: string[], applicationId: string): Promise<ChildProcess> {
   return new Promise<ChildProcess>((resolve, reject) => {
     let settled = false
     const timer = setTimeout(() => {
@@ -216,7 +364,7 @@ function spawnDetached(target: string, applicationId: string): Promise<ChildProc
 
     let child: ChildProcess
     try {
-      child = spawn(target, [], {
+      child = spawn(target, args, {
         detached: true,
         stdio: 'ignore',
         windowsHide: true,

@@ -35,4 +35,9 @@ export interface DeviceProvider {
   notify(request: NotifyRequest): Promise<DeviceNotifyResult>
   /** Store a bounded file for a companion device to download. */
   sendFile(name: string, contentBase64: string, deviceId?: string): Promise<DeviceTransferResult>
+  /** Open a URL on a specific device. `success` is true only when the backend
+   * confirmed delivery to an online device. */
+  openUrl(deviceId: string, url: string): Promise<{ success: boolean; error?: string; reason?: string }>
+  /** Refresh the device registry from the backend. */
+  refreshDevices(): Promise<DeviceRecord[]>
 }

@@ -7,8 +7,9 @@ import {
   buildFinalResult,
   isTerminalPhase,
   canTransitionPhase,
+  deadlineReached,
+  elapsedMs,
 } from './executionState'
-import type { AgenticExecutionState } from './executionState'
 
 describe('Phase 5 — executionState', () => {
   describe('isTerminalPhase', () => {
@@ -41,7 +42,7 @@ describe('Phase 5 — executionState', () => {
     it('invalid transitions are false', () => {
       expect(canTransitionPhase('thinking', 'executing')).toBe(false)
       expect(canTransitionPhase('planning', 'observing')).toBe(false)
-      expect(canTransitionPhase('executing', 'completed')).toBe(false)
+      expect(canTransitionPhase('executing', 'completed')).toBe(true)
     })
   })
 
@@ -55,6 +56,30 @@ describe('Phase 5 — executionState', () => {
       expect(state.maxRecoveries).toBe(2)
       expect(state.phaseLog).toHaveLength(1)
       expect(state.phaseLog[0].phase).toBe('thinking')
+    })
+
+    it('accepts Phase 6 replan ceiling and wall-clock deadline', () => {
+      const state = createExecutionState('test', 2, { maxReplans: 1, deadlineMs: 500 })
+      expect(state.replanAttempts).toBe(0)
+      expect(state.maxReplans).toBe(1)
+      expect(state.deadlineMs).toBe(500)
+    })
+
+    it('deadlineReached enforces the wall-clock ceiling', () => {
+      const state = createExecutionState('test', 2, { deadlineMs: 100 })
+      expect(state.startedAt).toBeGreaterThan(0)
+      const bound = { startedAt: 1_000, deadlineMs: 100 }
+      expect(deadlineReached(bound, 999)).toBe(false)
+      expect(deadlineReached(bound, 1_099)).toBe(false)
+      expect(deadlineReached(bound, 1_101)).toBe(true)
+      const unset = { startedAt: 1_000, deadlineMs: 0 }
+      expect(deadlineReached(unset, 2_000)).toBe(false)
+    })
+
+    it('elapsedMs never goes negative', () => {
+      const bound = { startedAt: Date.now() - 30 }
+      expect(elapsedMs(bound, Date.now())).toBeGreaterThanOrEqual(30)
+      expect(elapsedMs(bound, bound.startedAt - 100)).toBe(0)
     })
   })
 
@@ -132,6 +157,38 @@ describe('Phase 5 — executionState', () => {
       updateStepState(s1, 'cancelled')
       buildFinalResult(state)
       expect(state.finalResult?.status).toBe('cancelled')
+    })
+
+    it('supports Phase 6 pending/ready/blocked step states', () => {
+      const state = createExecutionState('test')
+      const s = addStep(state, { toolId: 'a', description: 'A', input: {} })
+      updateStepState(s, 'pending')
+      expect(s.state).toBe('pending')
+      updateStepState(s, 'ready')
+      expect(s.state).toBe('ready')
+      updateStepState(s, 'blocked')
+      expect(s.state).toBe('blocked')
+      expect(s.completedAt).toBeDefined()
+    })
+
+    it('blocked steps with a verified step → partial', () => {
+      const state = createExecutionState('test')
+      const s1 = addStep(state, { toolId: 'a', description: 'A', input: {} })
+      const s2 = addStep(state, { toolId: 'b', description: 'B', input: {} })
+      updateStepState(s1, 'verified')
+      updateStepState(s2, 'blocked')
+      buildFinalResult(state)
+      expect(state.finalResult?.status).toBe('partial')
+      expect(state.finalResult?.blockedSteps).toBe(1)
+      expect(state.finalResult?.verifiedSteps).toBe(1)
+    })
+
+    it('blocked steps without success → failed', () => {
+      const state = createExecutionState('test')
+      const s1 = addStep(state, { toolId: 'a', description: 'A', input: {} })
+      updateStepState(s1, 'blocked')
+      buildFinalResult(state)
+      expect(state.finalResult?.status).toBe('failed')
     })
   })
 })

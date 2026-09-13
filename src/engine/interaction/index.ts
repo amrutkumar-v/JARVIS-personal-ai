@@ -8,3 +8,16 @@ export {
   renderCapabilityCatalogReply,
 } from './intents'
 export type { CapabilityCatalogReply, CatalogEnvironment, DirectIntent, CameraIntent } from './intents'
+export {
+  detectUiControlIntent,
+  detectUiControlCommands,
+  environmentChoices,
+  panelChoices,
+  MAX_UI_CONTROL_COMMANDS,
+} from './uiControl'
+export type {
+  UiControlIntent,
+  UiControlKind,
+  PanelControlKind,
+  EnvironmentControlKind,
+} from './uiControl'

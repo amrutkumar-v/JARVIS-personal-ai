@@ -110,6 +110,7 @@ export type BackendEventType =
   | 'ready'
   | 'device'
   | 'notify'
+  | 'open-url'
   | 'file'
   | 'inbound'
   | 'assistant'

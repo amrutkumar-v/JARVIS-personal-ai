@@ -27,6 +27,17 @@ export type EngineOutMessage =
       request: ToolConfirmationRequest
     }
   | { type: 'task'; task: TaskSnapshot }
+  | { type: 'capabilities'; capabilities: CapabilityCatalogItem[] }
+
+/** One LIVE registered capability, aired from the engine's single capability
+ * registry so the UI can render capability panels from the same source the
+ * model addresses (never a UI-side hard-coded copy). */
+export interface CapabilityCatalogItem {
+  id: string
+  name: string
+  category: string
+  description: string
+}
 
 export type MemoryActivityAction =
   | 'saved'

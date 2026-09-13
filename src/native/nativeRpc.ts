@@ -37,6 +37,8 @@ export function mapNativeCode(code: NativeErrorCode, message: string, path: stri
       return fsError('permission_denied', message, path)
     case 'not_found':
       return fsError('not_found', message, path)
+    case 'ambiguous':
+      return fsError('unavailable', `Multiple matching applications found — be more specific: ${message}`, path)
     case 'already_exists':
       return fsError('exists', message, path)
     case 'invalid_path':
@@ -93,7 +95,9 @@ export class NativeAgentRpc {
     this.token = options.token ?? ''
     this.requestTimeoutMs = options.requestTimeoutMs ?? 10_000
     this.probeTimeoutMs = options.probeTimeoutMs ?? 1500
-    this.fetchImpl = options.fetchImpl ?? (typeof fetch === 'function' ? fetch : async () => { throw new Error('fetch unavailable') })
+    this.fetchImpl =
+      options.fetchImpl ??
+      (typeof fetch === 'function' ? fetch.bind(globalThis) : async () => { throw new Error('fetch unavailable') })
   }
 
   /** Current honest connectivity state (immutable snapshot). */

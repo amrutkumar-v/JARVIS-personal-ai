@@ -270,6 +270,56 @@ describe('JARVIS Core HTTP server', () => {
     expect(body.reason).toContain('offline')
   })
 
+  it('open-url delivers to ONE online trusted device over SSE (http/https only)', async () => {
+    await jsonPost(running.port, '/api/device/claim', { device: 's26-ultra', meta: { name: "Amrut's S26 Ultra" } })
+
+    const sse = new SseClient(running.port)
+    await sse.ready
+    const eventP = sse.waitEvent('open-url')
+
+    const open = await jsonPost(running.port, '/api/device/open-url', {
+      deviceId: 's26-ultra',
+      url: 'https://example.com/watch',
+    })
+    expect(open.status).toBe(200)
+    expect((open.body as { delivered: boolean; deliveredTo: string[] }).delivered).toBe(true)
+    expect((open.body as { deliveredTo: string[] }).deliveredTo).toEqual(['s26-ultra'])
+
+    const received = (await eventP) as { deviceId: string; deviceName: string; url: string }
+    expect(received.deviceId).toBe('s26-ultra')
+    expect(received.url).toBe('https://example.com/watch')
+    sse.close()
+  })
+
+  it('open-url rejects non-http schemes, unknown targets, and honestly fails offline', async () => {
+    await jsonPost(running.port, '/api/device/claim', { device: 's23-fe', meta: { name: "Amrut's S23 FE" } })
+
+    const badScheme = await jsonPost(running.port, '/api/device/open-url', {
+      deviceId: 's23-fe',
+      url: 'file:///etc/passwd',
+    })
+    expect(badScheme.status).toBe(400)
+    expect((badScheme.body as { error: string }).error).toBe('invalid_url')
+
+    const unknown = await jsonPost(running.port, '/api/device/open-url', {
+      deviceId: 'unknown-phone',
+      url: 'https://example.com',
+    })
+    expect(unknown.status).toBe(400)
+    expect((unknown.body as { error: string }).error).toBe('invalid_target')
+
+    nowValue = nowValue + 100_000 // heartbeat lapses → s23 offline
+    const offline = await jsonPost(running.port, '/api/device/open-url', {
+      deviceId: 's23-fe',
+      url: 'https://example.com',
+    })
+    const body = offline.body as { ok: boolean; delivered: boolean; error?: string; reason?: string }
+    expect(body.ok).toBe(false)
+    expect(body.delivered).toBe(false)
+    expect(body.error).toBe('device_offline')
+    expect(body.reason).toContain('offline')
+  })
+
   it('protects protected POST endpoints when a token is configured', async () => {
     await running.close()
     const dir2 = await mkdtemp(join(tmpdir(), 'jarvis-http2-'))

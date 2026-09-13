@@ -27,19 +27,27 @@ import { RealDesktopInteractionBackend } from './desktopInput.js'
  * banner says so honestly. Input is injected through the user32 SendInput
  * family with strict bounds (see desktopLimits.ts + desktop.ts).
  *
- * Applications (Phase 1.3) come from the config file only:
+ * Applications (Phase 1.3) come from the config file plus live discovery
+ * (Start Menu, App Paths registry, Store/packaged AUMIDs, verified system
+ * tools). Configured entries may use `mechanism: exe` (default) with a
+ * `target`, `mechanism: aumid` with an `aumid`, or `mechanism: uri` with a
+ * safe scheme such as `ms-settings:`; all may declare `aliases`,
+ * `processImage`, and (solely for File Explorer) `allowFolder`.
  *
  *   {
  *     "applications": {
  *       "notepad":  { "name": "Notepad", "target": "{windir}\\System32\\notepad.exe" },
  *       "calc":     { "target": "{windir}\\System32\\calc.exe", "enabled": false },
- *       "visual-studio-code": { "target": "{userprofile}\\AppData\\Local\\Programs\\..."
+ *       "visual-studio-code": { "target": "{userprofile}\\AppData\\Local\\Programs\\...",
+ *                              "aliases": ["vscode", "code"] },
+ *       "calculator-store": { "mechanism": "aumid",
+ *                             "aumid": "Microsoft.WindowsCalculator_8wekyb3d8bbwe!App" },
+ *       "settings": { "mechanism": "uri", "uri": "ms-settings:" }
  *     }
  *   }
  *
  * No personal or machine-specific absolute paths are committed anywhere; all
- * targets go through tokens. Discovered Start Menu entries are listed but only
- * configured apps are guaranteed launchable.
+ * targets go through tokens.
  */
 
 interface CliArgs {
@@ -49,6 +57,7 @@ interface CliArgs {
   noToken?: boolean
   roots?: string[]
   config?: string
+  allowedOrigins?: string[]
   help?: boolean
   printIdentity?: boolean
 }
@@ -81,6 +90,8 @@ function parseArgs(argv: string[]): CliArgs {
       roots.push(argv[++i])
     } else if (arg === '--config') {
       out.config = argv[++i]
+    } else if (arg === '--allowed-origins') {
+      out.allowedOrigins = (argv[++i] ?? '').split(',').map((o) => o.trim()).filter((o) => o.length > 0)
     } else if (arg?.startsWith('--')) {
       const eq = arg.indexOf('=')
       const key = eq > 0 ? arg.slice(2, eq) : arg.slice(2)
@@ -90,6 +101,8 @@ function parseArgs(argv: string[]): CliArgs {
       else if (key === 'token') out.token = value
       else if (key === 'root') roots.push(value)
       else if (key === 'config') out.config = value
+      else if (key === 'allowed-origins')
+        out.allowedOrigins = String(value).split(',').map((o) => o.trim()).filter((o) => o.length > 0)
     }
   }
   if (roots.length > 0) out.roots = roots
@@ -101,8 +114,9 @@ async function loadConfigFile(
 ): Promise<
   Partial<CliArgs> & {
     roots?: string[]
-    applications?: Record<string, { name?: string; target?: unknown; enabled?: boolean }>
+    applications?: Record<string, ConfigAppEntry>
     discovery?: boolean
+    openFolders?: string[]
   }
 > {
   const text = await readFile(path, 'utf8')
@@ -111,8 +125,9 @@ async function loadConfigFile(
     host?: string
     token?: string
     roots?: string[]
-    applications?: Record<string, { name?: string; target?: unknown; enabled?: boolean }>
+    applications?: Record<string, ConfigAppEntry>
     discovery?: boolean
+    openFolders?: string[]
   }
   return {
     port: typeof parsed.port === 'number' ? parsed.port : undefined,
@@ -121,7 +136,22 @@ async function loadConfigFile(
     roots: Array.isArray(parsed.roots) ? (parsed.roots as string[]).filter((r) => typeof r === 'string') : undefined,
     applications: parsed.applications,
     discovery: typeof parsed.discovery === 'boolean' ? parsed.discovery : undefined,
+    openFolders: Array.isArray(parsed.openFolders)
+      ? (parsed.openFolders as string[]).filter((f) => typeof f === 'string')
+      : undefined,
   }
+}
+
+interface ConfigAppEntry {
+  name?: string
+  target?: unknown
+  enabled?: boolean
+  mechanism?: string
+  aumid?: string
+  uri?: string
+  aliases?: string[]
+  processImage?: string
+  allowFolder?: boolean
 }
 
 function expandRoot(input: string): string {
@@ -154,7 +184,7 @@ function expandAppTarget(input: string): string | '' {
 
 /** Validate + expand the config allow-list. Invalid entries are dropped with a stderr warning. */
 function resolveApplications(
-  raw: Record<string, { name?: string; target?: unknown; enabled?: boolean }> | undefined,
+  raw: Record<string, ConfigAppEntry> | undefined,
 ): Record<string, AppRegistration> {
   const applications: Record<string, AppRegistration> = {}
   if (!raw) return applications
@@ -165,6 +195,33 @@ function resolveApplications(
       process.stderr.write(`[config] Skipping application "${rawId}": the applicationId is not a valid id.\n`)
       continue
     }
+
+    const mechanism =
+      typeof entry.mechanism === 'string' && ['exe', 'aumid', 'uri'].includes(entry.mechanism) ? entry.mechanism : undefined
+    const aumid = typeof entry.aumid === 'string' ? entry.aumid.trim() : ''
+    const uri = typeof entry.uri === 'string' ? entry.uri.trim() : ''
+    const aliases = Array.isArray(entry.aliases)
+      ? (entry.aliases as unknown[]).filter((a): a is string => typeof a === 'string' && a.length > 0)
+      : undefined
+    const processImage = typeof entry.processImage === 'string' && entry.processImage.trim().length > 0 ? entry.processImage.trim() : undefined
+    const allowFolder = typeof entry.allowFolder === 'boolean' ? entry.allowFolder : undefined
+
+    // A configured aumid/uri entry needs its identifier, never a target.
+    if ((mechanism === 'aumid' && aumid.length > 0) || (mechanism === 'uri' && uri.length > 0)) {
+      applications[applicationId] = {
+        name: typeof entry.name === 'string' && entry.name.trim().length > 0 ? entry.name.trim() : undefined,
+        mechanism,
+        ...(aumid ? { aumid } : {}),
+        ...(uri ? { uri } : {}),
+        aliases,
+        processImage,
+        allowFolder,
+        enabled: typeof entry.enabled === 'boolean' ? entry.enabled : undefined,
+      }
+      continue
+    }
+
+    // Regular executable entry: a target is required and must be absolute.
     if (typeof entry.target !== 'string' || entry.target.trim().length === 0) {
       process.stderr.write(`[config] Skipping application "${applicationId}": missing "target".\n`)
       continue
@@ -177,6 +234,10 @@ function resolveApplications(
     applications[applicationId] = {
       name: typeof entry.name === 'string' && entry.name.trim().length > 0 ? entry.name.trim() : undefined,
       target,
+      ...(mechanism === 'exe' ? { mechanism } : {}),
+      aliases,
+      processImage,
+      allowFolder,
       enabled: typeof entry.enabled === 'boolean' ? entry.enabled : undefined,
     }
   }
@@ -195,11 +256,19 @@ function helpText(): string {
     '  --no-token          loopback-only dev mode without a token (not recommended)',
     '  --root <abs>        granted root (repeatable; tokens: {userprofile} {temp} {workspace}, ~)',
     '  --config <json>     JSON config alternative to flags (flag values win)',
+    '  --allowed-origins <csv>  browser origins allowed to POST (default: loopback + file pages)',
     '  --print-identity    exit after printing the resolved identity',
     '  --help              this help',
     '',
+    'Open folders (Explorer only): config key "openFolders" (array of absolute paths; tokens supported).',
+    'Defaults to the current user\'s Downloads/Documents/Desktop/Pictures/Music/Videos.',
+    'These are the ONLY non-root folders open_application may pass to Explorer; they never',
+    'extend the file-system roots.',
+    '',
     'Token precedence: --token > env JARVIS_NATIVE_TOKEN > config file > --no-token.',
     'If no token is configured and --no-token is not passed, startup fails (safe default).',
+    'Even with --no-token, browser requests are origin-gated: only loopback and',
+    'explicitly allowed origins can reach the agent, so a random website cannot.',
   ].join('\n')
 }
 
@@ -248,18 +317,46 @@ async function main(): Promise<void> {
   )
   const configuredCount = Object.keys(configuredApps).length
 
+  // Curated open-folders: the current user's own well-known folders are allowed
+  // as EXPLORER-ONLY folder targets (never file-system roots). Override/disable
+  // via `openFolders` in the config file.
+  const openFolders = config.openFolders === undefined
+    ? [
+        '{userprofile}\\Downloads',
+        '{userprofile}\\Documents',
+        '{userprofile}\\Desktop',
+        '{userprofile}\\Pictures',
+        '{userprofile}\\Music',
+        '{userprofile}\\Videos',
+      ].map(expandAppTarget)
+    : [...new Set(config.openFolders.map(expandAppTarget))]
+  const expandedOpenFolders = openFolders.filter((f) => f.length > 0)
+
   const observation = new RealObsBackend()
   const desktop = new RealDesktopInteractionBackend()
-  const agent = await startAgent({ roots, host, port, token, backend, applications, observation, desktop })
+  const agent = await startAgent({
+    roots,
+    openFolders: expandedOpenFolders,
+    host,
+    port,
+    token,
+    backend,
+    applications,
+    observation,
+    desktop,
+    allowedOrigins: cli.allowedOrigins,
+  })
 
   process.stdout.write(
     [
       `JARVIS Native Windows Agent v${NATIVE_AGENT_VERSION} running`,
       `  url     ${agent.url}`,
       `  protocol ${NATIVE_PROTOCOL}`,
-      `  token   ${token ? 'required (bearer)' : 'NOT required (dev loopback only)'}`,
+      `  token   ${token ? 'required (bearer)' : 'NOT required (origin-gated loopback only)'}`,
       `  roots`,
       ...roots.map((r) => `    - ${r}`),
+      `  open folders (Explorer only)`,
+      ...expandedOpenFolders.slice(0, 10).map((f) => `    - ${f}`),
       `  applications (${configuredCount} configured)`,
       `  observation ${process.platform === 'win32' ? 'windows + desktop screenshot (read-only)' : 'unavailable (not Windows)'}`,
       `  desktop interaction ${process.platform === 'win32' ? 'mouse/keyboard/focus (bounded, injected)' : 'unavailable (not Windows)'}`,

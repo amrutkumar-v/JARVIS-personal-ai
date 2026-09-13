@@ -94,6 +94,16 @@ export class MemoryAppBackend implements ApplicationBackend {
       }))
   }
 
+  async refresh(): Promise<{ total: number; discovered: number; configured: number; refreshedAt: number }> {
+    const all = [...this.apps.values()]
+    return {
+      total: all.length,
+      discovered: all.filter((a) => a.source !== 'configured').length,
+      configured: all.filter((a) => a.source === 'configured').length,
+      refreshedAt: Date.now(),
+    }
+  }
+
   async status(applicationId: string): Promise<NativeAppStatusResult> {
     const app = this.apps.get(applicationId)
     if (!app) {

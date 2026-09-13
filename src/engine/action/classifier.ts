@@ -162,6 +162,33 @@ export function classifyRequest(text: string, view: ActionRegistryView): ActionD
     }
   }
 
+  // 2b. Apps-first tie-break: "open WhatsApp", "start Spotify" — the bare launch
+  // verb matches BOTH `files` ("open") and `apps` ("open app"/"start app" /
+  // "run app"), so files wins by the word count alone. When the request is a
+  // bare launch verb (no explicit file/folder target, no file noun) and the
+  // apps capability is actually connected, prefer the apps domain: it means
+  // "open this application", and the native registry still resolves the name
+  // honestly.
+  const APPS_DOMAIN = DOMAINS.find((d) => d.domain === 'apps')!
+  const BARE_LAUNCH = /\b(open|launch|start|run)\b/i.test(lower)
+  const FILE_NOUN = /\b(file|files?|folder|directory|document|documents|sheet|slides?|notes?|backup|archive|downloads?|desktop)\b/i
+  const appsBacked = selectCapabilitiesForDomain(view, APPS_DOMAIN.capabilityKeywords).some((capId) => {
+    const cap = view.capabilities.find((c) => c.id === capId)
+    return cap ? cap.toolIds.some((toolId) => view.tools.some((t) => t.id === toolId)) : false
+  })
+  if (
+    best?.domain === 'files' &&
+    bestScore === 1 &&
+    BARE_LAUNCH &&
+    !hasExplicitTarget(t) &&
+    !hasLocative(t) &&
+    !FILE_NOUN.test(t) &&
+    appsBacked
+  ) {
+    best = APPS_DOMAIN
+    bestScore = 2
+  }
+
   // 3. A question with no tool match is informational (provider answers).
   if (isQuestion(t)) {
     return {

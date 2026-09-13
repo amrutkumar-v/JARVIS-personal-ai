@@ -1867,3 +1867,1114 @@
   .camera-panel { width: min(210px, 44vw); top: 10px; right: 10px; }
   .connectivity-strip { top: 10px; left: 10px; }
 }
+
+/* ============================================================
+   Phase 7 — Taskbar + movable panel system
+   ============================================================ */
+
+/* ---- Taskbar (left vertical rail) ---- */
+.jarvis-taskbar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  width: 56px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 82px 0 12px;
+  background: linear-gradient(180deg, rgba(5, 8, 14, 0.92), rgba(5, 8, 14, 0.72));
+  border-right: 1px solid var(--hairline);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  z-index: 50;
+  pointer-events: auto;
+  overflow-y: auto;
+  scrollbar-width: none;
+}
+
+.jarvis-taskbar::-webkit-scrollbar { display: none; }
+
+.taskbar-brand {
+  margin-bottom: 8px;
+}
+
+.taskbar-brand-dot {
+  display: block;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: 1px solid var(--accent-glow);
+  box-shadow: 0 0 10px var(--accent-glow);
+}
+
+.taskbar-btn {
+  width: 40px;
+  height: 40px;
+  border-radius: 10px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-faint);
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+  transition: color 0.2s var(--ease-out), border-color 0.2s var(--ease-out), background 0.2s var(--ease-out);
+  position: relative;
+}
+
+.taskbar-btn:hover {
+  color: var(--text-secondary);
+  border-color: var(--hairline);
+  background: hsl(192 40% 82% / 0.04);
+}
+
+.taskbar-btn.is-open {
+  color: var(--accent);
+  border-color: var(--accent-soft);
+  background: hsl(var(--accent-h) 92% 54% / 0.08);
+}
+
+.taskbar-btn.is-open::after {
+  content: '';
+  position: absolute;
+  left: -7px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 3px;
+  height: 14px;
+  border-radius: 2px;
+  background: var(--accent);
+  box-shadow: 0 0 6px var(--accent-glow);
+}
+
+.taskbar-icon {
+  font-size: 16px;
+  line-height: 1;
+}
+
+.taskbar-separator {
+  width: 24px;
+  height: 1px;
+  background: var(--hairline);
+  margin: 4px 0;
+}
+
+/* ---- Panel host (inset from taskbar) ---- */
+.panel-host {
+  position: fixed;
+  top: 0;
+  left: 56px;
+  right: 0;
+  bottom: 0;
+  z-index: 40;
+  pointer-events: none;
+}
+
+.panel-host > * {
+  pointer-events: auto;
+}
+
+/* ---- Panel window ---- */
+.panel-window {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-m, 12px);
+  background: linear-gradient(160deg, hsl(196 30% 12% / 0.88), hsl(196 30% 6% / 0.82));
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.45);
+  overflow: hidden;
+  transition: transform 0.24s var(--ease-out);
+  touch-action: none;
+  user-select: none;
+}
+
+.panel-window.is-dragging,
+.panel-window.is-dragging * {
+  transition: none !important;
+}
+
+.panel-window.is-hidden {
+  display: none;
+}
+
+.panel-window.is-focused {
+  box-shadow: 0 14px 52px rgba(0, 0, 0, 0.55);
+  border-color: var(--accent-soft);
+}
+
+/* ---- Titlebar ---- */
+.panel-window-titlebar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px 6px 10px;
+  border-bottom: 1px solid var(--hairline);
+  cursor: grab;
+  flex-shrink: 0;
+}
+
+.panel-window-titlebar:active {
+  cursor: grabbing;
+}
+
+.panel-window-icon {
+  font-size: 12px;
+  color: var(--accent);
+  line-height: 1;
+  flex-shrink: 0;
+}
+
+.panel-window-label {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.16em;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.panel-window-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+}
+
+.panel-window-placement-btn,
+.panel-window-close-btn {
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  border: none;
+  background: transparent;
+  color: var(--text-faint);
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+  font-size: 12px;
+  transition: color 0.15s var(--ease-out), background 0.15s var(--ease-out);
+}
+
+.panel-window-placement-btn:hover,
+.panel-window-close-btn:hover {
+  color: var(--text-secondary);
+  background: hsl(192 40% 82% / 0.06);
+}
+
+.panel-window-close-btn:hover {
+  color: var(--error);
+}
+
+/* ---- Panel body (content fills, scrollable) ---- */
+.panel-window-body {
+  flex: 1;
+  overflow: auto;
+  overflow-x: hidden;
+  min-height: 0;
+  user-select: text;
+  touch-action: auto;
+}
+
+.panel-window-body > * {
+  height: 100%;
+}
+
+/* ---- Override absolute-positioned panel content for mobile/viewport fit ---- */
+.panel-window .camera-panel,
+.panel-window .backend-panel,
+.panel-window .connectivity-strip {
+  position: static;
+  top: auto;
+  left: auto;
+  right: auto;
+  bottom: auto;
+  transform: none;
+  width: 100%;
+  z-index: auto;
+  pointer-events: auto;
+}
+
+.panel-window .camera-panel { width: 100%; min-width: 0; }
+
+.panel-window .activity-panel,
+.panel-window .transcript-panel {
+  height: 100%;
+}
+
+/* ---- Placement menu ---- */
+.panel-menu-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 999;
+}
+
+.panel-placement-menu {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  min-width: 110px;
+  z-index: 1000;
+  list-style: none;
+  margin: 4px 0 0;
+  padding: 4px;
+  border: 1px solid var(--hairline);
+  border-radius: 8px;
+  background: hsl(196 30% 10% / 0.96);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.5);
+}
+
+.panel-placement-option {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 6px 10px;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: background 0.12s var(--ease-out), color 0.12s var(--ease-out);
+}
+
+.panel-placement-option:hover {
+  background: hsl(192 40% 82% / 0.06);
+}
+
+.panel-placement-option.is-active {
+  color: var(--accent);
+  pointer-events: none;
+}
+
+/* ---- Environment panel ---- */
+.env-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.env-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--hairline);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: border-color 0.15s var(--ease-out), background 0.15s var(--ease-out);
+}
+
+.env-option:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.env-option:not(:disabled):hover {
+  border-color: var(--accent-soft);
+  background: hsl(var(--accent-h) 92% 54% / 0.06);
+}
+
+.env-option.is-active {
+  border-color: var(--accent-soft);
+  background: hsl(var(--accent-h) 92% 54% / 0.1);
+}
+
+.env-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--text-faint);
+  box-shadow: 0 0 6px currentColor;
+  flex-shrink: 0;
+}
+
+.env-option.is-active .env-dot {
+  background: var(--accent);
+  box-shadow: 0 0 8px var(--accent-glow);
+}
+
+.env-label {
+  flex: 1;
+  text-align: left;
+}
+
+.env-badge {
+  font-size: 8px;
+  letter-spacing: 0.1em;
+  color: var(--text-faint);
+  border: 1px solid var(--hairline);
+  border-radius: 4px;
+  padding: 1px 5px;
+}
+
+/* ---- Capability panel ---- */
+.capability-panel .cap-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.capability-panel .cap-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.capability-panel .cap-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  color: var(--text-faint);
+  text-transform: uppercase;
+}
+
+.capability-panel .cap-value {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  color: var(--text-faint);
+}
+
+.capability-panel .cap-value[data-tone='on'] {
+  color: var(--success);
+}
+
+.capability-panel .cap-value[data-tone='off'] {
+  color: var(--text-faint);
+}
+
+/* ---- Application catalogue (APPLICATIONS panel debug view) ---- */
+.application-catalogue {
+  margin-top: 12px;
+}
+
+.catalogue-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.catalogue-refresh {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  padding: 4px 8px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-faint);
+  cursor: pointer;
+}
+
+.catalogue-refresh:hover:not(:disabled) {
+  color: var(--text);
+  border-color: var(--text-faint);
+}
+
+.catalogue-refresh:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.catalogue-note,
+.catalogue-error,
+.catalogue-stamp {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.05em;
+  line-height: 1.5;
+  margin: 8px 0 0;
+}
+
+.catalogue-error {
+  color: hsl(0 65% 52%);
+}
+
+.catalogue-stamp {
+  opacity: 0.6;
+  margin-top: 8px;
+}
+
+/* ---- Stage overlay adjustments (keep ArcReactor, CoreCaption, etc.) ---- */
+.jarvis-stage {
+  margin-left: 56px;
+}
+
+@media (max-width: 720px) {
+  .jarvis-taskbar {
+    width: 44px;
+  }
+  .panel-host {
+    left: 44px;
+  }
+  .jarvis-stage {
+    margin-left: 44px;
+  }
+}
+
+/* ============================================================
+   Phase 8 — Visual Environment Foundation
+   ============================================================ */
+
+/* ---------- Canvas host (shared base) ---------- */
+.canvas-host {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+}
+.canvas-host canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+/* ---------- Astra HUD ---------- */
+.astra-scene {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+}
+.astra-scene .canvas-host {
+  pointer-events: none;
+}
+.astra-overlay {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  grid-template-rows: 1fr 1fr;
+  padding: 24px 32px;
+  gap: 0;
+}
+.astra-corner {
+  pointer-events: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  color: var(--text-faint);
+  text-transform: uppercase;
+}
+.astra-corner--tl {
+  align-self: start;
+  justify-self: start;
+}
+.astra-corner--tr {
+  align-self: start;
+  justify-self: end;
+  align-items: flex-end;
+}
+.astra-corner--bl {
+  align-self: end;
+  justify-self: start;
+}
+.astra-corner--br {
+  align-self: end;
+  justify-self: end;
+  align-items: flex-end;
+}
+.astra-kicker {
+  font-size: 9px;
+  letter-spacing: 0.12em;
+  color: var(--text-faint);
+}
+.astra-status,
+.astra-value {
+  font-family: var(--font-display);
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  color: var(--text-primary);
+}
+.astra-sub {
+  color: var(--text-faint);
+  font-size: 10px;
+}
+.astra-tag {
+  display: inline-block;
+  margin-top: 2px;
+  padding: 1px 7px;
+  border: 1px solid var(--accent-soft);
+  border-radius: 4px;
+  font-size: 9px;
+  letter-spacing: 0.14em;
+  color: var(--accent);
+}
+.astra-telem {
+  display: flex;
+  justify-content: space-between;
+  gap: 14px;
+}
+.astra-telem-label {
+  color: var(--text-faint);
+}
+.astra-telem-value {
+  color: var(--text-primary);
+}
+.astra-telem-value.is-na {
+  color: var(--text-faint);
+  opacity: 0.6;
+}
+.astra-telem-value.is-ok {
+  color: var(--success);
+}
+.astra-value--wrap {
+  max-width: 170px;
+  word-break: break-word;
+  text-align: right;
+}
+
+/* ---------- Command Control ---------- */
+.control-scene {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 24px clamp(20px, 3vw, 36px);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  overflow-y: auto;
+  gap: 18px;
+}
+.control-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+}
+.control-heading {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.control-kicker {
+  font-size: 9px;
+  letter-spacing: 0.14em;
+  color: var(--text-faint);
+  text-transform: uppercase;
+}
+.control-title {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: 17px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  color: var(--text-primary);
+}
+.control-status {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-family: var(--font-display);
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  padding: 3px 10px;
+  border: 1px solid var(--hairline);
+  border-radius: 999px;
+}
+.control-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--text-faint);
+}
+.control-dot.is-online {
+  background: var(--success);
+  box-shadow: 0 0 8px var(--success);
+}
+.control-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 14px;
+  flex: 1;
+}
+.control-card {
+  border: 1px solid var(--hairline);
+  border-radius: 8px;
+  background: rgba(5, 8, 14, 0.45);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  padding: 12px 14px;
+}
+.control-card-title {
+  margin: 0 0 10px 0;
+  font-family: var(--font-display);
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  color: var(--text-faint);
+  text-transform: uppercase;
+}
+.control-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+}
+.control-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  line-height: 1.2;
+}
+.control-row-label {
+  color: var(--text-faint);
+}
+.control-row-value {
+  color: var(--text-primary);
+}
+.control-row.is-warn .control-row-value {
+  color: var(--warning);
+}
+.control-row.is-bad .control-row-value {
+  color: var(--error);
+}
+.control-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+.control-envs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.control-env {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border: 1px solid var(--hairline);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: border-color 0.16s, background 0.16s, color 0.16s;
+}
+.control-env:hover,
+.control-env.is-active {
+  border-color: var(--accent-soft);
+  color: var(--text-primary);
+}
+.control-env.is-active {
+  background: hsl(var(--accent-h) var(--accent-s) var(--accent-l) / 0.08);
+}
+.control-env-glyph {
+  font-size: 12px;
+}
+.control-launch {
+  display: flex;
+  gap: 6px;
+}
+.control-launch-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 10px;
+  border: 1px solid var(--hairline);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+.control-launch-btn:hover {
+  border-color: var(--accent-soft);
+  color: var(--text-primary);
+}
+
+/* ---------- Space ---------- */
+.space-scene {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+}
+
+/* ---------- Tunnel ---------- */
+.tunnel-scene {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+}
+.tunnel-controls {
+  position: absolute;
+  bottom: 18px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  gap: 5px;
+  pointer-events: auto;
+}
+.tunnel-speed {
+  padding: 4px 12px;
+  border: 1px solid var(--hairline);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-faint);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: border-color 0.16s, color 0.16s, background 0.16s;
+}
+.tunnel-speed:hover {
+  color: var(--text-secondary);
+  border-color: var(--accent-soft);
+}
+.tunnel-speed.is-active {
+  color: var(--text-primary);
+  border-color: var(--accent);
+  background: hsl(var(--accent-h) var(--accent-s) var(--accent-l) / 0.12);
+  box-shadow: 0 0 10px hsl(var(--accent-h) var(--accent-s) var(--accent-l) / 0.18);
+}
+
+/* ---------- Taskbar environment picker ---------- */
+.taskbar-env {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+.taskbar-env-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 8px;
+  border: 1px solid var(--hairline);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+.taskbar-env-btn:hover,
+.taskbar-env-btn.is-open {
+  border-color: var(--accent-soft);
+  color: var(--text-primary);
+}
+.taskbar-env-label {
+  max-width: 92px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.taskbar-env-popover {
+  position: absolute;
+  top: calc(100% + 7px);
+  left: 0;
+  z-index: 1200;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 170px;
+  padding: 6px;
+  border: 1px solid var(--hairline);
+  border-radius: 8px;
+  background: rgba(5, 8, 14, 0.96);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+}
+.taskbar-env-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 5px 8px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  text-align: left;
+  cursor: pointer;
+}
+.taskbar-env-item:hover {
+  border-color: var(--accent-soft);
+  color: var(--text-primary);
+  background: hsl(var(--accent-h) var(--accent-s) var(--accent-l) / 0.08);
+}
+.taskbar-env-item.is-active {
+  color: var(--text-primary);
+  background: hsl(var(--accent-h) var(--accent-s) var(--accent-l) / 0.1);
+  border-color: var(--accent-soft);
+}
+.taskbar-env-glyph {
+  font-size: 12px;
+}
+
+/* ---------- Transition overlays ---------- */
+.tr-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 50;
+  pointer-events: none;
+}
+
+/* ---- fade ---- */
+.tr-fade {
+  background: hsl(var(--accent-h) 20% 5% / 0.94);
+}
+.tr-fade.tr-in {
+  animation: trFadeIn var(--tr-duration, 260ms) ease-in-out forwards;
+}
+.tr-fade.tr-out {
+  animation: trFadeOut var(--tr-duration, 360ms) ease-in-out forwards;
+}
+@keyframes trFadeIn {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+@keyframes trFadeOut {
+  from { opacity: 1; }
+  to   { opacity: 0; }
+}
+
+/* ---- radial (arc portal) ---- */
+.tr-radial {
+  background: hsl(var(--accent-h) 40% 8% / 0.97);
+  clip-path: circle(0% at 50% 50%);
+}
+.tr-radial.tr-in {
+  animation: trRadialIn var(--tr-duration, 300ms) ease-out forwards;
+}
+.tr-radial.tr-out {
+  animation: trRadialOut var(--tr-duration, 420ms) ease-in forwards;
+}
+@keyframes trRadialIn {
+  from { clip-path: circle(0% at 50% 50%); }
+  to   { clip-path: circle(150% at 50% 50%); }
+}
+@keyframes trRadialOut {
+  from { clip-path: circle(150% at 50% 50%); }
+  to   { clip-path: circle(0% at 50% 50%); }
+}
+
+/* ---- sweep (directional) ---- */
+.tr-sweep {
+  background: hsl(var(--accent-h) 20% 6% / 0.96);
+  clip-path: inset(0 100% 0 0);
+}
+.tr-sweep.tr-in {
+  animation: trSweepIn var(--tr-duration, 320ms) ease-out forwards;
+}
+.tr-sweep.tr-out {
+  animation: trSweepOut var(--tr-duration, 380ms) ease-in forwards;
+}
+@keyframes trSweepIn {
+  from { clip-path: inset(0 100% 0 0); }
+  to   { clip-path: inset(0 0 0 0); }
+}
+@keyframes trSweepOut {
+  from { clip-path: inset(0 0 0 0); }
+  to   { clip-path: inset(0 0 0 100%); }
+}
+
+/* ---- hud-scan ---- */
+.tr-hud-scan {
+  background: hsl(var(--accent-h) 18% 6% / 0.92);
+}
+.tr-hud-scan::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    180deg,
+    transparent 0%,
+    hsl(var(--accent-h) 92% 54% / 0.25) 45%,
+    hsl(var(--accent-h) 92% 54% / 0.35) 50%,
+    hsl(var(--accent-h) 92% 54% / 0.25) 55%,
+    transparent 100%
+  );
+}
+.tr-hud-scan.tr-in {
+  animation: trHudScanIn var(--tr-duration, 300ms) ease-in-out forwards;
+}
+.tr-hud-scan.tr-in::after {
+  animation: trHudScanPass var(--tr-duration, 300ms) ease-in-out forwards;
+}
+.tr-hud-scan.tr-out {
+  animation: trHudScanOut var(--tr-duration, 300ms) ease-in-out forwards;
+}
+.tr-hud-scan.tr-out::after {
+  animation: trHudScanPass var(--tr-duration, 300ms) ease-in-out forwards;
+}
+@keyframes trHudScanIn {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+@keyframes trHudScanOut {
+  from { opacity: 1; }
+  to   { opacity: 0; }
+}
+@keyframes trHudScanPass {
+  from { transform: translateY(-100%); }
+  to   { transform: translateY(100%); }
+}
+
+/* ---- dissolve ---- */
+.tr-dissolve {
+  background: hsl(var(--accent-h) 20% 6% / 0.92);
+  filter: blur(0px);
+}
+.tr-dissolve.tr-in {
+  animation: trDissolveIn var(--tr-duration, 280ms) ease-in forwards;
+}
+.tr-dissolve.tr-out {
+  animation: trDissolveOut var(--tr-duration, 340ms) ease-out forwards;
+}
+@keyframes trDissolveIn {
+  from { opacity: 0; filter: blur(0px); }
+  to   { opacity: 1; filter: blur(4px); }
+}
+@keyframes trDissolveOut {
+  from { opacity: 1; filter: blur(4px); }
+  to   { opacity: 0; filter: blur(0px); }
+}
+
+/* ---- Phase 10: Gesture HUD ---- */
+.gesture-hud {
+  position: fixed;
+  bottom: 72px;
+  left: 14px;
+  z-index: 220;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border: 1px solid var(--hairline-strong);
+  border-radius: 7px;
+  background: hsl(var(--accent-h) 20% 8% / 0.88);
+  backdrop-filter: blur(6px);
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  color: var(--text-secondary);
+  transition: opacity 0.22s ease;
+}
+.gesture-hud.is-error { border-color: hsl(0 65% 52% / 0.38); }
+.gesture-hud-title {
+  font-weight: 600;
+  color: var(--text);
+}
+.gesture-hud-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.gesture-hud-dot.q-none { background: hsl(210 10% 30%); }
+.gesture-hud-dot.q-poor { background: hsl(32 92% 52%); }
+.gesture-hud-dot.q-ok   { background: hsl(42 92% 52%); }
+.gesture-hud-dot.q-good { background: hsl(132 62% 42%); box-shadow: 0 0 6px hsl(132 62% 42% / 0.4); }
+.gesture-hud-msg { color: var(--text); }
+.gesture-hud-count { opacity: 0.65; }
+
+/* ---- Phase 10: Taskbar gesture toggle ---- */
+.taskbar-btn.gesture-toggle { position: relative; }
+.taskbar-btn.gesture-toggle.is-open { color: hsl(132 62% 42%); }
+.taskbar-btn.gesture-toggle.has-error { color: hsl(0 65% 52%); }
+.taskbar-btn.gesture-toggle.has-error::after {
+  content: '';
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: hsl(0 65% 52%);
+}
+
+/* ---- Phase 10: Camera panel gesture section ---- */
+.camera-gesture {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--hairline);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.camera-gesture-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+}
+.camera-gesture-label { font-weight: 600; }
+.camera-gesture-state { font-weight: 700; color: var(--text-muted); }
+.camera-gesture-state.is-live { color: hsl(132 62% 42%); }
+.camera-gesture-toggle {
+  width: 100%;
+  padding: 6px 0;
+  border: 1px solid var(--hairline-strong);
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text);
+  font-size: 11px;
+  cursor: pointer;
+  transition: border-color 0.15s ease, color 0.15s ease;
+}
+.camera-gesture-toggle:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.camera-gesture-toggle:disabled { opacity: 0.45; cursor: default; }
+.camera-gesture-status {
+  font-size: 10px;
+  color: var(--text-muted);
+  text-align: center;
+}

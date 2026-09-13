@@ -80,6 +80,7 @@ const VERDICT_MESSAGES: Record<GoalTaskStatus, string> = {
   executing: 'The goal is still being executed.',
   recovering: 'A step failed verification; recovery is in progress.',
   completed: 'The goal was achieved and the result was confirmed.',
+  partial: 'Some requested steps were completed and verified, but the goal was NOT fully achieved.',
   failed: 'The goal was not achieved.',
   unverified: 'Step results could not be confirmed, so the goal is NOT declared complete.',
   blocked: 'A safety rail stopped the goal before it could be completed.',
@@ -180,6 +181,20 @@ export function evaluateGoalTask(
     )
     const maxRecovery = limits?.maxRecoveryAttempts ?? GOAL_LIMITS.maxRecoveryAttempts
     const recoveryExhausted = recoveryBudgetExceeded(countRecoveries(trace.steps), maxRecovery)
+    // Multi-step honesty: some steps verified + a later step failed → PARTIAL,
+    // never plain failed, and NEVER complete. The counts carry the breakdown.
+    if (c.verifiedSteps > 0) {
+      const railStop = limited || recoveryExhausted
+      return {
+        status: 'partial',
+        reason: railStop
+          ? `${VERDICT_MESSAGES.partial} ${c.verifiedSteps} of ${c.executedSteps} executed step(s) were verified, and a safety rail stopped it before full completion.`
+          : `${VERDICT_MESSAGES.partial} ${c.verifiedSteps} of ${c.executedSteps} executed step(s) were verified.`,
+        evidence: { kind: 'none', reason: 'Some steps were verified, but the goal stopped before full completion.' },
+        actionable: hasActionable,
+        ...omitSteps(c),
+      }
+    }
     if (limited || recoveryExhausted) {
       return {
         status: 'blocked',
@@ -199,10 +214,43 @@ export function evaluateGoalTask(
   }
 
   // finalState === 'completed'
-  if (!hasActionable) return readOnlyResult(trace)
+  if (!hasActionable) {
+    // Nothing executed at all AND the only steps were safety-rail rejections →
+    // the goal did NOT happen as "the answer is the text": it was refused.
+    // Unknown/hallucinated capabilities never produce a completed read-only run.
+    const refused = trace.steps.some(
+      (s) => s.observation?.errorKind === 'plan_rejected' || s.observation?.errorKind === 'orchestration_limit',
+    )
+    const anythingExecuted = trace.steps.some((s) => s.status === 'COMPLETED')
+    if (refused && !anythingExecuted) {
+      return {
+        status: 'blocked',
+        reason: 'The requested action was refused before execution: it is not a registered capability or tool.',
+        evidence: { kind: 'none', reason: 'Nothing executed — the plan was refused by a safety rail.' },
+        actionable: false,
+        ...omitSteps(c),
+      }
+    }
+    return readOnlyResult(trace)
+  }
 
   const last = actionableSteps[actionableSteps.length - 1]
   const classified = classifyTaskStep(last)
+  // Earlier steps verified + the LAST step failed/refuted/blocked → partial.
+  const partialFallback = (fallback: GoalTaskStatus, reason: string): GoalTaskResult =>
+    c.verifiedSteps > 0
+      ? {
+          status: 'partial',
+          reason:
+            fallback === 'blocked'
+              ? `${VERDICT_MESSAGES.partial} ${c.verifiedSteps} of ${c.executedSteps} executed step(s) were verified, and a safety rail stopped it before full completion.`
+              : `${VERDICT_MESSAGES.partial} ${c.verifiedSteps} of ${c.executedSteps} executed step(s) were verified.`,
+          evidence: { kind: 'none', reason },
+          actionable: true,
+          ...omitSteps(c),
+        }
+      : { status: fallback, reason, evidence: { kind: 'none', reason }, actionable: true, ...omitSteps(c) }
+
   switch (classified) {
     case 'verified':
       return {
@@ -213,29 +261,20 @@ export function evaluateGoalTask(
         ...omitSteps(c),
       }
     case 'refuted':
-      return {
-        status: 'failed',
-        reason: 'The final action contradicted its expected effect, so the goal was NOT achieved.',
-        evidence: { kind: 'none', reason: "The last action's verification refused the claimed effect." },
-        actionable: true,
-        ...omitSteps(c),
-      }
+      return partialFallback(
+        'failed',
+        "The final action contradicted its expected effect, so the goal was NOT achieved.",
+      )
     case 'blocked':
-      return {
-        status: 'blocked',
-        reason: 'A safety rail stopped the final goal action before it could complete.',
-        evidence: { kind: 'none', reason: 'The last action was refused before execution.' },
-        actionable: true,
-        ...omitSteps(c),
-      }
+      return partialFallback(
+        'blocked',
+        'A safety rail stopped the final goal action before it could complete.',
+      )
     case 'failed':
-      return {
-        status: 'failed',
-        reason: 'The final goal action failed, so the goal was NOT achieved.',
-        evidence: { kind: 'none', reason: 'The last action failed during execution.' },
-        actionable: true,
-        ...omitSteps(c),
-      }
+      return partialFallback(
+        'failed',
+        'The final goal action failed, so the goal was NOT achieved.',
+      )
     case 'cancelled':
       return cancelledResult(c)
     default:

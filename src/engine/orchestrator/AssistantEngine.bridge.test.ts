@@ -551,6 +551,49 @@ describe('Phase 3.0B — acceptance I/J: explicit device targets survive plan �
     const implicitPlan = engine.planOrchestrated(implicit)
     expect(implicitPlan.steps[0].targetDevice).toBe('victus-5050')
   })
+
+  it('real Windows control — "open my downloads folder" runs Explorer on the curated folder token', async () => {
+    const apps = new FakeApplicationProvider([{ applicationId: 'file-explorer', launchOutcome: 'verified' }])
+    const engine = makeEngine({ applications: apps, device: stubDeviceProvider() })
+
+    const request = await engine.orchestrate('open my downloads folder')
+    const plan = engine.planOrchestrated(request)
+    expect(plan.verdict).toBe('ok')
+    expect(plan.steps).toHaveLength(1)
+    expect(plan.steps[0].capability).toBe('open_application')
+    // The planner never invents an app id for the folder — it opens File
+    // Explorer ON the curated token the native agent expands.
+    expect(plan.steps[0].payload).toEqual({ application_id: 'file-explorer', folder: '{userprofile}\\Downloads' })
+
+    const result = await engine.executeOrchestrated(request)
+    expect(result.status).toBe('completed')
+    expect(result.completedSteps).toBe(1)
+  })
+
+  it('real Windows control — a pure "is chrome running?" request plans application_status', async () => {
+    const apps = new FakeApplicationProvider([{ applicationId: 'google-chrome', launchOutcome: 'verified' }])
+    const engine = makeEngine({ applications: apps, device: stubDeviceProvider() })
+
+    const request = await engine.orchestrate('is chrome running?')
+    const plan = engine.planOrchestrated(request)
+    expect(plan.verdict).toBe('ok')
+    expect(plan.steps[0].capability).toBe('application_status')
+    // The planner emits the stable app-id shape; the native registry resolves
+    // the "chrome" token to the real google-chrome entry at execution time.
+    expect(plan.steps[0].payload).toEqual({ application_id: 'chrome' })
+  })
+
+  it('real Windows control — a pure "close chrome" request plans close_application', async () => {
+    const apps = new FakeApplicationProvider([{ applicationId: 'google-chrome', launchOutcome: 'verified' }])
+    const engine = makeEngine({ applications: apps, device: stubDeviceProvider() })
+
+    const request = await engine.orchestrate('close chrome')
+    const plan = engine.planOrchestrated(request)
+    expect(plan.verdict).toBe('ok')
+    expect(plan.steps).toHaveLength(1)
+    expect(plan.steps[0].capability).toBe('close_application')
+    expect(plan.steps[0].payload).toEqual({ application_id: 'chrome' })
+  })
 })
 
 /* ------------------------------------------------------------- confirmation (K) */

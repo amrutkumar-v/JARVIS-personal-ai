@@ -639,3 +639,44 @@ describe('MemoryManager (structured persistent memory)', () => {
     expect(diagnostics.primaryDimensions).toBe(5)
   })
 })
+
+describe('MemoryManager secret boundary (FINAL CONVERGENCE)', () => {
+  beforeEach(() => stubBrowserStorage())
+
+  it('refuses high-confidence credentials at the write boundary — no caller can bypass', () => {
+    const memory = new MemoryManager()
+    expect(() => memory.remember('my password is hunter2')).toThrow(/credential/)
+    expect(() => memory.remember('the api key is sk-abcdefghijklmnopqrstuvwxyz1234567890')).toThrow(/credential/)
+    expect(() => memory.remember("client secret 'g9zXk2' for the OAuth app")).toThrow(/credential/)
+    expect(memory.count).toBe(0)
+  })
+
+  it('covers update() content changes too', () => {
+    const memory = new MemoryManager()
+    const item = memory.remember('my favorite color is teal', { skipEmbedding: true })
+    expect(() => memory.update(item.id, { content: 'my password is hunter2' })).toThrow(/credential/)
+    expect(memory.get(item.id)!.content).toBe('my favorite color is teal')
+  })
+
+  it('refuses in async rememberSemantic (the memory tool path)', async () => {
+    const memory = new MemoryManager()
+    await expect(memory.rememberSemantic('my access token is sk-a1b2c3d4e5f6g7h8i9j0')).rejects.toThrow(/credential/)
+    expect(memory.count).toBe(0)
+  })
+
+  it('prose that merely contains credential-adjacent words stays storable', () => {
+    const memory = new MemoryManager()
+    expect(() => memory.remember('kept secret: I code at night', { skipEmbedding: true })).not.toThrow()
+    expect(() => memory.remember('I gave a talk about token-ring networks', { skipEmbedding: true })).not.toThrow()
+    expect(memory.count).toBe(2)
+  })
+
+  it('nothing credential-like ever reaches persistent storage', () => {
+    stubBrowserStorage()
+    const memory = new MemoryManager()
+    expect(() => memory.remember('my password is hunter2')).toThrow(/credential/)
+    const raw = window.localStorage.getItem('jarvis.memory')
+    // No write happened at all — the credential never hit the boundary.
+    expect(raw).toBeNull()
+  })
+})

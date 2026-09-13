@@ -1,5 +1,3 @@
-import { nativeError } from './errors.js'
-
 /**
  * Native Windows Agent — browser automation backend seam (Phase 4.0).
  *

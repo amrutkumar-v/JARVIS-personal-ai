@@ -374,7 +374,10 @@ describe('Phase 2.0 — plan validation at runtime (untrusted model output)', ()
     expect(trace.steps[1].status).toBe('COMPLETED')
     expect(trace.steps[2].status).toBe('FAILED')
     expect(trace.steps[2].observation?.errorKind).toBe('plan_rejected')
-    expect(engine.taskResult().status).toBe('blocked')
+    // Multi-step honesty: 2 of 3 verified, the budget stop blocks the rest —
+    // the verdict is PARTIAL (verified progress), never blocked-with-no-result.
+    expect(engine.taskResult().status).toBe('partial')
+    expect(engine.taskResult().verifiedSteps).toBe(2)
   })
 })
 
@@ -403,8 +406,11 @@ describe('Phase 2.0 — goal task budget (engine-owned)', () => {
     expect(tool.clicks).toBe(2)
     expect(engine.taskBudget()).toEqual({ steps: 2, remaining: 0, limit: 2 })
     const task = engine.lastRunTrace().task!
-    expect(task.status).toBe('blocked')
+    // Two clicks were verified; the third was refused by the step budget →
+    // honest PARTIAL, with the safety-rail stop surfaced in the reason.
+    expect(task.status).toBe('partial')
     expect(task.reason).toMatch(/safety rail/i)
+    expect(task.verifiedSteps).toBe(2)
   })
 
   it('the default ceiling never truncates a normal multi-step goal', async () => {
@@ -588,7 +594,7 @@ describe('Phase 2.1 — engine goal UI surface (goalPlan / goalLimitsInfo)', () 
     })
     await run()
 
-    expect(engine.goalLimitsInfo()).toEqual({ maxTaskSteps: 2, maxRecoveryAttempts: 1, maxReplans: 3 })
+    expect(engine.goalLimitsInfo()).toEqual({ maxTaskSteps: 2, maxRecoveryAttempts: 1, maxReplans: 3, totalExecutionMs: 120_000 })
     // The model can never change the limits through its output.
     expect(engine.taskResult().status).toBe('completed')
   })

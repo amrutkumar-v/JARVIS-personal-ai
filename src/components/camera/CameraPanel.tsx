@@ -1,3 +1,4 @@
+import { useCallback } from 'react'
 import type { CameraUiState } from '../../state/jarvis.store'
 
 interface Props {
@@ -20,8 +21,19 @@ const PERMISSION_LABELS: Record<CameraUiState['permission'], string> = {
  * Phase 2.7 — real webcam panel. `active` is only true after REAL getUserMedia
  * grace; every label below mirrors the actual browser/device state. The panel
  * never renders a fake frame.
+ *
+ * Phase 10 — hand gestures follow the camera automatically: no separate
+ * toggle, so this panel stays the single privacy control. Turn the camera off
+ * and gesture dies with the stream.
  */
 export function CameraPanel({ camera, onToggle, onCapture, onSetVideo }: Props) {
+  const setVideoRef = useCallback(
+    (el: HTMLVideoElement | null) => {
+      onSetVideo(el)
+    },
+    [onSetVideo],
+  )
+
   return (
     <div className={`camera-panel${camera.active ? ' is-active' : ''}`} data-permission={camera.permission}>
       <div className="camera-head">
@@ -35,7 +47,7 @@ export function CameraPanel({ camera, onToggle, onCapture, onSetVideo }: Props) 
         {camera.active ? (
           <video
             className="camera-preview"
-            ref={(el) => onSetVideo(el)}
+            ref={setVideoRef}
             autoPlay
             playsInline
             muted

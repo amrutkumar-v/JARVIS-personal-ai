@@ -30,6 +30,7 @@ describe('RealAppBackend — pre-spawn validation (Phase 1.3)', () => {
         'applicationId',
         'displayName',
         'enabled',
+        'launchMechanism',
         'launchable',
         'name',
         'source',
@@ -73,6 +74,41 @@ describe('RealAppBackend — pre-spawn validation (Phase 1.3)', () => {
     const err = await backend.launch('ghost').catch((e) => e)
     expect(isNativeError(err)).toBe(true)
     expect((err as NativeError).code).toBe('not_found')
+  })
+
+  it('launch(): rejects a folder argument for an app that does not allow it', async () => {
+    const err = await backend.launch('notepad', { folder: 'C:\\Somewhere' }).catch((e) => e)
+    expect(isNativeError(err)).toBe(true)
+    expect((err as NativeError).code).toBe('invalid_path')
+  })
+
+  it('launch(): rejects relative / non-directory folder arguments even for File Explorer', async () => {
+    const reg = new AppRegistry({
+      configured: { explorer: { target: 'C:\\Windows\\explorer.exe', allowFolder: true } },
+      discover: false,
+    })
+    const b = new RealAppBackend(reg)
+    const relative = await b.launch('explorer', { folder: 'relative\\path' }).catch((e) => e)
+    expect(isNativeError(relative)).toBe(true)
+    expect((relative as NativeError).code).toBe('invalid_path')
+    const notDir = await b.launch('explorer', { folder: 'C:\\No\\Such\\Dir' }).catch((e) => e)
+    expect(isNativeError(notDir)).toBe(true)
+    expect((notDir as NativeError).code).toBe('not_found')
+  })
+
+  it('status(): shell-route apps without a process image report an unavailable observation', async () => {
+    const reg = new AppRegistry({
+      configured: {
+        'calc-store': { mechanism: 'aumid', aumid: 'Microsoft.WindowsCalculator_8wekyb3d8bbwe!App' },
+        settings: { mechanism: 'uri', uri: 'ms-settings:' },
+      },
+      discover: false,
+    })
+    const b = new RealAppBackend(reg)
+    const calc = await b.status('calc-store')
+    expect(calc).toMatchObject({ running: false, runningVerified: false, launchMechanism: 'aumid' })
+    const settings = await b.status('settings')
+    expect(settings).toMatchObject({ running: false, runningVerified: false, launchMechanism: 'uri' })
   })
 
   it('is a production backend, never testsOnly', async () => {

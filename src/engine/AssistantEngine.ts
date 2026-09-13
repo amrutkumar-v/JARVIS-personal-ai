@@ -40,6 +40,7 @@ import type {
   EngineOutMessage,
   MemoryActivityAction,
   AwaitingConfirmation,
+  ToolConfirmationRequest,
   ActivityOut,
   ActivityStatus,
   GoalPlanView,
@@ -60,22 +61,42 @@ import { createVisualComputerTools, sanitizeVisionPayload, visualBudgetBucket, v
 import type { VisionProvider } from '../vision'
 import { createDeviceTools } from '../device'
 import type { DeviceProvider } from '../device'
+import { setDeviceProvider as setStoreDeviceProvider } from '../device'
+import type { DeviceErrorKind } from '../backend/types'
 import { createWebTools } from '../web'
 import type { WebProvider } from '../web'
 import { createClipboardTools } from '../clipboard'
 import type { ClipboardProvider } from '../clipboard'
 import { createBrowserTools } from '../browser'
 import type { BrowserProvider } from '../browser'
+import { createSchedulerTools } from '../scheduling/schedulerTools'
+import type { SchedulerAdapter } from '../scheduling/scheduler'
 import { CapabilityRegistry, DEFAULT_CAPABILITIES, toCapabilityDefinition, recordReliability } from './capabilities'
 import type { CapabilityContext, CapabilityPreview, CapabilityReliabilityIndex } from './capabilities'
 import { discoverCapabilities } from './orchestrator/capabilityDiscovery'
-import { understandRequest } from './orchestrator/goalUnderstanding'
+import { understandRequest, type RequestClass } from './orchestrator/goalUnderstanding'
 import { extractEntitiesFromResult, TaskContextStore } from './orchestrator/taskContext'
 import { PersonalAICore } from './orchestrator/orchestrator'
 import { planRequest } from './orchestrator/planner'
+import { planPostActionObservation } from './orchestrator/postActionVerify'
+import { applyResolutionToStepMeta } from './orchestrator/phase6/enrich'
+import type { Phase6StepMeta } from './orchestrator/phase6/planTypes'
+import { decideStepReadiness } from './orchestrator/phase6/condition'
+import type { StepOutcomeView } from './orchestrator/phase6/condition'
+import { ExecutionContext as Phase6ExecutionContext } from './orchestrator/phase6/executionContext'
+import { decideReplan } from './orchestrator/phase6/replan'
+import type { AlternativeResolver } from './orchestrator/phase6/replan'
+import { createExecutionState, transitionPhase, updateStepState, buildFinalResult } from './orchestrator/executionState'
+import type { AgenticExecutionState, StepState } from './orchestrator/executionState'
 import type { OrchestrationPlanStep, OrchestrationPlannedRequest, OrchestrationPlanContext } from './orchestrator/planner'
 import type { OrchestrationExecutionResult, OrchestrationExecutionStatus, OrchestrationStepOutcome, OrchestrationVerificationStatus } from './orchestrator/execution'
 import type { OrchestrationRequest, PersonalAICoreView } from './orchestrator/types'
+import { isStructuredPlanProvider, reasoningFailureKind } from './reasoning/provider'
+import type { StructuredPlanProvider } from './reasoning/provider'
+import type { ReasoningRequest } from './reasoning/contract'
+import { REASONING_PLAN_LIMITS } from './reasoning/contract'
+import { buildReasoningRequest } from './reasoning/context'
+import { parseAndValidatePlan } from './reasoning/validate'
 import { defaultAutonomy, isAutonomyLevel, autonomyAllowsAuto } from './autonomy/policy'
 import type { AutonomyLevel } from './autonomy/policy'
 import { AUTONOMY_LEVEL_LABELS } from './autonomy/policy'
@@ -87,6 +108,7 @@ import {
   taskBudgetRemaining,
   recoveryBudgetExceeded,
   replanBudgetRemaining,
+  deadlineReached as goalDeadlineReached,
   validatePlan,
   evaluateGoalTask,
   countRecoveries,
@@ -97,7 +119,7 @@ import {
   repeatedFailureDetected,
   REPLAN_LIMITS,
 } from './goal'
-import type { GoalLimits, GoalTaskResult, PlanStepRequest, PlanVerdictCode, PlanStepResolution } from './goal'
+import type { GoalLimits, GoalTaskResult, PlanStepRequest, PlanVerdictCode, PlanStepResolution, PlanValidation } from './goal'
 import type { CapabilityDefinition } from './capabilities'
 import type { AIProviderInfo } from './provider'
 import {
@@ -128,6 +150,21 @@ import {
   categoryLabel,
 } from './interaction'
 import type { CameraIntent, InputChannel, CatalogEnvironment } from './interaction'
+import { detectUiControlCommands, environmentChoices, panelChoices, themeChoices } from './interaction/uiControl'
+import type { JarvisTheme } from '../themes'
+import { THEME_META, nextTheme } from '../themes'
+import type { UiControlIntent } from './interaction/uiControl'
+import { executeGestureCommand } from '../gesture/executor'
+import type { GestureActionResult, GestureCommand } from '../gesture'
+import { usePanelLayoutStore } from '../panel/panelStore'
+import { PANEL_BY_ID } from '../panel/registry'
+import {
+  DEFAULT_ENVIRONMENT,
+  isEnvironmentId,
+  stepEnvironment,
+  environmentLabel,
+} from '../environment/registry'
+import type { VisualEnvironmentId } from '../environment/types'
 import { describeCameraFrame, CAMERA_UNAVAILABLE_MESSAGE } from '../camera'
 import type { CameraController } from '../camera'
 import type { AgentTrace } from './agent'
@@ -185,6 +222,18 @@ import type {
 
 const CONTEXT_WINDOW = 8
 
+/** Request classes the mock+local orchestrator interception genuinely plans.
+ * Chat/question/follow_up/conversation classes must keep flowing to the
+ * provider loop (chat, clock, calculator, notes). */
+const ACTIONABLE_ORCHESTRATION_CLASSES: ReadonlySet<RequestClass> = new Set<RequestClass>([
+  'command',
+  'device_operation',
+  'multi_step_goal',
+  'cross_device_workflow',
+  'web_research',
+  'status_request',
+])
+
 /**
  * Phase 2.2 — one failed step reported back from executeToolSteps so the
  * recovery layer can classify it and apply a bounded action. Pre-execution
@@ -200,10 +249,47 @@ interface StepFailure {
   errorKind?: AgentErrorKind
   observationKind?: ObservationKind
   retryable?: boolean
+  /** Structured device-error code (Work 11.9), when a device tool failed. */
+  deviceCode?: DeviceErrorKind
   /** Plan-validation code, when this failure was a rejected plan step. */
   planCode?: PlanVerdictCode
   /** Sanitized payload used to compute the same-action signature. */
   payload?: Record<string, unknown>
+}
+
+/** Extract a structured device-error code from a failed tool's output, if any. */
+function deviceFailureCode(output: unknown): DeviceErrorKind | undefined {
+  if (typeof output !== 'object' || output === null) return undefined
+  const code = (output as { deviceError?: unknown }).deviceError
+  if (typeof code !== 'string') return undefined
+  return code as DeviceErrorKind
+}
+
+/** Phase 6 — honest summary of one orchestrated run (per-step outcome counts,
+ * recovery/replan usage and how the run stopped). Never replaces the user-facing
+ * result; it is the observable record for tests, the UI and the acceptance
+ * report. */
+interface Phase6RunSummary {
+  planId?: string
+  elapsedMs: number
+  phase: string
+  executedSteps: number
+  verifiedSteps: number
+  failedSteps: number
+  blockedSteps: number
+  skippedSteps: number
+  cancelledSteps: number
+  recoveryAttempts: number
+  replanAttempts: number
+  replanLimit: number
+  stoppedBy:
+    | 'cancellation'
+    | 'deadline'
+    | 'failure'
+    | 'recovery_limit'
+    | 'replan_limit'
+    | 'completed'
+    | 'precondition'
 }
 
 export class AssistantEngine {
@@ -248,6 +334,7 @@ export class AssistantEngine {
   // or Playwright not installed, it is absent and no browser.* tools are
   // ever registered.
   private browser: BrowserProvider | undefined
+  private scheduling: SchedulerAdapter | undefined
   // Phase 3.0 — task context store for follow-up resolution and deictic references.
   private taskContextStore: TaskContextStore
   // Phase 3.0A — one stateless central orchestration core shared across runs.
@@ -276,9 +363,20 @@ export class AssistantEngine {
   private runState = new AgentStateMachine()
   private tracer = new ExecutionTracer()
   private executedActions: Array<{ toolId: string; input?: Record<string, unknown> }> = []
+  /** Phase 6 — last orchestration run summary (inspectable for the UI/tests). */
+  private _lastPhase6Run?: Phase6RunSummary
+
+  /** Phase 6 — read-only accessor for the last orchestration run summary. */
+  get lastPhase6Run(): Phase6RunSummary | undefined {
+    return this._lastPhase6Run
+  }
   private voiceOutput: VoiceOutput | null = null
   private listeners = new Set<(m: EngineOutMessage) => void>()
   private running = false
+  /** True while process() is running an orchestration plan INLINE (the mock
+   * path). Keeps the re-entrancy guard meaningful for concurrent turns while
+   * allowing the planner→executor bridge to run within the current turn. */
+  private orchestratingInline = false
   private awaiting: AwaitingConfirmation | null = null
   private cancelRequested = false
   private taskDeadline = 0
@@ -317,7 +415,7 @@ export class AssistantEngine {
   // Phase 3.0 — structured task-execution log (injectable for tests/future sync).
   private taskLog: TaskLog
 
-  constructor(options?: { providers?: AIProvider[]; fileSystem?: FileSystemProvider; applications?: ApplicationProvider; observation?: ObservationProvider; desktop?: DesktopProvider; vision?: VisionProvider; camera?: CameraController | null; device?: DeviceProvider; web?: WebProvider; clipboard?: ClipboardProvider; browser?: BrowserProvider; goalLimits?: Partial<GoalLimits>; capabilities?: CapabilityDefinition[]; autonomyLevel?: AutonomyLevel; taskLog?: TaskLog }) {
+  constructor(options?: { providers?: AIProvider[]; fileSystem?: FileSystemProvider; applications?: ApplicationProvider; observation?: ObservationProvider; desktop?: DesktopProvider; vision?: VisionProvider; camera?: CameraController | null; device?: DeviceProvider; web?: WebProvider; clipboard?: ClipboardProvider; browser?: BrowserProvider; scheduling?: SchedulerAdapter; goalLimits?: Partial<GoalLimits>; capabilities?: CapabilityDefinition[]; autonomyLevel?: AutonomyLevel; taskLog?: TaskLog }) {
     // Phase 1.0 — provider injection seam: tests inject a scripted provider;
     // production defaults to the configured provider stack unchanged.
     const providers = options?.providers && options.providers.length ? [...options.providers] : createProviders()
@@ -398,6 +496,10 @@ export class AssistantEngine {
     // installed, no browser.* tools exist and the model can never claim
     // browser access it does not have.
     this.syncBrowser(options?.browser)
+    // Phase 11 — the scheduling seam (real reminders). Always present in the
+    // browser app (LocalScheduler); tools registered here so the model can
+    // act on "remind me at 7 PM". Without a seam, scheduling tools vanish.
+    this.syncScheduling(options?.scheduling)
     // Phase 3.0 — task context store for follow-up resolution.
     this.taskContextStore = new TaskContextStore()
     // Phase 2.3 — register the default capability catalogue, but ONLY those
@@ -444,6 +546,9 @@ export class AssistantEngine {
       for (const id of deviceCapIds) this.capabilities.unregister(id)
     }
     this.device = device
+    // Phase 11 (Work 11.2/11.20) — the device store mirrors the real provider so
+    // UI hooks reflect the actual bound bridge, never a fabricated registry.
+    setStoreDeviceProvider(device)
     if (device) {
       for (const tool of createDeviceTools(device)) this.registry.register(tool)
       for (const def of DEFAULT_CAPABILITIES) {
@@ -538,10 +643,41 @@ export class AssistantEngine {
     }
   }
 
+  /** Phase 11 — (mid-session) bind or unbind the real scheduler seam.
+   * Safe to call at any time: it (re)registers scheduling tools and the
+   * scheduling capability cluster only while at least one real tool exists. */
+  attachScheduling(scheduling: SchedulerAdapter | undefined): void {
+    this.syncScheduling(scheduling)
+  }
+
+  private syncScheduling(scheduling: SchedulerAdapter | undefined): void {
+    const capIds = new Set(
+      DEFAULT_CAPABILITIES.filter((d) => d.category === 'scheduling').map((d) => d.id),
+    )
+    if (this.scheduling) {
+      for (const tool of createSchedulerTools(this.scheduling)) this.registry.unregister(tool.id)
+      for (const id of capIds) this.capabilities.unregister(id)
+    }
+    this.scheduling = scheduling
+    if (scheduling) {
+      for (const tool of createSchedulerTools(scheduling)) this.registry.register(tool)
+      for (const def of DEFAULT_CAPABILITIES) {
+        if (def.category === 'scheduling' && def.tools.some((id) => this.registry.get(id) !== undefined) && !this.capabilities.has(def.id)) {
+          this.capabilities.register(def)
+        }
+      }
+    }
+  }
+
   /** Phase 2.3 — registered capability definitions the model may name.
    * Snapshot only: the model can never vote to add or change these. */
   capabilityCatalog(): CapabilityDefinition[] {
     return this.capabilities.all()
+  }
+
+  /** Phase 11 — the live scheduled reminders (real scheduler state). */
+  scheduledItems(): ReadonlyArray<{ id: string; text: string; kind: 'once' | 'daily' | 'weekly'; at?: number; time?: string; weekday?: number; nextRun: number; lastResult?: string }> {
+    return this.scheduling?.list() ?? []
   }
 
   /** Phase 2.3 — admin/extension seam: register an additional capability with
@@ -582,7 +718,7 @@ export class AssistantEngine {
     discoveredAt: number
   }> {
     const devices = await this.deviceProvider?.refresh() || []
-    return await discoverCapabilities(this, devices)
+    return await discoverCapabilities(this.buildOrchestratorView(), devices)
   }
 
   /** Phase 3.0 — understand a user request in context. */
@@ -626,13 +762,14 @@ export class AssistantEngine {
       taskContextStore: this.taskContextStore,
       deviceProvider: this.deviceProvider,
       hasActiveTask: () => this.runState.active,
-      fileSystemProvider: this.fileSystemProvider,
-      applicationProvider: this.applicationProvider,
-      observationProvider: this.observationProvider,
-      desktopProvider: this.desktopProvider,
-      visionProvider: this.visionProvider,
-      cameraProvider: this.cameraProvider,
-      webProvider: this.web,
+      fileSystem: this.fileSystem,
+      applications: this.applications,
+      observation: this.observation,
+      desktop: this.desktop,
+      vision: this.vision,
+      camera: this.camera,
+      web: this.web,
+      clipboard: this.clipboard,
     }
   }
 
@@ -675,7 +812,7 @@ export class AssistantEngine {
       return result
     }
 
-    if (this.running) {
+    if (this.running && !this.orchestratingInline) {
       const result = this.makeResult(request, 'blocked', [], 'Another task is already running through the assistant loop.')
       this.recordTaskLogFor(request, result)
       return result
@@ -725,78 +862,9 @@ export class AssistantEngine {
         return result
       }
 
-      // Untrusted provider-facing steps from the plan (capability-level). The
-      // concrete tool is chosen ONLY by validatePlan below, never by the plan.
-      const steps: PlanStepRequest[] = plan.steps.map((s) => ({
-        toolId: s.capability,
-        capability: s.capability,
-        payload: s.payload ?? {},
-        dependsOn: s.dependsOn && s.dependsOn.length > 0 ? [...s.dependsOn] : undefined,
-      }))
-
-      // Pre-flight the whole round with the SAME validator the executor runs,
-      // so an invalid or unavailable plan stops BEFORE any side effect.
-      const preflight = validatePlan(
-        steps,
-        this.registry,
-        this.taskSteps,
-        this.goalLimits.maxTaskSteps,
-        (toolId) => this.capabilityAvailable(toolId),
-        this.capabilities,
-        { capabilityContext: this.capabilityContext(), reliability: this.capabilityReliability },
-      )
-      const rejected = preflight.verdicts.filter((v) => !v.ok)
-      if (rejected.length > 0) {
-        const first = rejected[0]
-        const result = this.makeResult(
-          request,
-          'blocked',
-          plan.steps,
-          `Plan validation rejected "${first.toolId}": ${first.reason}`,
-        )
-        this.recordTaskLogFor(request, result)
-        return result
-      }
-
-      // Prepared run context, mirroring process() reset semantics so budgets,
-      // the repeated-action guard and the reproduction guard start clean.
-      this.runState.reset()
-      this.tracer.begin(plan.goal)
-      this.planTracker.start(plan.goal)
-      this.runState.transition('understanding')
-      this.runState.transition('planning')
-      this.executedActions = []
-
-      // EXECUTE through the existing Phase 2.x rails. executeToolSteps runs
-      // validatePlan again with identical inputs (deterministic), then enforces
-      // permissions, capability confirmation, budgets, runTool, verification
-      // and observation classification exactly as any provider-driven goal.
-      const { toolResults, failures } = await this.executeToolSteps(request.originalText, steps)
-
-      // Commit artifacts from executed steps using the existing extractor, so
-      // later deictic follow-ups resolve against REAL prior results.
-      for (let i = 0; i < plan.steps.length && i < toolResults.length; i += 1) {
-        const rec = toolResults[i]
-        if (rec.ok) {
-          extractEntitiesFromResult(
-            plan.steps[i].capability,
-            { ok: rec.ok, message: rec.message, data: rec.data },
-            this.taskContextStore,
-          )
-        }
-      }
-
-      const result = this.makeResult(
-        request,
-        'completed',
-        plan.steps,
-        undefined,
-        this.tracer.snapshot(),
-        failures,
-        preflight.resolutions,
-      )
-      this.recordTaskLogFor(request, result, failures, preflight.resolutions)
-      return result
+      const outcome = await this.runValidatedCapabilityPlan(request, plan)
+      this.recordTaskLogFor(request, outcome.result, outcome.failures, outcome.resolutions)
+      return outcome.result
     } catch (error) {
       const result = this.makeResult(
         request,
@@ -809,6 +877,278 @@ export class AssistantEngine {
     } finally {
       this.orchestrationActive = false
     }
+  }
+
+  /**
+   * Phase 13 — run ANY validated all-capability plan (deterministic planner OR
+   * strictly-validated structured reasoning output) through the EXISTING
+   * Phase 2.x/6 execution rails and return the observed result. `plan.steps`
+   * must come from a trusted source only: the deterministic planner, or a plan
+   * that already passed `parseAndValidatePlan`. Validation, permissions,
+   * confirmation, budgets, observation and verification are all enforced here,
+   * exactly as they are for deterministic plans.
+   */
+  private async runValidatedCapabilityPlan(
+    request: OrchestrationRequest,
+    plan: OrchestrationPlannedRequest,
+  ): Promise<{ result: OrchestrationExecutionResult; failures: StepFailure[]; resolutions: PlanStepResolution[] }> {
+    // Untrusted provider-facing steps from the plan (capability-level). The
+    // concrete tool is chosen ONLY by validatePlan below, never by the plan.
+    const steps: PlanStepRequest[] = plan.steps.map((s) => ({
+      toolId: s.capability,
+      capability: s.capability,
+      payload: s.payload ?? {},
+      dependsOn: s.dependsOn && s.dependsOn.length > 0 ? [...s.dependsOn] : undefined,
+    }))
+
+    // Pre-flight the whole round with the SAME validator the executor runs, so
+    // an invalid or unavailable plan stops BEFORE any side effect.
+    const preflight = validatePlan(
+      steps,
+      this.registry,
+      this.taskSteps,
+      this.goalLimits.maxTaskSteps,
+      (toolId) => this.capabilityAvailable(toolId),
+      this.capabilities,
+      { capabilityContext: this.capabilityContext(), reliability: this.capabilityReliability },
+    )
+    const rejected = preflight.verdicts.filter((v) => !v.ok)
+    if (rejected.length > 0) {
+      const first = rejected[0]
+      return {
+        result: this.makeResult(
+          request,
+          'blocked',
+          plan.steps,
+          `Plan validation rejected "${first.toolId}": ${first.reason}`,
+        ),
+        failures: [],
+        resolutions: [],
+      }
+    }
+
+    // Prepared run context, mirroring process() reset semantics so budgets,
+    // the repeated-action guard and the reproduction guard start clean.
+    this.runState.reset()
+    // Do NOT recreate the trace when one is already active for this turn: a
+    // reasoned plan prefaces execution with its own reasoning lifecycle events
+    // (reasoning_requested / reasoning_plan_validated ...) that must survive
+    // into the final trace. Re-beginning mid-turn would silently drop them.
+    if (!this.tracer.active) this.tracer.begin(plan.goal)
+    this.planTracker.start(plan.goal)
+    this.runState.transition('understanding')
+    this.runState.transition('planning')
+    this.executedActions = []
+
+    // EXECUTE through the existing Phase 2.x rails. runPhase6Orchestrated
+    // drives the plan ONE STEP PER ROUND through executeToolSteps, so each
+    // step gets the same permission/confirmation/budget/verification rails,
+    // and Phase 6 adds dependency+precondition gating, typed context input,
+    // post-action observation and bounded recovery/replanning on top.
+    const { toolResults, failures } = await this.runPhase6Orchestrated(request, plan, steps, preflight)
+
+    // Commit artifacts from executed steps using the existing extractor, so
+    // later deictic follow-ups resolve against REAL prior results.
+    for (let i = 0; i < plan.steps.length && i < toolResults.length; i += 1) {
+      const rec = toolResults[i]
+      if (rec.ok) {
+        extractEntitiesFromResult(
+          plan.steps[i].capability,
+          { ok: rec.ok, message: rec.message, data: rec.data },
+          this.taskContextStore,
+        )
+      }
+    }
+
+    return {
+      result: this.makeResult(
+        request,
+        'completed',
+        plan.steps,
+        undefined,
+        this.tracer.snapshot(),
+        failures,
+        preflight.resolutions,
+      ),
+      failures,
+      resolutions: preflight.resolutions ?? [],
+    }
+  }
+
+  /**
+   * Phase 13 — the structured-reasoning gate. Runs between the deterministic
+   * planner and the agent loop for reasoning-capable (REAL AI) providers. The
+   * AI is NEVER trusted: its output is validated against the registered
+   * capability allow-list, and any valid plan still runs through the exact
+   * same rails as a deterministic plan. Invalid / unsafe / unavailable output
+   * is an honest refusal with NOTHING executed.
+   *
+   * Returns true when the turn was fully handled (reply emitted or refusal
+   * issued); false falls through to the provider loop.
+   */
+  private async runStructuredReasoning(text: string, request: OrchestrationRequest): Promise<boolean> {
+    const provider = this.provider as unknown as StructuredPlanProvider
+    const reasoning = buildReasoningRequest(text, this.capabilityCatalog(), (id) => this.registry.get(id))
+    if (reasoning.capabilities.length === 0) {
+      this.tracer.recordEvent({
+        type: 'reasoning_rejected',
+        code: 'no_capabilities',
+        reason: 'No registered capability is selectable in this environment.',
+        at: Date.now(),
+      })
+      this.replyWithStructuredStop(
+        request,
+        'blocked',
+        'I cannot act on that — no capability is registered in this environment that could perform it.',
+      )
+      return true
+    }
+    this.tracer.recordEvent({
+      type: 'reasoning_requested',
+      capabilities: reasoning.capabilities.length,
+      at: Date.now(),
+    })
+
+    let raw: unknown
+    try {
+      raw = await this.reasoningPlanWithWatchdog(provider, reasoning)
+    } catch (error) {
+      const kind = reasoningFailureKind(error)
+      this.tracer.recordEvent({ type: 'reasoning_unavailable', reason: kind, at: Date.now() })
+      this.replyWithStructuredStop(
+        request,
+        'blocked',
+        `I could not plan that request (AI planning unavailable: ${kind}) — nothing was executed.`,
+      )
+      return true
+    }
+
+    const validated = parseAndValidatePlan(raw, reasoning.capabilities)
+    if (!validated.ok) {
+      this.tracer.recordEvent({
+        type: 'reasoning_rejected',
+        code: validated.code,
+        reason: validated.reason,
+        at: Date.now(),
+      })
+      this.replyWithStructuredStop(
+        request,
+        'blocked',
+        `Your request could not be turned into a safe executable plan (${validated.reason}). Nothing was run.`,
+      )
+      return true
+    }
+    const plan = validated.plan
+    this.tracer.recordEvent({
+      type: 'reasoning_plan_validated',
+      intent: plan.intent,
+      steps: plan.steps.length,
+      at: Date.now(),
+    })
+
+    if (plan.intent === 'unsupported' || plan.intent === 'reject') {
+      this.replyWithStructuredStop(
+        request,
+        'blocked',
+        plan.reason ?? 'I cannot do that — there is no supported capability for it, so I will not attempt it.',
+      )
+      return true
+    }
+    if (plan.intent === 'clarification') {
+      this.replyWithStructuredStop(request, 'requires_clarification', plan.asking ?? 'Could you clarify what you need?')
+      return true
+    }
+
+    // intent 'execute' | 'status' — build an orchestrated plan from the STRICT
+    // validated steps and run it through the exact same rails as a
+    // deterministic plan (validatePlan → permission → confirmation →
+    // execution → verification).
+    const planned: OrchestrationPlannedRequest = {
+      goal: request.originalText,
+      verdict: 'ok',
+      reason: 'Structured reasoning plan; strictly validated against the registered capabilities.',
+      steps: plan.steps.map((s, i) => ({
+        id: `step-${i + 1}`,
+        capability: s.capabilityId,
+        description: s.reason ? `Run ${s.capabilityId} (${s.reason}) via the validated structured plan.` : `Run ${s.capabilityId} via the validated structured plan.`,
+        payload: s.arguments,
+        dependsOn: i > 0 ? [i - 1] : undefined,
+      })),
+    }
+    const outcome = await this.runValidatedCapabilityPlan(request, planned)
+    if (outcome.result.status === 'blocked') {
+      this.replyWithStructuredStop(request, 'blocked', outcome.result.reason)
+      return true
+    }
+    this.recordTaskLogFor(request, outcome.result, outcome.failures, outcome.resolutions)
+    this.replyWithOrchestratedResult(outcome.result, text)
+    return true
+  }
+
+  /** Phase 13 — bounded watchdog around one reasoning `plan()` call so the UI
+   * never hangs waiting for an AI plan. The signal is handed to the provider,
+   * which is expected to abort its transport. */
+  private async reasoningPlanWithWatchdog(
+    provider: StructuredPlanProvider,
+    request: ReasoningRequest,
+  ): Promise<unknown> {
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), REASONING_PLAN_LIMITS.planDeadlineMs)
+    try {
+      return await provider.plan(request, controller.signal)
+    } finally {
+      clearTimeout(timer)
+    }
+  }
+
+  /** Phase 13 — reply to a validated orchestrated result with the standard
+   * deterministic inline phrasing (incl. the read-only "answered from a live
+   * reading" state), so AI-planned and deterministic-planned answers read the
+   * same and the chip mapping never claims what did not happen. */
+  private replyWithOrchestratedResult(orchResult: OrchestrationExecutionResult, text: string): void {
+    const finalState = orchResult.status === 'completed' ? 'completed' :
+      orchResult.status === 'cancelled' ? 'cancelled' :
+      orchResult.status === 'partial' &&
+      orchResult.failedSteps === 0 &&
+      orchResult.steps.length > 0 &&
+      orchResult.steps.every((s) => s.status === 'success')
+        ? 'completed' // read-only answer: the read IS the deliverable
+        : 'failed'
+    this.runState.finish(finalState)
+    this.tracer.end(finalState)
+    const finalText = this.formatOrchestrationResult(orchResult, text)
+    const finalAnswer = this.withGoalVeracityNote(finalText, text)
+    addAssistantMessage(finalAnswer)
+    this.emit({ type: 'transcript', speaker: 'assistant', text: finalAnswer })
+    this.fireActivity({ step: 'Replied', kind: 'output', detail: finalAnswer })
+    this.applyResponse(finalAnswer)
+    this.recordActionRunOutcome(orchResult)
+  }
+
+  /** Phase 13 — honest stop for a request that never executed: refused
+   * (blocked), clarifying, or cancelled. A blocked request MUST NOT show a
+   * success chip; only clarification completes normally (the assistant is
+   * asking the user). Mirrors the deterministic planner's refusal semantics. */
+  private replyWithStructuredStop(
+    request: OrchestrationRequest,
+    status: 'blocked' | 'requires_clarification' | 'cancelled',
+    reason?: string,
+  ): void {
+    const result = this.makeResult(request, status, [], reason)
+    const finalRunState = status === 'blocked' ? 'failed' : status === 'cancelled' ? 'cancelled' : 'completed'
+    this.runState.finish(finalRunState)
+    this.tracer.end(finalRunState)
+    const finalText = this.formatOrchestrationResult(result, request.originalText)
+    const finalAnswer = this.withGoalVeracityNote(finalText, request.originalText)
+    addAssistantMessage(finalAnswer)
+    this.emit({ type: 'transcript', speaker: 'assistant', text: finalAnswer })
+    this.fireActivity({ step: 'Replied', kind: 'output', detail: finalAnswer })
+    this.applyResponse(finalAnswer)
+    if (status === 'blocked' && this.actionRun) {
+      this.actionRun.outcome = 'refused'
+      this.actionRun.terminalStatus = 'refused'
+    }
+    this.recordTaskLogFor(request, result)
   }
 
   /** Phase 3.0 — append one bounded, content-free entry for an orchestration
@@ -942,6 +1282,10 @@ export class AssistantEngine {
       }
       if (outcomes.failed > 0) parts.push(`${outcomes.failed} step(s) failed.`)
       if (parts.length > 0) effectiveReason = parts.join(' ')
+    }
+    if (!effectiveReason && effective === 'failed') {
+      const failedSummary = steps.find((s) => s.status === 'failed')?.observation?.summary
+      if (failedSummary) effectiveReason = failedSummary
     }
 
     return {
@@ -1221,6 +1565,51 @@ export class AssistantEngine {
   }
 
   /* ------------------------------------------------ lifecycle */
+  private nativeProbeTimer: ReturnType<typeof setInterval> | null = null
+
+  /** Bounded re-probe of every native bridge (no-op for browser/granted/test
+   * providers). Runs once at startup and again on a slow timer so the panels'
+   * backend/native status chips refresh when the agent comes up, restarts, or
+   * dies — instead of freezing at first-load state. Each refresh is bounded
+   * (probe timeout) and the probe never rejects. */
+  private async refreshNativeBridges(): Promise<void> {
+    try {
+      if (this.fileSystem.refreshNativeStatus) {
+        await this.fileSystem.refreshNativeStatus()
+      }
+      if (this.applications?.refreshNativeStatus) {
+        await this.applications.refreshNativeStatus()
+      }
+      if (this.observation?.refreshNativeStatus) {
+        await this.observation.refreshNativeStatus()
+      }
+      if (this.desktop?.refreshNativeStatus) {
+        await this.desktop.refreshNativeStatus()
+      }
+    } catch {
+      // Probing is best-effort; a failing bridge simply stays disconnected
+      // until the next tick.
+    }
+  }
+
+  private startNativeProbeLoop(): void {
+    this.stopNativeProbeLoop()
+    const intervalMs = 10_000
+    this.nativeProbeTimer = setInterval(() => void this.refreshNativeBridges(), intervalMs)
+  }
+
+  private stopNativeProbeLoop(): void {
+    if (this.nativeProbeTimer) {
+      clearInterval(this.nativeProbeTimer)
+      this.nativeProbeTimer = null
+    }
+  }
+
+  /** Release the engine's background resources (e.g. the bridge re-probe loop). */
+  dispose(): void {
+    this.stopNativeProbeLoop()
+  }
+
   async start(): Promise<void> {
     // MemoryManager is the source of truth for long-term preferences/profile;
     // the store mirrors it so the UI and engine always agree after a reload.
@@ -1229,32 +1618,21 @@ export class AssistantEngine {
     useJarvisStore.getState().setProfile(snapshot.profile)
     this.maybeConsolidate()
 
-    // Phase 1.2 — bounded probe of a native bridge, so capability reporting is
-    // honest even on first load (no-op for browser/granted/test providers).
-    if (this.fileSystem.refreshNativeStatus) {
-      await this.fileSystem.refreshNativeStatus()
-    }
-    // Phase 1.3 — bounded probe of the application bridge (no-op for browser
-    // mode where the provider is undefined).
-    if (this.applications?.refreshNativeStatus) {
-      await this.applications.refreshNativeStatus()
-    }
-    // Phase 1.4 — bounded probe of the observation bridge (no-op in browser
-    // mode where the provider is undefined).
-    if (this.observation?.refreshNativeStatus) {
-      await this.observation.refreshNativeStatus()
-    }
-    // Phase 1.5 — bounded probe of the desktop bridge (no-op in browser mode
-    // where the provider is undefined).
-    if (this.desktop?.refreshNativeStatus) {
-      await this.desktop.refreshNativeStatus()
-    }
+    // Phase 1.2 → 1.5 — bounded probe of the native bridges, so capability
+    // reporting is honest even on first load (no-op for browser/granted/test
+    // providers), then keep refreshing on a slow timer so status stays real.
+    await this.refreshNativeBridges()
+    this.startNativeProbeLoop()
     const fsCaps = this.fileSystem.capabilities()
     // Phase 1.7 — visual capability reporting is HONEST: every flag is false
     // unless a real, available VisionProvider reports it. No fabricated vision.
     const visionCaps = this.vision?.capabilities()
     const caps = {
       speechRecognitionAvailable: canHear(),
+      // Phase 11 — microphone truthfulness: the mic row surfaces the SAME
+      // real probe as speech recognition (browser recognizer + permission),
+      // instead of an always-"off" default.
+      microphoneAvailable: canHear(),
       speechSynthesisAvailable: canSpeak(),
       // Phase 1.6 — voice interaction surfaces. Wake-word listening runs on the
       // same recognition surface, so a real recognizer implies wake capability.
@@ -1280,6 +1658,20 @@ export class AssistantEngine {
       deviceBridgeAvailable: this.device?.capabilities().available === true,
     }
     useJarvisStore.getState().setCapabilities(caps)
+
+    // Phase 9 — air the LIVE registered capability catalogue to the UI so the
+    // capability panels derive their rows from the SAME engine registry the
+    // model addresses. A missing entry means the capability is not registered
+    // in this environment; the UI never shows a fabricated one.
+    this.emit({
+      type: 'capabilities',
+      capabilities: this.capabilityCatalog().map((def) => ({
+        id: def.id,
+        name: def.name,
+        category: def.category,
+        description: def.description,
+      })),
+    })
 
     const reachable = await this.provider.isReachable()
     useJarvisStore.getState().setCapabilities({ aiConnected: reachable && this.provider.id !== 'mock' })
@@ -1559,6 +1951,18 @@ export class AssistantEngine {
       this.setStatus('understanding')
       useJarvisStore.getState().setLastUser(clean)
 
+      // ================ Phase 9 — deterministic UI-control (self-interaction)
+      // Recognised commands ("switch to Astra", "open the core", "hide the
+      // devices panel") execute the REAL panel/environment store actions and
+      // report the actual post-condition — never a guess. Unknown targets are
+      // answered with the real catalogue. The parser fails closed, so anything
+      // it does not recognise flows unchanged into the normal interaction path.
+      const uiIntents = detectUiControlCommands(clean)
+      if (uiIntents.length > 0) {
+        await this.handleUiControlCommands(uiIntents)
+        return
+      }
+
       // Phase 2.5 — deterministic capability discovery. Meta-requests
       // ("what can you do?", "help me") are answered from the LIVE registered
       // catalog without invoking the provider: the reply is built only from
@@ -1667,6 +2071,70 @@ export class AssistantEngine {
       // (registered tools/capabilities matched by the deterministic selector).
       this.actionHint = actionHintMessage(decision.matchedTools, decision.matchedCapabilities)
 
+      // Phase 5 — when no real AI is configured (mock provider active), route
+      // executable requests through the deterministic orchestrator IF the planner
+      // can produce a valid plan. The mock provider only knows local tools
+      // (clock/calculator/notes/system_info) and cannot plan native Windows
+      // actions. The orchestrator handles compound patterns (browser_open+search,
+      // app_launch+verify, etc.) that the mock provider cannot.
+      //
+      // Informational requests whose requestClass the planner genuinely
+      // understands (open/launch/close/search/device/status) are also routed
+      // here so an unavailable capability is answered honestly instead of
+      // leaking into the mock provider's canned "local-dev mode" reply.
+      // Chat / question / follow_up classes stay with the provider loop.
+      if (this.provider.id === 'mock' || isStructuredPlanProvider(this.provider)) {
+        const orchRequest = await this.orchestrate(clean)
+        const actionable =
+          actionKind === 'executable' ||
+          (actionKind === 'informational' && ACTIONABLE_ORCHESTRATION_CLASSES.has(orchRequest.requestClass))
+        // Phase 13 — the deterministic planner runs FIRST for every provider
+        // class, so deterministic commands never depend on an AI being
+        // reachable. Only when it cannot produce an executable plan does a
+        // reasoning-capable provider get asked for a structured plan.
+        if (actionable && orchRequest.requestClass !== 'cancellation' && orchRequest.requestClass !== 'confirmation') {
+          const plan = this.planOrchestrated(orchRequest)
+          if (plan.verdict === 'ok' && plan.steps.length > 0) {
+            this.orchestratingInline = true
+            let orchResult: OrchestrationExecutionResult
+            try {
+              orchResult = await this.executeOrchestrated(orchRequest)
+            } finally {
+              this.orchestratingInline = false
+            }
+            this.replyWithOrchestratedResult(orchResult, clean)
+            return
+          }
+          if (this.provider.id === 'mock') {
+            // Phase 5 — a request the planner BLOCKED or wants to clarify. When
+            // NO registered tool directly matched (empty matchedTools), NEVER
+            // fall through into the mock provider's canned dev-mode reply:
+            // answer honestly from the plan's own reason (unavailable native
+            // capability). But when a real tool DID match (memory/notes/clock/
+            // calculator — tools the planner does not model), fall through to
+            // the provider loop, which owns and can genuinely execute them.
+            if (
+              (plan.verdict === 'blocked' || plan.verdict === 'clarification') &&
+              decision.matchedTools.length === 0
+            ) {
+              const status: OrchestrationExecutionStatus =
+                plan.verdict === 'clarification' ? 'requires_clarification' : 'blocked'
+              this.replyWithStructuredStop(orchRequest, status, plan.reason)
+              return
+            }
+          } else {
+            // Phase 13 — deterministic planner produced no executable plan and
+            // the active provider is a REAL reasoning provider. Ask it for a
+            // structured plan derived from the ACTUAL registered catalog. The
+            // output is strictly validated; any invalidity, unsafety or
+            // unavailability is an honest refusal with NOTHING executed.
+            const handled = await this.runStructuredReasoning(clean, orchRequest)
+            if (handled) return
+            // Opt-out (no registered capability): fall through to the agent loop.
+          }
+        }
+      }
+
       // 1.5 Phase 0.7/0.8 — session episode + automatic consolidation + optional
       // capture safety net. Episode grouping tags this turn's memories with the
       // conversation id; consolidation runs only when the interval has elapsed;
@@ -1773,9 +2241,97 @@ export class AssistantEngine {
     const trace = this.tracer.snapshot()
     if (trace.finalState !== 'completed') return finalText
     const task = evaluateGoalTask(trace, this.goalLimits)
-    if (!task.actionable || task.status !== 'unverified') return finalText
-    const note = `\nI performed those steps toward "${goal}", but I could not verify the expected result — so I am not claiming the goal was achieved.`
-    return `${finalText}${note}`
+    if (task.status === 'unverified') {
+      if (!task.actionable) return finalText
+      return `${finalText}\nI performed those steps toward "${goal}", but I could not verify the expected result — so I am not claiming the goal was achieved.`
+    }
+    if (task.status === 'partial') {
+      if (!task.actionable) return finalText
+      return `${finalText}\nI completed part of "${goal}", but I did not fully achieve it — the result is partial, not complete.`
+    }
+    if (task.status === 'blocked') {
+      // Nothing ran (unknown capability / safety rail). Say so deterministically
+      // instead of letting the model alone describe what happened.
+      return `${finalText}\nNote: that request did not run — the referenced capability or action is not available to me, so I did not perform it.`
+    }
+    return finalText
+  }
+
+  /** Format the orchestration execution result into a user-facing answer. */
+  private formatOrchestrationResult(result: OrchestrationExecutionResult, goal: string): string {
+    const verifiedNow = result.steps.filter((s) => s.verified === true).length
+    const totalSteps = result.steps.length
+    // A read-only run whose answer IS the deliverable (e.g. an
+    // application_status read answered from live state). Nothing failed and
+    // nothing was refuted — the read returned its result directly, so there is
+    // no post-hoc effect left to re-verify. Presented as an answered Q&A, not
+    // a failed run.
+    const isReadOnlyAnswer =
+      result.status === 'partial' &&
+      result.failedSteps === 0 &&
+      totalSteps > 0 &&
+      verifiedNow === 0 &&
+      result.steps.every((s) => s.status === 'success')
+    if (result.status === 'completed' || isReadOnlyAnswer) {
+      if (verifiedNow === totalSteps && totalSteps > 0) {
+        return `Done. ${goal} — all ${totalSteps} step${totalSteps === 1 ? '' : 's'} completed and verified.`
+      }
+      if (isReadOnlyAnswer) {
+        return `Done. ${goal} — answered from a live reading (the result was read directly, so there was nothing left to re-verify).`
+      }
+      if (verifiedNow > 0) {
+        const unverifiedTyping = result.steps.some(
+          (s) => s.capability === 'type_text' && s.verified !== true,
+        )
+        const note = unverifiedTyping
+          ? ' Typing was executed, but Windows restricts programmatic window focus (UIPI), so the typed text could not be independently verified.'
+          : ''
+        return `Partially done. ${goal} — ${verifiedNow} of ${totalSteps} step${totalSteps === 1 ? '' : 's'} verified.${note}`
+      }
+      return `Executed ${goal}, but could not verify the result.`
+    }
+    if (result.status === 'partial') {
+      const unverifiedTyping = result.steps.some(
+        (s) => s.capability === 'type_text' && s.verified !== true,
+      )
+      const note = unverifiedTyping
+        ? ' Typing was executed, but Windows restricts programmatic window focus (UIPI), so the typed text could not be independently verified.'
+        : ''
+      return `Partially done. ${goal} — ${verifiedNow} of ${totalSteps} step${totalSteps === 1 ? '' : 's'} verified.${note}`
+    }
+    if (result.status === 'blocked') {
+      const reason = (result.reason ?? 'the plan was blocked').replace(/[.!?\s]+$/, '')
+      return `I cannot ${goal.toLowerCase()}: ${reason}.`
+    }
+    if (result.status === 'requires_clarification') {
+      const reason = (result.reason ?? 'please provide more details').replace(/[.!?\s]+$/, '')
+      return `I need clarification to ${goal.toLowerCase()}: ${reason}.`
+    }
+    if (result.status === 'requires_confirmation') {
+      return `This action requires your confirmation before proceeding.`
+    }
+    if (result.status === 'cancelled') {
+      return `Cancelled.`
+    }
+    const failedReason = (result.reason ?? 'unknown error').replace(/[.!?\s]+$/, '')
+    return `I tried to ${goal.toLowerCase()}, but it failed: ${failedReason}.`
+  }
+
+/** Record the orchestration outcome in the action run facts for the task log. */
+  private recordActionRunOutcome(result: OrchestrationExecutionResult): void {
+    if (!this.actionRun) return
+    this.actionRun.outcome = result.status === 'completed' ? 'completed' :
+      result.status === 'blocked' ? 'refused' :
+      result.status === 'cancelled' ? 'cancelled' : 'failed'
+    // OrchestrationStepOutcome.status is 'success' | 'failed' | 'skipped'; verified is separate boolean
+    this.actionRun.executedSteps = result.steps.filter((s) => s.status === 'success').length
+    this.actionRun.verifiedSteps = result.steps.filter((s) => s.verified === true).length
+    this.actionRun.refutedSteps = result.steps.filter((s) => s.status === 'failed').length
+    this.actionRun.unverifiedSteps = result.steps.filter((s) => s.status === 'success' && s.verified !== true).length
+    this.actionRun.terminalStatus = this.actionRun.outcome
+    this.actionRun.artifacts = result.steps
+      .filter((s) => s.verified === true)
+      .map((s) => ({ id: s.toolId, kind: 'result' as const, label: s.capability, summary: s.observation?.summary ?? '' }))
   }
 
   private async runAgentLoop(
@@ -1962,6 +2518,7 @@ export class AssistantEngine {
         canReobserve: this.canReobserve(),
         budgetExhausted: taskBudgetExceeded(this.taskSteps, this.goalLimits.maxTaskSteps),
         planCode: failure.planCode,
+        deviceCode: failure.deviceCode,
       })
       this.tracer.recordEvent({
         type: 'recovery_classified',
@@ -2321,39 +2878,21 @@ export class AssistantEngine {
       // model). A refusal is never a success: the step FAILS with an honest,
       // structured reason and the run handles it like any other refusal.
       if (capabilityResolution?.requiresConfirmation === true) {
-        this.setStatus('waiting_for_confirmation')
-        this.emit({
-          type: 'tool-confirm',
-          request: {
-            id: callId,
-            title: `Confirm capability: ${capabilityResolution.capability}`,
-            description: tool.description,
-            why: userText,
-            toolId: toolId,
-            impact: `The capability "${capabilityResolution.capability}" requires your explicit confirmation before it runs "${tool.name}".`,
-            payload: input,
-            onConfirm: async () => {},
-            onCancel: () => {},
-          },
-        })
-        this.awaiting = {
-          kind: 'tool',
+        const allowed = await this.requestToolConfirmation({
+          id: callId,
           title: `Confirm capability: ${capabilityResolution.capability}`,
           description: tool.description,
           why: userText,
           toolId: toolId,
           impact: `The capability "${capabilityResolution.capability}" requires your explicit confirmation before it runs "${tool.name}".`,
           payload: input,
-          onConfirm: async () => {},
-          onCancel: () => {},
-        }
+        })
         this.tracer.recordEvent({
           type: 'confirmation_required',
           capability: capabilityResolution.capability,
           toolId: toolId,
           at: Date.now(),
         })
-        const allowed = await this.waitForToolConfirmation(callId)
         if (!allowed) {
           const reason = `Capability "${capabilityResolution.capability}" was declined: confirmation refused. Nothing ran.`
           this.finishToolActivity(runId, toolId, 'rejected', reason)
@@ -2420,40 +2959,15 @@ export class AssistantEngine {
 
       if (decision.kind === 'confirm' && !autonomyAllowsAuto(this.autonomyLevel, tool)) {
         // Tool requires explicit user confirmation
-        this.setStatus('waiting_for_confirmation')
-        this.emit({
-          type: 'tool-confirm',
-          request: {
-            id: callId,
-            title: decision.reason,
-            description: tool.description,
-            why: decision.why,
-            toolId: toolId,
-            impact: decision.impact,
-            payload: input,
-            onConfirm: async () => {
-              this.awaiting = null
-              // Resolved via promise below
-            },
-            onCancel: () => {
-              this.awaiting = null
-            },
-          },
-        })
-        this.awaiting = {
-          kind: 'tool',
+        const allowed = await this.requestToolConfirmation({
+          id: callId,
           title: decision.reason,
           description: tool.description,
           why: decision.why,
           toolId: toolId,
           impact: decision.impact,
           payload: input,
-          onConfirm: async () => {},
-          onCancel: () => {},
-        }
-
-        // Wait for user decision (resolved by UI callbacks)
-        const allowed = await this.waitForToolConfirmation(callId)
+        })
         if (!allowed) {
           const failResult = this.makeFailure(callId, toolId, 'User declined.', 'user_cancelled')
           toolResults.push(failResult)
@@ -2649,6 +3163,7 @@ export class AssistantEngine {
           errorKind: 'tool_failure',
           observationKind: observation.kind,
           retryable: tool.retry?.retryable === true,
+          deviceCode: deviceFailureCode(execResult.output),
           payload: input,
         })
       } else {
@@ -2670,6 +3185,7 @@ export class AssistantEngine {
           errorKind: execResult.errorKind,
           observationKind: observation.kind,
           retryable: tool.retry?.retryable === true,
+          deviceCode: deviceFailureCode(execResult.output),
           payload: input,
         })
       }
@@ -2723,6 +3239,522 @@ export class AssistantEngine {
     return { toolCalls, toolResults, failures }
   }
 
+/* -------------------------------------------- Phase 6 orchestration loop */
+
+  /**
+   * Phase 6 — goal-aware, dependency+precondition-gated, observability-driven
+   * execution loop. Drives an already-validated plan ONE STEP PER ROUND through
+   * the existing executeToolSteps rails so every step keeps the identical
+   * permission, capability-confirmation, budget, timeout, retry, verification
+   * and observation semantics of any provider-driven goal. On top of that rail
+   * it adds, per step:
+   *   - dependency + context precondition gating  (decideStepReadiness)
+   *   - typed execution-context input resolution (ExecutionContext)
+   *   - risk/verification/retry metadata from the REAL resolution
+   *   - post-action cross-tool observation when the step's own verification
+   *     left the effect unconfirmed, upgrading the trace step in place when the
+   *     observation genuinely confirms the effect
+   *   - bounded recovery and replanning (classifyRecovery + decideReplan); a
+   *     deterministic planner offers no fabricated alternatives, so production
+   *     replans honestly stop — the user is told "no genuinely supported
+   *     alternative".
+   *
+   * Result surfaces mirror the one-shot path exactly: `toolResults` has one
+   * entry per plan step (ok/fail; skipped/blocked steps carry a failure record
+   * with no `failures[]` sidecar so reply semantics are unchanged) and only
+   * REAL refusal/refutation failures land in `failures[]`.
+   */
+  private async runPhase6Orchestrated(
+    request: OrchestrationRequest,
+    plan: OrchestrationPlannedRequest,
+    _steps: PlanStepRequest[],
+    preflight: PlanValidation,
+  ): Promise<{ toolResults: ToolResultRecord[]; failures: StepFailure[] }> {
+    const startedAt = Date.now()
+    const state = createExecutionState(request.originalText, this.goalLimits.maxRecoveryAttempts, {
+      maxReplans: this.goalLimits.maxReplans,
+      deadlineMs: this.goalLimits.totalExecutionMs,
+    })
+    const ctx = new Phase6ExecutionContext()
+    const toolResults: ToolResultRecord[] = []
+    const failures: StepFailure[] = []
+    const outcomes: Array<{ state: string; note?: string }> = []
+    const resolutions = new Map((preflight.resolutions ?? []).map((r) => [r.stepIndex, r]))
+    let recoveryCount = 0
+    let replanCount = 0
+    let stoppedBy: Phase6RunSummary['stoppedBy'] = 'completed'
+    let stopReason: string | undefined
+
+    transitionPhase(state, 'planning', `Plan: ${plan.verdict}, ${plan.steps.length} steps`)
+    transitionPhase(state, 'executing')
+
+    // Enrich each step's meta with the REAL resolved tool's risk/verification/
+    // retry — inferred by the engine, never by the model.
+    for (let i = 0; i < plan.steps.length; i += 1) {
+      const planned = plan.steps[i]
+      const resolution = resolutions.get(i)
+      if (planned.meta && resolution) {
+        const tool = this.registry.get(resolution.toolId)
+        planned.meta = applyResolutionToStepMeta(planned.meta, {
+          risk: resolution.risk,
+          verifiable: tool?.verifiable === true,
+          retry: tool?.retry
+            ? { retryable: tool.retry.retryable, maxRetries: tool.retry.maxRetries ?? 0, backoffMs: tool.retry.backoffMs }
+            : undefined,
+        })
+      }
+    }
+
+    try {
+      for (let i = 0; i < plan.steps.length; i += 1) {
+        const planned = plan.steps[i]
+        const meta: Phase6StepMeta | undefined = planned.meta
+
+        // Cancellation is always checked at every step boundary.
+        if (this.cancelRequested) {
+          this.planTracker?.cancelRemaining()
+          stoppedBy = 'cancellation'
+          stopReason = 'The goal was cancelled by the user.'
+          break
+        }
+
+        // Wall-clock deadline (bounded by the configured totalExecutionMs).
+        if (goalDeadlineReached(startedAt, Date.now() - startedAt, this.goalLimits.totalExecutionMs)) {
+          stoppedBy = 'deadline'
+          stopReason = `The goal reached its execution time budget (${this.goalLimits.totalExecutionMs} ms).`
+          for (let j = i; j < plan.steps.length; j += 1) {
+            failures.push({
+              toolId: plan.steps[j].capability,
+              stepId: plan.steps[j].id,
+              summary: stopReason,
+              errorKind: 'orchestration_limit',
+              observationKind: 'failure',
+            })
+          }
+          break
+        }
+
+        // Dependency + precondition gate. A dependency on a failed/skipped step
+        // BLOCKS (the step never runs); a context mismatch SKIPS (conditional
+        // branching). Both are honest: no side effect, no fake failures sidecar.
+        const gate = decideStepReadiness(
+          i,
+          planned.dependsOn,
+          meta?.precondition,
+          outcomes.map((o) => ({
+            state: o.state as StepOutcomeView['state'],
+            note: o.note,
+          })),
+          (source, path) => ctx.read(source, path),
+        )
+        if (gate.gate !== 'run') {
+          const reason =
+            gate.gate === 'block'
+              ? `This step was blocked: ${gate.reason}`
+              : `This step was skipped: ${gate.reason}`
+          const callId = String(this.taskSteps + i + 1)
+          toolResults.push(this.makeFailure(callId, planned.capability, reason, 'orchestration_limit'))
+          const step = this.findOrAddStep(planned.capability, planned.payload ?? {}, callId, true)
+          this.planTracker?.skipStep(step.id)
+          this.planTracker?.setNote(step.id, reason)
+          if (gate.gate === 'block') {
+            this.tracer.recordEvent({
+              type: 'step_blocked',
+              stepId: step.id,
+              toolId: planned.capability,
+              reason,
+              at: Date.now(),
+            })
+          } else {
+            this.tracer.recordEvent({
+              type: 'recovery_classified',
+              stepId: step.id,
+              toolId: planned.capability,
+              kind: 'stale_observation',
+              action: 'stop',
+              reason,
+              at: Date.now(),
+            })
+          }
+          outcomes[i] = { state: gate.gate === 'block' ? 'blocked' : 'skipped', note: reason }
+          this.setPhase6StepState(state, i, gate.gate === 'block' ? 'blocked' : 'skipped', planned)
+          continue
+        }
+
+        outcomes[i] = { state: 'ready' }
+
+        // Build the payload: planned payload + resolved typed context inputs.
+        // Context values are bounded JSON-safe and still pass the tool-schema
+        // validation inside executeToolSteps (the injection guard).
+        const payload: Record<string, unknown> = { ...(planned.payload ?? {}) }
+        const contextInputs = meta?.contextInputs
+        if (contextInputs && contextInputs.length > 0) {
+          const resolved = ctx.resolveInputs(contextInputs)
+          if (resolved) {
+            for (const [name, value] of Object.entries(resolved)) {
+              payload[name] = value
+            }
+          }
+        }
+
+        // Single-step round WITHOUT dependsOn (a one-step round would map
+        // dependsOn[0] to itself). The Phase 6 gate above owns dependency
+        // semantics.
+        const round = await this.executeToolSteps(request.originalText, [
+          { toolId: planned.capability, capability: planned.capability, payload },
+        ])
+        const roundResult = round.toolResults[0]
+        if (round.failures.length > 0) failures.push(...round.failures)
+        // Some rails refuse WITHOUT a round result (e.g. a declined capability
+        // confirmation reports only a failure). Synthesize a matching entry so
+        // the plan→toolResults mapping stays 1:1 for the extraction loop.
+        if (roundResult) {
+          toolResults.push(roundResult)
+        } else {
+          const first = round.failures[0]
+          toolResults.push(
+            this.makeFailure(
+              first?.stepId ?? String(this.taskSteps + i + 1),
+              planned.capability,
+              first?.summary ?? 'The step was stopped without executing.',
+              first?.errorKind ?? 'tool_failure',
+            ),
+          )
+        }
+        const planStepId = roundResult?.callId
+          ? this.findOrAddStep(planned.capability, payload, roundResult.callId, false).id
+          : undefined
+
+        if (roundResult?.ok && round.failures.length === 0) {
+          // The step ran. Its REAL output becomes the typed execution context
+          // (bounded: unsafe values are rejected by the context itself), so a
+          // later `context_matches` precondition reads the OBSERVED effect.
+          ctx.record(i, roundResult.data)
+          // Determine its verification from the trace.
+          const resolvedToolId = resolutions.get(i)?.toolId ?? planned.capability
+          const traceStep = this.tracer
+            .snapshot()
+            .steps.filter((s) => s.toolId === resolvedToolId && s.observation)
+            .pop()
+          const verificationStatus = traceStep?.verification?.status
+
+          if (verificationStatus === 'verified') {
+            outcomes[i] = { state: 'verified' }
+            this.setPhase6StepState(state, i, 'verified', planned)
+          } else if (
+            verificationStatus === 'unverified' ||
+            verificationStatus === undefined ||
+            verificationStatus === 'not_applicable'
+          ) {
+            // Unconfirmed by the tool's own verifier → Phase 6 post-action
+            // observation (the plan's verification step, NOT a recovery unit).
+            const wantsPostAction =
+              meta?.verification === 'post_action' || meta?.verification === 'tool_owned_then_post_action'
+            const confirmed = wantsPostAction
+              ? await this.phase6Observe(planned, resolvedToolId, payload, roundResult, meta)
+              : false
+            if (confirmed) {
+              outcomes[i] = { state: 'verified' }
+              this.setPhase6StepState(state, i, 'verified', planned)
+            } else {
+              outcomes[i] = { state: 'executed' }
+              this.setPhase6StepState(state, i, 'executed', planned)
+            }
+          } else {
+            // The tool's own verifier REFUTED the effect — the step ran but is
+            // a real failure (refutation failure) with a failures sidecar.
+            outcomes[i] = { state: 'failed', note: `the tool reported the effect was not achieved (${verificationStatus})` }
+            this.setPhase6StepState(state, i, 'verification_failed', planned)
+          }
+          continue
+        }
+
+        // Failure path: classify honestly and act within the bounded budgets.
+        const failure = round.failures[0] ?? (roundResult as unknown as StepFailure | undefined)
+        const recovery = classifyRecovery({
+          errorKind: (failure as StepFailure | undefined)?.errorKind ?? 'tool_failure',
+          observationKind: (failure as StepFailure | undefined)?.observationKind,
+          retryable: (failure as StepFailure | undefined)?.retryable === true,
+          canReobserve: true,
+          deviceCode: (failure as StepFailure | undefined)?.deviceCode,
+        })
+        outcomes[i] = { state: 'failed', note: recovery.reason }
+        const planStep = this.getPhase6StepState(state, i, planned)
+        planStep.error = failure?.summary ?? recovery.reason
+        planStep.errorKind = (failure as StepFailure | undefined)?.errorKind ?? recovery.kind
+        planStep.recoveryAction = recovery.action
+        updateStepState(planStep, 'recovery')
+        this.tracer.recordEvent({
+          type: 'recovery_classified',
+          stepId: planStepId,
+          toolId: planned.capability,
+          kind: recovery.kind,
+          action: recovery.action,
+          reason: recovery.reason,
+          at: Date.now(),
+        })
+
+        // Bounded budgets: a reobserve/replan consumes a unit; exceeding them
+        // stops the plan honestly. 'retry' has already been fully consumed by
+        // the tool's own retry rail inside executeToolSteps — no silent re-run.
+        if (recovery.action === 'stop' || recovery.action === 'retry') {
+          stoppedBy = 'failure'
+          stopReason =
+            recovery.action === 'stop'
+              ? `Step ${i + 1} failed: ${recovery.reason}`
+              : `Step ${i + 1} failed after exhausting its declared retry policy: ${recovery.reason}`
+          break
+        }
+        if (recovery.action === 'reobserve') {
+          if (recoveryCount >= state.maxRecoveries) {
+            stoppedBy = 'recovery_limit'
+            stopReason = `Step ${i + 1} failed after exhausting the recovery budget: ${recovery.reason}`
+            break
+          }
+          recoveryCount += 1
+          // A refuted step cannot be silently upgraded: re-observe to check a
+          // stale view. If the observation confirms the effect, the trace step
+          // is upgraded in place with real cross-tool evidence.
+          const confirmed = await this.phase6Observe(
+            planned,
+            resolutions.get(i)?.toolId ?? planned.capability,
+            payload,
+            roundResult,
+            meta,
+          )
+          if (confirmed) {
+            planStep.error = undefined
+            updateStepState(planStep, 'verified')
+            outcomes[i] = { state: 'verified', note: 'confirmed by post-action observation after a refuted tool verifier' }
+            continue
+          }
+          // Still unconfirmed — keep the honest failure and continue (Phase 5
+          // parity: remaining steps still run).
+          updateStepState(planStep, 'verification_failed')
+          continue
+        }
+
+        // action === 'replan' — bounded; production finds no genuinely
+        // supported alternative and stops honestly.
+        if (replanCount >= state.maxReplans) {
+          stoppedBy = 'replan_limit'
+          stopReason = `Step ${i + 1} failed and the replan limit (${state.maxReplans}) was reached: ${recovery.reason}`
+          break
+        }
+        const replan = decideReplan({
+          ctx: {
+            failedStepIndex: i,
+            capability: planned.capability,
+            failedKind: recovery.kind,
+            summary: failure?.summary ?? recovery.reason,
+          },
+          replansUsed: replanCount,
+          maxReplans: state.maxReplans,
+          alternatives: this.phase6AlternativeResolver,
+        })
+        replanCount = replan.replansUsed
+        state.replanAttempts = replanCount
+        if (replan.action === 'continue') {
+          this.tracer.recordEvent({ type: 'replan_requested', at: Date.now() })
+        } else {
+          this.tracer.recordEvent({ type: 'replan_rejected', reason: replan.reason, at: Date.now() })
+        }
+        if (replan.action === 'continue' && replan.corrected) {
+          // A genuinely supported alternative (test-only seam in production).
+          const corrected = replan.corrected
+          updateStepState(planStep, 'replanned')
+          outcomes[i] = { state: 'replanned', note: replan.reason }
+          const altRound = await this.executeToolSteps(request.originalText, [
+            { toolId: corrected.capability, capability: corrected.capability, payload: corrected.payload },
+          ])
+          toolResults[i] = altRound.toolResults[0]
+          if (altRound.failures.length > 0) failures.push(...altRound.failures)
+          if (altRound.toolResults[0]?.ok && altRound.failures.length === 0) {
+            // The corrected step ran — its REAL output becomes the typed
+            // execution context (same rule as the non-replan success path),
+            // so a later `context_matches` precondition reads the observed
+            // effect of the CORRECTED step, not the failed original.
+            ctx.record(i, altRound.toolResults[0]?.data)
+            const resolvedToolId = altRound.toolResults[0]?.toolId ?? corrected.capability
+            const confirmed = await this.phase6Observe(
+              { ...planned, capability: corrected.capability, payload: corrected.payload },
+              resolvedToolId,
+              corrected.payload,
+              altRound.toolResults[0],
+              meta,
+            )
+            if (confirmed) {
+              updateStepState(planStep, 'verified')
+              outcomes[i] = { state: 'verified', note: replan.reason }
+            } else {
+              outcomes[i] = { state: 'executed', note: replan.reason }
+            }
+          }
+          continue
+        }
+        // No genuinely supported alternative → honest stop.
+        stoppedBy = 'replan_limit'
+        stopReason = `Step ${i + 1} failed: ${replan.reason}`
+        break
+      }
+
+      // Mark any steps that never ran (plan stopped) as blocked with a note so
+      // the UI surfaces them honestly instead of silently omitting them.
+      if (stopReason) {
+        for (let j = outcomes.length; j < plan.steps.length; j += 1) {
+          const planned = plan.steps[j]
+          outcomes[j] = { state: 'blocked', note: stopReason }
+          const callId = String(this.taskSteps + j + 1)
+          toolResults.push(this.makeFailure(callId, planned.capability, stopReason, 'orchestration_limit'))
+          const step = this.findOrAddStep(planned.capability, planned.payload ?? {}, callId, true)
+          this.planTracker?.skipStep(step.id)
+          this.planTracker?.setNote(step.id, stopReason)
+          this.setPhase6StepState(state, j, 'blocked', planned)
+          this.tracer.recordEvent({
+            type: 'step_blocked',
+            stepId: step.id,
+            toolId: planned.capability,
+            reason: stopReason,
+            at: Date.now(),
+          })
+        }
+      }
+
+      // Finalize the run book.
+      if (this.cancelRequested) transitionPhase(state, 'cancelled', stopReason ?? 'Cancelled.')
+      else if (stoppedBy === 'completed') transitionPhase(state, 'completed')
+      else transitionPhase(state, 'failed', stopReason)
+      buildFinalResult(state)
+    } finally {
+      const executedSteps = state.steps.filter(
+        (s) => s.state === 'verified' || s.state === 'observed' || s.state === 'executed' ||
+          s.state === 'failed' || s.state === 'verification_failed',
+      ).length
+      const verifiedSteps = state.steps.filter((s) => s.state === 'verified').length
+      this._lastPhase6Run = {
+        planId: plan.phase6?.planId,
+        elapsedMs: Date.now() - startedAt,
+        phase: state.phase,
+        executedSteps,
+        verifiedSteps,
+        failedSteps: state.finalResult?.failedSteps ?? 0,
+        blockedSteps: state.finalResult?.blockedSteps ?? 0,
+        skippedSteps: state.finalResult?.skippedSteps ?? 0,
+        cancelledSteps: state.finalResult?.cancelledSteps ?? 0,
+        recoveryAttempts: recoveryCount,
+        replanAttempts: replanCount,
+        replanLimit: state.maxReplans,
+        stoppedBy: this.cancelRequested ? 'cancellation' : stoppedBy,
+      }
+    }
+
+    return { toolResults, failures }
+  }
+
+  /** Phase 6 — test-only seam: a genuinely supported alternative resolver. */
+  private phase6AlternativeResolver?: AlternativeResolver
+
+  /** Set a replan alternative resolver (used by tests to exercise the bounded
+   * corrected-continuation path; production leaves it undefined → honest stop). */
+  setPhase6AlternativeResolver(resolver: AlternativeResolver | undefined): void {
+    this.phase6AlternativeResolver = resolver
+  }
+
+  /** Get or create the run-book StepState for plan index `index`. */
+  private getPhase6StepState(
+    state: AgenticExecutionState,
+    index: number,
+    planned: OrchestrationPlanStep,
+  ): StepState {
+    let step = state.steps.find((s) => s.stepIndex === index)
+    if (step) return step
+    step = {
+      stepIndex: index,
+      toolId: planned.capability,
+      capability: planned.capability,
+      description: planned.description,
+      input: planned.payload ?? {},
+      state: 'planned',
+    } as StepState
+    state.steps.push(step as StepState)
+    return step as StepState
+  }
+
+  private setPhase6StepState(
+    state: AgenticExecutionState,
+    index: number,
+    next: StepState['state'],
+    planned: OrchestrationPlanStep,
+  ): void {
+    updateStepState(this.getPhase6StepState(state, index, planned), next)
+  }
+
+  /**
+   * Phase 6 — post-action cross-tool observation with a bounded settle window.
+   * Uses the SAME planPostActionObservation table as the Phase 5 agentic runner
+   * (verify/output loading), executes the observe tool through the regular
+   * rails, and when the observation genuinely confirms the effect upgrades the
+   * action step's trace verification IN PLACE (additive tracer mutation) so the
+   * user-facing result reflects confirmed evidence. Never fabricates: a failed
+   * or non-confirming observation leaves the step unverified.
+   */
+  private async phase6Observe(
+    planned: OrchestrationPlanStep,
+    resolvedToolId: string,
+    payload: Record<string, unknown>,
+    roundResult: ToolResultRecord | undefined,
+    _meta: Phase6StepMeta | undefined,
+  ): Promise<boolean> {
+    const observation = planPostActionObservation(resolvedToolId, payload, {
+      success: Boolean(roundResult?.ok),
+      output: roundResult?.ok ? roundResult.data : null,
+      summary: roundResult?.message ?? 'step executed',
+    })
+    if (!observation) return false
+    const observeTool = this.registry.get(observation.observeToolId)
+    if (!observeTool) return false
+    if (observation.settleMs && observation.settleMs > 0) {
+      await new Promise((resolve) => setTimeout(resolve, observation.settleMs))
+    }
+
+    const retries = Math.min(Math.max(0, Math.floor(observation.retries ?? 0)), 2)
+    let lastFailed: string | null = null
+    for (let attempt = 0; attempt <= retries; attempt += 1) {
+      const obsRound = await this.executeToolSteps(planned.description, [
+        { toolId: observation.observeToolId, capability: observation.observeToolId, payload: observation.observeParams },
+      ])
+      const obsResult = obsRound.toolResults[0]
+      if (!obsResult?.ok) {
+        lastFailed = `observation tool failed: ${obsResult?.message ?? 'unknown error'}`
+        break
+      }
+      const verification = observation.verify(obsResult.data)
+      if (verification.passed) {
+        this.tracer.updateStepVerification(resolvedToolId, 'COMPLETED', {
+          status: 'verified',
+          message: verification.message,
+        })
+        return true
+      }
+      lastFailed = null
+      if (observation.retryDelayMs && observation.retryDelayMs > 0) {
+        await new Promise((resolve) => setTimeout(resolve, observation.retryDelayMs))
+      }
+    }
+
+    if (lastFailed) {
+      // Honest note for the run book: observation tooling failed.
+      this.tracer.recordEvent({
+        type: 'recovery_classified',
+        toolId: resolvedToolId,
+        kind: 'stale_observation',
+        action: 'reobserve',
+        reason: lastFailed,
+        at: Date.now(),
+      })
+    }
+    return false
+  }
   /* ------------------------------------------------ execution helpers */
 
   /** Record a pre-execution rejection on the per-run trace (Phase 1.0). */
@@ -2835,24 +3867,55 @@ export class AssistantEngine {
     }
   }
 
-  private async waitForToolConfirmation(_callId: string): Promise<boolean> {
-    return new Promise((resolve) => {
-      const pending = this.awaiting
-      if (!pending || pending.kind !== 'tool') {
-        resolve(false)
-        return
-      }
-      const resolveOnce = (value: boolean): void => {
-        this.awaiting = null
-        resolve(value)
-      }
-      // Replace callbacks with resolvers
-      this.awaiting = {
-        ...pending,
-        onConfirm: async () => resolveOnce(true),
-        onCancel: () => resolveOnce(false),
-      }
+  /** Phase 2.4 — request explicit user confirmation before a tool runs. Wires
+   * REAL resolvers into BOTH surfaces the operator can act on: the callbacks
+   * shipped inside the emitted `tool-confirm` request (the UI dialog buttons)
+   * and `this.awaiting` (engine.confirmPending()/cancelPending()). A
+   * confirmation therefore always resumes the run — never a silent no-op.
+   * Resolves true when the operator confirms, false when they cancel. */
+  private async requestToolConfirmation(opts: {
+    id: string
+    title: string
+    description: string
+    why: string
+    toolId: string
+    impact: string
+    payload: Record<string, unknown>
+  }): Promise<boolean> {
+    let resolver!: (value: boolean) => void
+    const promise = new Promise<boolean>((resolve) => {
+      resolver = resolve
     })
+    const resolveOnce = (value: boolean): void => {
+      if (this.awaiting === command) this.awaiting = null
+      resolver(value)
+    }
+    const request: ToolConfirmationRequest = {
+      id: opts.id,
+      title: opts.title,
+      description: opts.description,
+      why: opts.why,
+      toolId: opts.toolId,
+      impact: opts.impact,
+      payload: opts.payload,
+      onConfirm: async () => resolveOnce(true),
+      onCancel: () => resolveOnce(false),
+    }
+    const command: AwaitingConfirmation = {
+      kind: 'tool',
+      title: opts.title,
+      description: opts.description,
+      why: opts.why,
+      toolId: opts.toolId,
+      impact: opts.impact,
+      payload: opts.payload,
+      onConfirm: request.onConfirm,
+      onCancel: request.onCancel,
+    }
+    this.awaiting = command
+    this.setStatus('waiting_for_confirmation')
+    this.emit({ type: 'tool-confirm', request })
+    return promise
   }
 
   /** Ask the UI to confirm a tool-driven clear-all, then wait for the answer. */
@@ -2976,8 +4039,11 @@ export class AssistantEngine {
       kind: 'output',
       detail: reply,
     })
-    this.runState.finish('completed')
-    this.tracer.end('completed')
+    // Phase-hardening — UI truthfulness: a REFUSED outcome is never a success
+    // (no DONE chip). Only ambiguity clarifications end as a normal completion.
+    const refused = outcome === 'refused'
+    this.runState.finish(refused ? 'failed' : 'completed')
+    this.tracer.end(refused ? 'failed' : 'completed')
     this.applyResponse(reply)
   }
 
@@ -3118,6 +4184,211 @@ export class AssistantEngine {
     } catch (error) {
       return `I could not analyse the camera frame: ${userFacing(error).message}`
     }
+  }
+
+  /* ------------------------------------------------ Phase 9 UI-control surface */
+
+  /** Honest verb label for an unrecognised panel target. */
+  private uiControlVerb(kind: UiControlIntent['kind']): string {
+    switch (kind) {
+      case 'open_panel':
+        return 'open'
+      case 'close_panel':
+        return 'close'
+      case 'toggle_panel':
+        return 'toggle'
+      case 'focus_panel':
+        return 'focus'
+      case 'switch_environment':
+        return 'switch to'
+      case 'next_environment':
+      case 'previous_environment':
+        return 'switch to'
+    }
+  }
+
+  /** Live environment id, coerced to a known registry id (never a guess). */
+  private currentEnvironmentId(): VisualEnvironmentId {
+    const id = usePanelLayoutStore.getState().environmentId
+    return isEnvironmentId(id) ? id : DEFAULT_ENVIRONMENT
+  }
+
+  /**
+   * Phase 9 — deterministic JARVIS self-interaction turn. Executes recognised
+   * UI-control commands through the REAL panel/environment store actions (the
+   * same surface the taskbar and environment panel use) and reports each
+   * result from the post-condition re-read from the store — the engine never
+   * asserts a switch, an open or a close that the store did not actually hold.
+   * Unknown targets are answered with the real catalogue names.
+   */
+  private async handleUiControlCommands(intents: UiControlIntent[]): Promise<void> {
+    this.runState.transition('executing')
+    this.setStatus('executing')
+
+    const results = intents.map((intent) => this.executeUiControlCommand(intent))
+    const reply = results.map((r) => r.text).join('\n')
+    const allOk = results.every((r) => r.ok)
+    const anyOk = results.some((r) => r.ok)
+
+    this.emit({
+      type: 'notice',
+      kind: allOk ? 'success' : anyOk ? 'warning' : 'info',
+      text: reply,
+    })
+
+    addAssistantMessage(reply)
+    this.emit({
+      type: 'transcript',
+      speaker: 'assistant',
+      text: reply,
+    })
+    for (const result of results) {
+      this.fireActivity({
+        step: 'Executed self-action',
+        kind: 'tool',
+        detail: result.text,
+      })
+    }
+    this.runState.finish('completed')
+    this.tracer.end('completed')
+    this.setStatus('success')
+    this.applyResponse(reply)
+  }
+
+  /** Execute ONE UI-control command against the store; verify and report. */
+  private executeUiControlCommand(intent: UiControlIntent): { ok: boolean; text: string } {
+    const store = usePanelLayoutStore.getState()
+
+    // ---- theme control ----------------------------------------------------
+    if (intent.kind === 'next_theme') {
+      return this.applyTheme(nextTheme(this.currentThemeId()))
+    }
+    if (intent.kind === 'set_theme') {
+      if (!intent.themeKnown || !intent.themeId) {
+        return {
+          ok: false,
+          text: `I cannot switch to "${intent.raw}": that is not one of my themes. Available: ${themeChoices().join(', ')}.`,
+        }
+      }
+      return this.applyTheme(intent.themeId)
+    }
+
+    // ---- environment switching -------------------------------------------
+    if (intent.kind === 'switch_environment') {
+      if (!intent.environmentKnown || !intent.environmentId) {
+        return {
+          ok: false,
+          text: `I cannot switch to "${intent.raw}": that is not one of my environments. Available: ${environmentChoices().join(', ')}.`,
+        }
+      }
+      const target = intent.environmentId
+      if (this.currentEnvironmentId() === target) {
+        return { ok: true, text: `You are already in the ${environmentLabel(target)} environment.` }
+      }
+      store.setEnvironment(target)
+      return this.currentEnvironmentId() === target
+        ? { ok: true, text: `Switched to ${environmentLabel(target)}.` }
+        : { ok: false, text: `I could not switch to ${environmentLabel(target)}.` }
+    }
+
+    if (intent.kind === 'next_environment' || intent.kind === 'previous_environment') {
+      const current = this.currentEnvironmentId()
+      const next = stepEnvironment(current, intent.kind === 'next_environment' ? 1 : -1)
+      store.setEnvironment(next)
+      return this.currentEnvironmentId() === next
+        ? { ok: true, text: `Switched to ${environmentLabel(next)}.` }
+        : { ok: false, text: 'I could not switch environments.' }
+    }
+
+    // ---- panel control ----------------------------------------------------
+    if (!intent.panelKnown || !intent.panelId) {
+      return {
+        ok: false,
+        text: `I cannot ${this.uiControlVerb(intent.kind)} "${intent.raw}": that is not one of my panels. Available: ${panelChoices().join(', ')}.`,
+      }
+    }
+    const id = intent.panelId
+    const label = PANEL_BY_ID.get(id)?.title ?? id
+
+    switch (intent.kind) {
+      case 'open_panel': {
+        if (store.panels[id].open) return { ok: true, text: `The ${label} panel is already open.` }
+        store.openPanel(id)
+        return usePanelLayoutStore.getState().panels[id].open
+          ? { ok: true, text: `Opened the ${label} panel.` }
+          : { ok: false, text: `I could not open the ${label} panel.` }
+      }
+      case 'close_panel': {
+        if (!store.panels[id].open) return { ok: true, text: `The ${label} panel is already closed.` }
+        store.closePanel(id)
+        return !usePanelLayoutStore.getState().panels[id].open
+          ? { ok: true, text: `Closed the ${label} panel.` }
+          : { ok: false, text: `I could not close the ${label} panel.` }
+      }
+      case 'toggle_panel': {
+        const wasOpen = store.panels[id].open
+        store.togglePanel(id)
+        const nowOpen = usePanelLayoutStore.getState().panels[id].open
+        if (nowOpen === wasOpen) return { ok: false, text: `I could not toggle the ${label} panel.` }
+        return nowOpen
+          ? { ok: true, text: `Opened the ${label} panel.` }
+          : { ok: true, text: `Closed the ${label} panel.` }
+      }
+      case 'focus_panel': {
+        if (!store.panels[id].open) {
+          store.openPanel(id)
+          if (!usePanelLayoutStore.getState().panels[id].open) {
+            return { ok: false, text: `I could not open the ${label} panel to focus it.` }
+          }
+          store.focusPanel(id)
+          return { ok: true, text: `Opened and focused the ${label} panel.` }
+        }
+        store.focusPanel(id)
+        return { ok: true, text: `Focused the ${label} panel.` }
+      }
+      default:
+        return { ok: false, text: 'I could not perform that UI action.' }
+    }
+  }
+
+  /** Real current theme (the theme store is the single source of truth). */
+  private currentThemeId(): JarvisTheme {
+    return useJarvisStore.getState().theme
+  }
+
+  /** Apply a theme through the REAL store and verify the post-state. */
+  private applyTheme(target: JarvisTheme): { ok: boolean; text: string } {
+    const label = THEME_META[target].label
+    if (useJarvisStore.getState().theme === target) {
+      return { ok: true, text: `You are already using the ${label} theme.` }
+    }
+    useJarvisStore.getState().setTheme(target)
+    return useJarvisStore.getState().theme === target
+      ? { ok: true, text: `Switched to the ${label} theme.` }
+      : { ok: false, text: `I could not switch to the ${label} theme.` }
+  }
+
+  /**
+   * Phase 10 — deterministic self-command execution with a VERIFIED
+   * post-condition (mission #6). Recognition success is never assumed to be
+   * action success: the command delegates to the SAME normalized store surface
+   * voice + UI already reach, then the result is read back from the store.
+   * Emits activity + a notice (success or warning) reflecting the honest
+   * outcome.
+   */
+  runSelfAction(command: GestureCommand): GestureActionResult {
+    const result = executeGestureCommand(command, this.currentEnvironmentId())
+    if (result.ok) {
+      this.fireActivity({
+        step: 'Executed gesture self-action',
+        kind: 'tool',
+        detail: result.detail,
+      })
+      this.emit({ type: 'notice', kind: 'success', text: result.detail })
+    } else {
+      this.emit({ type: 'notice', kind: 'warning', text: result.detail })
+    }
+    return result
   }
 
   private setStatus(status: JarvisStatus): void {

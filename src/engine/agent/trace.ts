@@ -1,5 +1,5 @@
 import type { AgentState } from './stateMachine'
-import type { AgentTraceEvent, TraceStep } from './types'
+import type { AgentTraceEvent, AgentStepStatus, TraceStep } from './types'
 import type { GoalTaskResult } from '../goal/types'
 
 /**
@@ -52,6 +52,37 @@ export class ExecutionTracer {
     if (!this.run) return
     this.run.events = this.run.events ?? []
     this.run.events.push(event)
+  }
+
+  /**
+   * Phase 6 — upgrade the LAST completed step for `toolId` with a NEW
+   * post-action verification outcome (e.g. a cross-tool observation that
+   * confirmed the effect after the step's own verifier left it unverified).
+   *
+   * Bounded deliberately: only ever upgrades to `verified` (never downgrades),
+   * only touches the most recent matching step, and only when the run holds
+   * that step. This is what lets `makeResult` count a genuinely confirmed
+   * effect as verified without fabricating evidence.
+   */
+  updateStepVerification(
+    toolId: string,
+    status: AgentStepStatus,
+    verification: { status: 'verified'; message: string },
+  ): boolean {
+    if (!this.run) return false
+    for (let i = this.run.steps.length - 1; i >= 0; i -= 1) {
+      const step = this.run.steps[i]
+      if (step.toolId !== toolId || !step.observation) continue
+      step.verification = {
+        ...(step.verification ?? {}),
+        status: 'verified',
+        message: verification.message,
+        durationMs: step.verification?.durationMs ?? 0,
+      }
+      step.status = status
+      return true
+    }
+    return false
   }
 
   /** Close the trace with a terminal agent state. */

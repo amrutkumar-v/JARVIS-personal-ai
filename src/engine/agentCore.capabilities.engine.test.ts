@@ -4,6 +4,7 @@ import type { AIProvider, AIRequest, AIResponse } from './provider'
 import type { Tool, ToolContext, ToolInput, ToolResult, ToolVerification } from '../tools/Tool'
 import type { CapabilityDefinition } from './capabilities'
 import type { EngineOutMessage } from './contracts'
+import type { ToolConfirmationRequest } from './contracts'
 import { useConversationStore } from '../state/conversation.store'
 
 /**
@@ -288,6 +289,60 @@ describe('Phase 2.3 — capability layer through the engine', () => {
       expect(engine.capabilityReliabilitySnapshot.size).toBe(0)
     })
 
+    it('UI dialog path regression: the emitted request.onConfirm resumes the run (never a no-op)', async () => {
+      const confirmed: CapabilityDefinition = {
+        ...clickCapability,
+        requiresConfirmation: true,
+      }
+      const click = new ClickTool()
+      const provider = new ScriptedProvider([
+        req('click_at', { window_id: '1', x: 7, y: 7 }, 'click_at'),
+        text('done'),
+      ])
+      const engine = new AssistantEngine({ providers: [provider], capabilities: [confirmed] })
+      engine.registerTool(click)
+      const events: EngineOutMessage[] = []
+      engine.on((m) => events.push(m))
+
+      const pending = engine.process('click it')
+      const request = await waitForToolConfirmRequest(events)
+      expect(engine.hasPendingConfirmation).toBe(true)
+
+      // EXACTLY what the UI dialog's "Yes, proceed" button does.
+      await request.onConfirm()
+      await pending
+
+      expect(click.clicks).toBe(1)
+      expect(engine.goalPlan().steps[0].state).toBe('verified')
+    })
+
+    it('UI dialog cancel path regression: request.onCancel refuses cleanly, nothing runs', async () => {
+      const confirmed: CapabilityDefinition = {
+        ...clickCapability,
+        requiresConfirmation: true,
+      }
+      const click = new ClickTool()
+      const provider = new ScriptedProvider([
+        req('click_at', { window_id: '1', x: 8, y: 8 }, 'click_at'),
+        text('done'),
+      ])
+      const engine = new AssistantEngine({ providers: [provider], capabilities: [confirmed] })
+      engine.registerTool(click)
+      const events: EngineOutMessage[] = []
+      engine.on((m) => events.push(m))
+
+      const pending = engine.process('click it')
+      const request = await waitForToolConfirmRequest(events)
+
+      // EXACTLY what the UI dialog's "Cancel" button does.
+      request.onCancel()
+      await pending
+
+      expect(click.clicks).toBe(0)
+      expect(engine.goalPlan().steps[0].state).toBe('failed')
+      expect(engine.hasPendingConfirmation).toBe(false)
+    })
+
     it('explicit confirmation lets the capability run and records executed reliability', async () => {
       const confirmed: CapabilityDefinition = {
         ...clickCapability,
@@ -416,4 +471,15 @@ async function waitForType(events: EngineOutMessage[], type: EngineOutMessage['t
     await new Promise((r) => setTimeout(r, 5))
   }
   throw new Error(`Timed out waiting for ${type}`)
+}
+
+async function waitForToolConfirmRequest(events: EngineOutMessage[]): Promise<ToolConfirmationRequest> {
+  for (let i = 0; i < 100; i += 1) {
+    const found = events.find((m) => m.type === 'tool-confirm')
+    if (found) {
+      return (found as { request: ToolConfirmationRequest }).request
+    }
+    await new Promise((r) => setTimeout(r, 5))
+  }
+  throw new Error('Timed out waiting for tool-confirm')
 }

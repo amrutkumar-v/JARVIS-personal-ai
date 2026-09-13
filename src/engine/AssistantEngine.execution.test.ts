@@ -116,8 +116,9 @@ describe('Phase 2.6 — real action execution (engine integration)', () => {
     expect(joined).not.toMatch(/\[tool:/)
     // The answer refuses the capability truthfully.
     expect(useJarvisStore.getState().lastAssistantText).toMatch(/(isn't|is not|not) connected/i)
-    // The run settles normally (the CONVERSATION completed, no action claimed).
-    expect(joined).toContain('[status] success')
+    // The run settles with an honest terminal state: a refusal is NEVER a
+    // success (no DONE chip) — the requested action did not happen.
+    expect(joined).toContain('[status] failed')
 
     const ctx = engine.lastExecutionContext()
     expect(ctx?.outcome).toBe('refused')
@@ -165,7 +166,9 @@ describe('Phase 2.6 — real action execution (engine integration)', () => {
     const joined = log.join('\n')
     expect(joined).not.toMatch(/didn't act|ambiguous/i)
     // No blind clarification for an explicit target — it reaches the provider.
-    expect(joined).toContain('[status] success')
+    // The requested delete was NOT possible in this environment, so the run
+    // ends FAILED (never a success DONE chip).
+    expect(joined).toContain('[status] failed')
     // And absolutely nothing ever fabricated a deletion.
     expect(engine.lastRunTrace().steps.every((s) => s.observation?.kind !== 'success')).toBe(true)
   })

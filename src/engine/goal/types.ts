@@ -20,6 +20,7 @@ export type GoalTaskStatus =
   | 'recovering' // a step failed verification; controlled recovery in progress
   | 'blocked' // a safety rail stopped the run (budget / rejected plan / limit)
   | 'completed' // goal work done AND supported by evidence (or read-only)
+  | 'partial' // some steps verified but the goal was NOT fully achieved
   | 'failed' // the goal was not achieved (a step failed / contradicted)
   | 'unverified' // steps executed but the goal result could NOT be confirmed
   | 'cancelled' // the user (or engine) cancelled the run

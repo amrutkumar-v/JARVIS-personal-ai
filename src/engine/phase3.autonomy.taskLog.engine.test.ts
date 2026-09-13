@@ -189,6 +189,8 @@ function stubDeviceProvider(devices: DeviceRecord[] = [stubPcDevice()]): DeviceP
       ok: true,
       file: { id: 'file-1', name, size: 12, url: 'https://jarvis.local/file-1', deviceId },
     }),
+    openUrl: async (_deviceId, _url) => ({ success: true }),
+    refreshDevices: async () => devices,
   }
 }
 

@@ -52,6 +52,14 @@ export const APP_LIMITS = {
   MAX_APP_ID_LENGTH: 64,
   /** Max characters of a target path kept from a parsed shortcut. */
   MAX_LNK_TARGET_CHARS: 512,
+  /** Max App Paths registry entries honoured in one discovery pass. */
+  MAX_APP_PATH_ENTRIES: 180,
+  /** Max packaged (Store/MSIX) apps honoured in one discovery pass. */
+  MAX_PACKAGED_ENTRIES: 180,
+  /** Wall time allowed for one fixed-args `reg query` (ms). */
+  REG_QUERY_TIMEOUT_MS: 3000,
+  /** Max characters of the validated folder argument to app.launch. */
+  MAX_FOLDER_ARG_LENGTH: 512,
   /** Max wall time waiting for the process spawn event (ms). */
   LAUNCH_SPAWN_TIMEOUT_MS: 5000,
   /** Total wall time spent polling the spawned process (ms). */

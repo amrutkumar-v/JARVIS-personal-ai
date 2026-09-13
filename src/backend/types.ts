@@ -6,6 +6,22 @@
 
 export type DeviceType = 'windows_pc' | 'android_phone' | 'android' | 'web' | 'desktop' | 'unknown'
 
+/**
+ * Structured device-error code a device tool may attach to its failure result
+ * (Work 11.9). The engine maps these to bounded, honest recovery actions —
+ * never a silent retry loop.
+ */
+export type DeviceErrorKind =
+  | 'device_not_found'
+  | 'device_disconnected'
+  | 'device_untrusted'
+  | 'device_permission_required'
+  | 'device_timeout'
+  | 'device_unavailable'
+  | 'device_protocol_error'
+  | 'transfer_failed'
+  | 'verification_unavailable'
+
 export type DevicePlatform = 'windows' | 'android' | 'unknown'
 
 export type DeviceRole = 'primary_pc' | 'secondary_pc' | 'primary_phone' | 'secondary_phone'
@@ -85,6 +101,7 @@ export type BackendEventType =
   | 'ready'
   | 'device'
   | 'notify'
+  | 'open-url'
   | 'file'
   | 'inbound'
   | 'assistant'

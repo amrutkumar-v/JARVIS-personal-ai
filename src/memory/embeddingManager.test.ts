@@ -1,6 +1,25 @@
-import { describe, expect, it } from 'vitest'
-import { EmbeddingManager } from './embeddingManager'
+import { afterEach, describe, expect, it } from 'vitest'
+import { EmbeddingManager, resolveDefaultEmbeddingProvider } from './embeddingManager'
+import { isEmbeddingEndpointExplicitlyConfigured } from './openaiEmbeddingProvider'
+import { resetAiConfigCache } from '../config/ai'
 import type { EmbeddingProvider, EmbeddingVector, ProviderHealth } from './embeddings'
+
+const ENV = import.meta.env as Record<string, string | undefined>
+
+function clearEnvironment(): void {
+  delete ENV.VITE_JARVIS_EMBEDDING_BASE_URL
+  delete ENV.VITE_JARVIS_EMBEDDING_PROXY_URL
+  delete ENV.VITE_JARVIS_EMBEDDING_MODEL
+  delete ENV.VITE_JARVIS_EMBEDDING_DIMENSIONS
+  delete ENV.VITE_JARVIS_AI_BASE_URL
+  delete ENV.VITE_JARVIS_AI_MODEL
+  delete ENV.JARVIS_API_KEY
+  resetAiConfigCache()
+}
+
+afterEach(() => {
+  clearEnvironment()
+})
 
 const vec = (values: readonly number[]): EmbeddingVector => ({ values, dimensions: values.length })
 
@@ -269,5 +288,40 @@ describe('EmbeddingManager (Phase 0.6C)', () => {
     expect(result.successful).toBe(0)
     expect(result.errors).toHaveLength(1)
     expect(result.errors[0].id).toBe('x')
+  })
+})
+
+describe('default provider auto-resolution (Work 2)', () => {
+  it('resolves to the deterministic provider when nothing is declared', () => {
+    expect(resolveDefaultEmbeddingProvider().id).toBe('deterministic-test')
+    expect(isEmbeddingEndpointExplicitlyConfigured()).toBe(false)
+  })
+
+  it('promotes the real provider ONLY when embedding config is explicitly declared', () => {
+    ENV.VITE_JARVIS_EMBEDDING_BASE_URL = 'https://emb.example.com/v1'
+    ENV.VITE_JARVIS_EMBEDDING_MODEL = 'text-embedding-3-small'
+    const provider = resolveDefaultEmbeddingProvider()
+    expect(provider.id).toBe('openai-embeddings')
+    expect(provider.isConfigured()).toBe(true)
+    expect(isEmbeddingEndpointExplicitlyConfigured()).toBe(true)
+  })
+
+  it('a chat-only AI config never claims real semantic memory', () => {
+    ENV.VITE_JARVIS_AI_BASE_URL = 'https://api.example.com/v1'
+    ENV.VITE_JARVIS_AI_MODEL = 'gpt-4o-mini'
+    expect(isEmbeddingEndpointExplicitlyConfigured()).toBe(false)
+    expect(resolveDefaultEmbeddingProvider().id).toBe('deterministic-test')
+  })
+
+  it('a fresh manager is immediately enabled and real when declared', () => {
+    ENV.VITE_JARVIS_EMBEDDING_PROXY_URL = '/api/ai'
+    ENV.VITE_JARVIS_EMBEDDING_MODEL = 'text-embedding-3-small'
+    const manager = new EmbeddingManager()
+    expect(manager.hasRealEmbeddings()).toBe(true)
+    expect(manager.isEnabled()).toBe(true)
+    const health = manager.getHealth()
+    expect(health.providerId).toBe('openai-embeddings')
+    expect(health.fallbackActive).toBe(false)
+    expect(health.label).toBe('OpenAI-Compatible Embeddings')
   })
 })

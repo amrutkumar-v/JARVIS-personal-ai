@@ -112,13 +112,14 @@ function makeView(options?: {
       refresh: () => Promise.resolve(devices),
     },
     hasActiveTask: () => options?.hasActiveTask ?? false,
-    fileSystemProvider: {},
-    applicationProvider: {},
-    observationProvider: {},
-    desktopProvider: {},
-    visionProvider: undefined,
-    cameraProvider: undefined,
-    webProvider: web ? {} : undefined,
+    fileSystem: {},
+    applications: {},
+    observation: {},
+    desktop: {},
+    vision: undefined,
+    camera: undefined,
+    web: web ? {} : undefined,
+    clipboard: undefined,
   }
 }
 

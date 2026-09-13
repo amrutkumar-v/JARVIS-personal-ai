@@ -33,6 +33,7 @@ export interface BackendEventHandlers {
   onDisconnected?: BackendListener<void>
   onGaveUp?: BackendListener<void>
   onNotify?: BackendListener<{ deviceId: string; title: string; message: string; at: number }>
+  onOpenUrl?: BackendListener<{ deviceId: string; deviceName?: string; url: string; at: number }>
   onFile?: BackendListener<OutboundFile>
   onInbound?: BackendListener<InboundMessage>
   onDevice?: BackendListener<{ event: string; device: DeviceRecord }>
@@ -53,7 +54,7 @@ export interface EventSourceLike {
   onerror: (() => void) | null
 }
 
-const EVENT_NAMES: BackendEventType[] = ['device', 'notify', 'file', 'inbound', 'assistant', 'wake']
+const EVENT_NAMES: BackendEventType[] = ['device', 'notify', 'open-url', 'file', 'inbound', 'assistant', 'wake']
 
 export class BackendClient {
   private readonly config: BackendConfig
@@ -72,7 +73,7 @@ export class BackendClient {
 
   constructor(deps: BackendClientDeps = {}) {
     this.config = deps.config ?? getBackendConfig()
-    this.fetchImpl = deps.fetchImpl ?? fetch
+    this.fetchImpl = deps.fetchImpl ?? (typeof fetch === 'function' ? fetch.bind(globalThis) : async () => { throw new Error('fetch unavailable') })
     this.makeEventSource = deps.makeEventSource ?? ((url: string) => new EventSource(url) as unknown as EventSourceLike)
     this.handlers = {}
     this.reconnect = new ReconnectController(
@@ -190,6 +191,9 @@ export class BackendClient {
         case 'notify':
           this.handlers.onNotify?.(envelope.data as { deviceId: string; title: string; message: string; at: number })
           break
+        case 'open-url':
+          this.handlers.onOpenUrl?.(envelope.data as { deviceId: string; deviceName?: string; url: string; at: number })
+          break
         case 'file':
           this.handlers.onFile?.(envelope.data as OutboundFile)
           break
@@ -272,6 +276,14 @@ export class BackendClient {
       ok: res.ok,
       file: res.ok ? (res.body.file as OutboundFile) : undefined,
       error: res.error,
+    }))
+  }
+
+  sendOpenUrl(deviceId: string, url: string): Promise<{ ok: boolean; error?: string; reason?: string }> {
+    return this.postJson('/api/device/open-url', { deviceId, url }).then((res) => ({
+      ok: res.ok,
+      error: res.error,
+      reason: typeof res.body.reason === 'string' ? res.body.reason : res.error,
     }))
   }
 

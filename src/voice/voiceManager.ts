@@ -20,6 +20,7 @@ import type { WakeWordProvider } from './wakeWordProvider'
 import type { SpeechToTextProvider } from './speechProvider'
 import type { TextToSpeechProvider } from './ttsProvider'
 import type { WakePayload } from './types'
+import type { VoiceDiagnostics } from './diagnostics'
 
 export interface VoiceManagerCallbacks {
   /** Deliver a spoken command into the existing Agent Core (e.g. engine.process). */
@@ -38,6 +39,8 @@ export interface VoiceManagerOptions {
   tts: TextToSpeechProvider
   callbacks: VoiceManagerCallbacks
   config?: Partial<VoiceConfig>
+  /** Optional forward-only event counter (self-test / diagnostics UI). */
+  diagnostics?: VoiceDiagnostics
 }
 
 type TimerHandle = ReturnType<typeof setTimeout>
@@ -59,6 +62,7 @@ export class VoiceManager {
   private wakeErrorUnsub: (() => void) | null = null
   private sttUnsub: (() => void) | null = null
   private sttErrorUnsub: (() => void) | null = null
+  private readonly diag: VoiceDiagnostics | null
 
   constructor(options: VoiceManagerOptions) {
     this.wake = options.wake
@@ -67,6 +71,10 @@ export class VoiceManager {
     this.callbacks = options.callbacks
     this.config = { ...DEFAULT_VOICE_CONFIG, ...options.config, phrases: { ...DEFAULT_VOICE_CONFIG.phrases, ...options.config?.phrases } }
     this.machine = new VoiceStateMachine()
+    this.diag = options.diagnostics ?? null
+    if (this.diag) {
+      this.tts.onRescued = () => this.diag?.increment('speechRescued')
+    }
     if (this.wake) {
       this.wakeUnsub = this.wake.onWake((payload) => this.handleWake(payload))
       this.wakeErrorUnsub = this.wake.onError((message) => this.handleInputError(message))
@@ -88,11 +96,13 @@ export class VoiceManager {
   arm(): boolean {
     if (this.disposed) return false
     if (!this.wake || !this.wake.supported) {
+      this.diag?.increment('wakeDenied')
       this.notice('warning', 'Wake word is not available in this browser.')
       return false
     }
     const caps = this.wake.capabilities()
     if (!caps.available) {
+      this.diag?.increment('wakeDenied')
       this.notice('warning', caps.reason ?? 'Wake word is unavailable.')
       return false
     }
@@ -136,6 +146,8 @@ export class VoiceManager {
     if (this.disposed) return
     // Wake while already awake is ignored (duplicate wake events are dropped).
     if (this.machine.state !== 'LISTENING_FOR_WAKE') return
+    this.diag?.increment('wakeAccepted')
+    this.diag?.increment('sessionsStarted')
     this.wake?.stop()
     this.transition('AWAKE')
     // Phase 1.6 — the whole awake session is bounded by one session ceiling
@@ -153,13 +165,17 @@ export class VoiceManager {
   handleTranscript(text: string): void {
     if (this.disposed) return
     const kind = classifyUtterance(text)
-    if (kind === 'none') return
+    if (kind === 'none') {
+      this.diag?.increment('transcriptsDropped')
+      return
+    }
 
     const state = this.machine.state
     if (kind === 'cancel') {
       if (state === 'PROCESSING' || state === 'SPEAKING') {
         this.cancel()
       } else if (state === 'LISTENING_FOR_COMMAND' || state === 'AWAKE') {
+        this.diag?.increment('commandsCanceled')
         this.stopCommandListener()
         this.pendingCommand = null
         if (this.transition('CANCELLED')) {
@@ -183,6 +199,7 @@ export class VoiceManager {
     if (state === 'PROCESSING') {
       // The Agent Core is already running; keep a single queued command slot.
       this.pendingCommand = text
+      this.diag?.increment('commandsQueued')
       return
     }
     if (state === 'SPEAKING') {
@@ -207,6 +224,7 @@ export class VoiceManager {
       } else if (status === 'idle' || status === 'success' || status === 'cancelled') {
         this.afterRun()
       } else if (status === 'error' || status === 'warning' || status === 'failed') {
+        this.diag?.increment('engineFailures')
         this.resetSessionCeiling()
         this.speakPhrase(this.config.phrases.failure, () => this.returnToWake())
       }
@@ -231,6 +249,7 @@ export class VoiceManager {
   private transition(next: VoiceState): boolean {
     if (!this.machine.transition(next)) return false
     this.callbacks.onStateChange?.(next)
+    this.diag?.setState(next)
     return true
   }
 
@@ -243,11 +262,16 @@ export class VoiceManager {
       onDone()
       return
     }
-    this.tts.speak(text, { volume: 1, onDone: () => onDone() })
+    this.diag?.increment('speechStarted')
+    this.tts.speak(text, { volume: 1, onDone: (ok) => {
+      this.diag?.increment(ok ? 'speechFinished' : 'speechInterrupted')
+      onDone()
+    } })
   }
 
   private beginCommand(text: string): void {
     this.clearCommandTimer()
+    this.diag?.increment('commandsSubmitted')
     this.callbacks.onCommand?.(text)
     this.transition('PROCESSING')
     this.callbacks.submitCommand(text)
@@ -308,6 +332,8 @@ export class VoiceManager {
     this.stopAllInput()
     this.resetSessionCeiling()
     this.pendingCommand = null
+    this.diag?.increment('inputErrors')
+    this.diag?.setError(message)
     this.notice('warning', message)
     if (this.transition('ERROR')) {
       this.returnToWake()

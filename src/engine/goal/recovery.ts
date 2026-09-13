@@ -1,4 +1,5 @@
 import type { AgentErrorKind, ObservationKind, RecoveryAction, RecoveryFailureKind } from '../agent/types'
+import type { DeviceErrorKind } from '../../backend/types'
 import type { PlanVerdictCode } from './validatePlan'
 
 /**
@@ -33,6 +34,8 @@ export interface RecoveryInput {
   cancelled?: boolean
   /** Code of the plan-validation failure, when `errorKind` is plan_rejected. */
   planCode?: PlanVerdictCode
+  /** Structured device-error code (Work 11.9), when a device tool failed. */
+  deviceCode?: DeviceErrorKind
 }
 
 export function classifyRecovery(input: RecoveryInput): RecoveryDecision {
@@ -44,6 +47,7 @@ export function classifyRecovery(input: RecoveryInput): RecoveryDecision {
     budgetExhausted = false,
     cancelled = false,
     planCode,
+    deviceCode,
   } = input
 
   // Verification signals dominate: the tool ran, but the effect is unknown.
@@ -74,6 +78,95 @@ export function classifyRecovery(input: RecoveryInput): RecoveryDecision {
       action: 'stop',
       reason: 'no goal task budget left for further steps',
       consumesBudget: false,
+    }
+  }
+
+  // Work 11.9 — structured device failures map to bounded, honest recovery.
+  // Device recovery is NEVER a silent retry loop: only a declared-retryable
+  // timeout/transfer may retry; offline/not-found always replans (refresh the
+  // registry / choose an online device); untrusted and permission-required
+  // always stop until the user explicitly re-authorizes.
+  if (deviceCode) {
+    switch (deviceCode) {
+      case 'device_untrusted':
+        return {
+          kind: 'device_untrusted',
+          action: 'stop',
+          reason: 'the target device is not a trusted ecosystem device — stop and refuse until trust is explicitly granted',
+          consumesBudget: false,
+        }
+      case 'device_permission_required':
+        return {
+          kind: 'device_permission_required',
+          action: 'stop',
+          reason: 'the device needs explicit permission — require the user\u2019s approval; never auto-expose it',
+          consumesBudget: false,
+        }
+      case 'device_not_found':
+        return {
+          kind: 'device_not_found',
+          action: 'replan',
+          reason: 'no device matches that target — refresh the registry and re-ask which device, never guess',
+          consumesBudget: true,
+        }
+      case 'device_disconnected':
+        return {
+          kind: 'device_disconnected',
+          action: 'replan',
+          reason: 'the device is offline right now — refresh its state and choose an online trusted device instead',
+          consumesBudget: true,
+        }
+      case 'device_timeout':
+        return retryable
+          ? {
+              kind: 'transient',
+              action: 'retry',
+              reason: 'the device timed out and the tool declares a retry policy — retry once per policy',
+              consumesBudget: false,
+            }
+          : {
+              kind: 'device_unavailable',
+              action: 'replan',
+              reason: 'the device timed out without a retry policy — refresh and plan a corrected continuation',
+              consumesBudget: true,
+            }
+      case 'transfer_failed':
+        return retryable
+          ? {
+              kind: 'transient',
+              action: 'retry',
+              reason: 'the transfer failed and the tool declares a retry policy — retry once per policy',
+              consumesBudget: false,
+            }
+          : {
+              kind: 'device_unavailable',
+              action: 'replan',
+              reason: 'the transfer could not complete — plan a corrected continuation',
+              consumesBudget: true,
+            }
+      case 'verification_unavailable':
+        return canReobserve
+          ? {
+              kind: 'stale_observation',
+              action: 'reobserve',
+              reason: 'the effect may exist but device verification is unavailable — re-observe before deciding',
+              consumesBudget: true,
+            }
+          : {
+              kind: 'verification_failure',
+              action: 'replan',
+              reason: 'the device effect could not be confirmed — plan a different, corrected continuation',
+              consumesBudget: true,
+            }
+      case 'device_unavailable':
+      case 'device_protocol_error':
+      default:
+        return {
+          kind: 'device_unavailable',
+          action: 'replan',
+          reason: 'the device operation could not be completed — refresh and plan a corrected continuation',
+          consumesBudget: true,
+        }
     }
   }
 

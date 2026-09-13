@@ -48,6 +48,11 @@ export type RecoveryFailureKind =
   | 'verification_failure' // effect refuted / could not be confirmed
   | 'budget_exhausted'
   | 'cancellation'
+  | 'device_not_found' // no device matches the target
+  | 'device_disconnected' // the device exists but is offline/reachable only
+  | 'device_untrusted' // the target is not a trusted ecosystem device
+  | 'device_permission_required' // the device/platform needs explicit permission
+  | 'device_unavailable' // device/protocol/transfer could not complete
   | 'fatal' // fatal / unknown
 
 /** Bounded recovery actions the classification policy may return (Phase 2.2). */
@@ -95,7 +100,7 @@ export type AgentTraceEvent =
   | { type: 'step_started'; stepId: string; toolId: string; at: number }
   | { type: 'step_failed'; stepId: string; toolId: string; reason: string; at: number }
   | { type: 'step_blocked'; stepId: string; toolId: string; reason: string; at: number }
-  | { type: 'recovery_classified'; toolId: string; stepId?: string; kind: RecoveryFailureKind; action: RecoveryAction; at: number }
+  | { type: 'recovery_classified'; toolId: string; stepId?: string; kind: RecoveryFailureKind; action: RecoveryAction; at: number; reason?: string }
   | { type: 'recovery_attempted'; attempt: number; limit: number; at: number }
   | { type: 'replan_requested'; at: number }
   | { type: 'replan_accepted'; at: number }
@@ -116,6 +121,13 @@ export type AgentTraceEvent =
   | { type: 'policy_filtered'; capability: string; toolId: string; reason: string; at: number }
   | { type: 'confirmation_required'; capability: string; toolId: string; at: number }
   | { type: 'confirmation_refused'; capability: string; toolId: string; at: number }
+  // Phase 13 — structured-reasoning operational facts. These carry ONLY
+  // intents, ids and counts — NEVER the user prompt, the model output or any
+  // argument values (which could hold secrets).
+  | { type: 'reasoning_requested'; capabilities: number; at: number }
+  | { type: 'reasoning_plan_validated'; intent: string; steps: number; at: number }
+  | { type: 'reasoning_rejected'; code: string; reason: string; at: number }
+  | { type: 'reasoning_unavailable'; reason: string; at: number }
 
 export interface AgentVerification {
   status: VerificationStatus

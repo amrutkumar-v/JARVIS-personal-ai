@@ -1,6 +1,8 @@
 import { createServer } from 'node:http'
 import type { IncomingMessage, Server, ServerResponse } from 'node:http'
 import { timingSafeEqual } from 'node:crypto'
+import { homedir, tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { nativeError } from './errors.js'
 import type { NativeError } from './errors.js'
 import { normalizeRelPath } from './paths.js'
@@ -55,10 +57,27 @@ import { RealBrowserBackend } from './browserInput.js'
 export interface AgentOptions {
   /** Resolved ABSOLUTE allowed roots the agent may operate inside. */
   roots: string[]
+  /**
+   * Curated ABSOLUTE folders that folder-capable applications (File Explorer)
+   * may be opened ON, even though they live outside the file-system roots
+   * (e.g. the current user's Downloads/Documents/Desktop). File-system
+   * operations stay strictly root-bounded; this grant exists ONLY for the
+   * "open a folder in Explorer" feature and is never executable text.
+   */
+  openFolders?: string[]
   host?: string
   port?: number
   /** Bearer token; empty string means no token is required. */
   token?: string
+  /**
+   * Browser origins allowed to reach the agent. Defaults to loopback
+   * origins (http://localhost:*, http://127.0.0.1:*, http://[::1]:*) plus
+   * `null` (file:// pages). Requests WITHOUT an Origin header (non-browser
+   * clients such as the backend supervisor probe) are always allowed; the
+   * gate closes the cross-site drive-by vector where an arbitrary website
+   * would otherwise POST to the loopback agent.
+   */
+  allowedOrigins?: string[]
   requestTimeoutMs?: number
   maxBodyBytes?: number
   backend?: FsBackend
@@ -87,11 +106,29 @@ export interface RunningAgent {
   close(): Promise<void>
 }
 
-const CORS_HEADERS = {
-  'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Methods': 'POST, OPTIONS',
-  'Access-Control-Allow-Headers': 'Authorization, Content-Type',
-  'Access-Control-Max-Age': '0',
+const CORS_METHODS = 'POST, OPTIONS'
+
+/** Normalized loopback origins that are always allowed by default (http only;
+ * the loopback IIS/http.sys https boundary is not granted by default). */
+const LOCAL_ORIGIN_RE = /^http:\/\/(?:localhost|127\.0\.0\.1)(?::\d+)?$/i
+const IPV6_LOOPBACK_ORIGIN_RE = /^http:\/\/(?:\[::1\]|::1)(?::\d+)?$/i
+
+function normalizeOrigin(origin: string): string {
+  return origin.trim().replace(/\/+$/, '').toLowerCase()
+}
+
+/** Is a browser `Origin` header allowed to reach the agent? */
+export function isOriginAllowed(origin: string | undefined, explicit: readonly string[] | undefined): boolean {
+  if (origin === undefined) return true
+  const normalized = normalizeOrigin(origin)
+  if (normalized === 'null') return true
+  if (explicit !== undefined && explicit.length > 0) {
+    const list = explicit.map(normalizeOrigin)
+    if (list.includes('*')) return true
+    if (list.includes(normalized)) return true
+    return false
+  }
+  return LOCAL_ORIGIN_RE.test(normalized) || IPV6_LOOPBACK_ORIGIN_RE.test(normalized)
 }
 
 function envelope(id: string | number | null, payload: Omit<NativeSuccess, 'jsonrpc' | 'id'> | Omit<NativeFailure, 'jsonrpc' | 'id'>): NativeResponse {
@@ -223,6 +260,55 @@ function appIdParam(params: Record<string, unknown> | undefined): string {
 }
 
 /**
+ * Optional `folder` argument to `app.launch`. It must be an absolute, bounded
+ * Windows path that sits INSIDE one of the allowed roots (case-insensitive
+ * containment) or one of the curated open-folders (for Explorer folder-open).
+ * Known tokens ({userprofile}/{workspace}/{temp}/{windir}) are expanded first
+ * so the web layer never needs to know the real user home. A folder is never
+ * executable text — it is passed as a single pre-validated argument to an
+ * application that expressly allows folders (File Explorer).
+ */
+function expandKnownTokens(value: string): string {
+  const tokens: Array<readonly [string, () => string]> = [
+    ['{userprofile}', () => homedir()],
+    ['{home}', () => homedir()],
+    ['{temp}', () => tmpdir()],
+    ['{workspace}', () => join(tmpdir(), 'jarvis', 'workspace')],
+    ['{windir}', () => process.env.windir ?? process.env.SystemRoot ?? 'C:\\Windows'],
+  ]
+  let out = value
+  for (const [token, resolve] of tokens) {
+    if (out.includes(token)) out = out.split(token).join(resolve())
+  }
+  return out
+}
+
+function folderParam(params: Record<string, unknown> | undefined, roots: string[], openFolders: string[]): string | undefined {
+  const raw = params?.folder
+  if (raw === undefined || raw === null) return undefined
+  if (typeof raw !== 'string') {
+    throw nativeError('malformed', 'Invalid "folder" parameter.')
+  }
+  const folder = expandKnownTokens(raw.trim())
+  if (folder.length === 0 || folder.length > APP_LIMITS.MAX_FOLDER_ARG_LENGTH || !/^[A-Za-z]:[\\/]/.test(folder)) {
+    throw nativeError('malformed', 'Invalid "folder": must be a bounded absolute Windows path.')
+  }
+  const normalized = folder.replace(/[\\/]+/g, '\\').replace(/\\+$/, '')
+  const lower = normalized.toLowerCase()
+  const allow = openFolders
+    .map((f) => f.replace(/[\\/]+/g, '\\').replace(/\\+$/, '').toLowerCase())
+    .concat(roots.map((root) => root.replace(/[\\/]+/g, '\\').replace(/\\+$/, '').toLowerCase()))
+  const inside = allow.some((a) => lower === a || lower.startsWith(`${a}\\`))
+  if (!inside) {
+    throw nativeError(
+      'outside_allowed_root',
+      'The "folder" must be inside a granted root or an allowed open-folder.',
+    )
+  }
+  return normalized
+}
+
+/**
  * The ONLY parameter `window.*` accepts: a decimal window id. It must match
  * the opaque WINDOW_ID_PATTERN (1..10 digits, no path, no pointer, no command);
  * anything else is rejected as `malformed` before any backend is consulted.
@@ -299,6 +385,8 @@ function createHandler(options: AgentOptions): (req: IncomingMessage, res: Serve
   const appClose: AppCloseBackend = options.appClose ?? new RealAppCloseBackend()
   const browser: BrowserBackend = options.browser ?? new RealBrowserBackend()
   const token = options.token ?? ''
+  const allowedOrigins = options.allowedOrigins
+  const openFolders = options.openFolders ?? []
   const requestTimeoutMs = options.requestTimeoutMs ?? NATIVE_LIMITS.REQUEST_TIMEOUT_MS
   const maxBodyBytes = options.maxBodyBytes ?? NATIVE_LIMITS.MAX_BODY_BYTES
   const roots = options.roots
@@ -417,12 +505,17 @@ function createHandler(options: AgentOptions): (req: IncomingMessage, res: Serve
           const result = await applications.list()
           return envelope(id, { result: { applications: result } })
         }
+        case 'app.refresh': {
+          const result = await applications.refresh()
+          return envelope(id, { result })
+        }
         case 'app.status': {
           const result = await applications.status(appIdParam(params))
           return envelope(id, { result })
         }
         case 'app.launch': {
-          const result = await applications.launch(appIdParam(params))
+          const folder = folderParam(params, roots, openFolders)
+          const result = await applications.launch(appIdParam(params), folder ? { folder } : undefined)
           return envelope(id, { result })
         }
         case 'window.list': {
@@ -603,17 +696,29 @@ function createHandler(options: AgentOptions): (req: IncomingMessage, res: Serve
   }
 
   return (req, res) => {
-    const setCors = (): void => {
-      for (const [k, v] of Object.entries(CORS_HEADERS)) res.setHeader(k, v)
+    const origin = typeof req.headers.origin === 'string' ? req.headers.origin : undefined
+    const setCors = (): boolean => {
+      if (!isOriginAllowed(origin, allowedOrigins)) {
+        // Never issue a permissive CORS header for a blocked origin — the
+        // browser must not learn anything about the agent's presence.
+        return false
+      }
+      res.setHeader('Access-Control-Allow-Origin', origin ?? '*')
+      res.setHeader('Access-Control-Allow-Methods', CORS_METHODS)
+      res.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type')
+      return true
     }
 
+    if (!setCors()) {
+      res.writeHead(403, { 'content-type': 'application/json' })
+      res.end(JSON.stringify(failure(null, 'origin_denied', 'Request origin is not allowed to reach the native agent.')))
+      return
+    }
     if (req.method === 'OPTIONS') {
-      setCors()
       res.writeHead(204)
       res.end()
       return
     }
-    setCors()
 
     if (req.method !== 'POST') {
       res.writeHead(405, { 'content-type': 'application/json' })

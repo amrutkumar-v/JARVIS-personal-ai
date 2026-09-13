@@ -45,3 +45,6 @@ export type {
 } from './types'
 export { VoiceManager } from './voiceManager'
 export type { VoiceManagerCallbacks, VoiceManagerOptions } from './voiceManager'
+export { VoiceDiagnostics, assessVoiceHealth } from './diagnostics'
+export type { VoiceCounterName, VoiceDiagnosticsSnapshot, VoiceHealthReport } from './diagnostics'
+export { BrowserVoiceOutput, BrowserVoiceOutputOptions } from './VoiceOutput'

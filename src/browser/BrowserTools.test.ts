@@ -85,6 +85,15 @@ describe('Browser tools metadata', () => {
     expect(tool.verifiable).toBe(true)
   })
 
+  it('state-changing navigation tools are verifiable (actual page state)', () => {
+    const provider = createMockBrowserProvider()
+    for (const T of [BrowserOpenTool, BrowserNavigateTool, BrowserBackTool, BrowserForwardTool, BrowserRefreshTool, BrowserClickTool, BrowserCloseTool]) {
+      const tool = new T(provider)
+      expect(tool.verifiable).toBe(true)
+      expect(typeof tool.verify).toBe('function')
+    }
+  })
+
   it('close is low_risk', () => {
     const tool = new BrowserCloseTool(createMockBrowserProvider())
     expect(tool.permission).toBe('low_risk')
@@ -221,6 +230,101 @@ describe('Browser tool execution', () => {
     const result = await tool.execute({ query: 'go to example.com', params: { url: 'https://example.com' } }, { requestId: 'test' })
     expect(result.ok).toBe(false)
     expect(result.message).toContain('Navigation timeout')
+  })
+})
+
+describe('Browser tool verification (actual page state, not handler claims)', () => {
+  let provider: BrowserProvider
+
+  beforeEach(() => {
+    provider = createMockBrowserProvider()
+  })
+
+  it('navigate verifies when the LIVE page confirms the requested URL', async () => {
+    provider = createMockBrowserProvider({
+      readPage: vi.fn().mockResolvedValue({ success: true, title: 'Example', url: 'https://example.com', text: 'Hi' }),
+    })
+    const tool = new BrowserNavigateTool(provider)
+    const v = await tool.verify!({ query: 'go', params: { url: 'https://example.com' } }, {} as never, { requestId: 'v' })
+    expect(v.ok).toBe(true)
+    expect(v.checks).toContain('url_matches_requested')
+  })
+
+  it('navigate refutes when the actual URL differs from the requested one', async () => {
+    provider = createMockBrowserProvider({
+      navigate: vi.fn().mockResolvedValue({ success: true, url: 'https://evil.example', title: 'Evil', verified: true }),
+      readPage: vi.fn().mockResolvedValue({ success: true, title: 'Evil', url: 'https://evil.example', text: '' }),
+    })
+    const tool = new BrowserNavigateTool(provider)
+    const v = await tool.verify!({ query: 'go', params: { url: 'https://example.com' } }, {} as never, { requestId: 'v' })
+    expect(v.ok).toBe(false)
+  })
+
+  it('navigate degrades to not-confirmed (never verified) when the page is unreachable', async () => {
+    provider = createMockBrowserProvider({
+      readPage: vi.fn().mockResolvedValue({ success: false, title: '', url: '', text: '' }),
+    })
+    const tool = new BrowserNavigateTool(provider)
+    const v = await tool.verify!({ query: 'go', params: { url: 'https://example.com' } }, {} as never, { requestId: 'v' })
+    expect(v.ok).toBe(false)
+    expect(v.message).toMatch(/could not be reached/i)
+  })
+
+  it('open verifies via the actual page when no URL was requested', async () => {
+    const tool = new BrowserOpenTool(provider)
+    const v = await tool.verify!({ query: 'open browser', params: {} }, {} as never, { requestId: 'v' })
+    expect(v.ok).toBe(true)
+    expect(v.message).toContain('confirmed open')
+  })
+
+  it('open refutes when the requested URL did not land', async () => {
+    const tool = new BrowserOpenTool(provider)
+    const v = await tool.verify!({ query: 'open', params: { url: 'https://wanted.com' } }, {} as never, { requestId: 'v' })
+    expect(v.ok).toBe(false)
+    expect(v.message).toContain('not the requested')
+  })
+
+  it('back/forward/refresh confirm through a live reachable page', async () => {
+    const back = await new BrowserBackTool(provider).verify!({ query: '', params: {} }, {} as never, { requestId: 'v' })
+    const forward = await new BrowserForwardTool(provider).verify!({ query: '', params: {} }, {} as never, { requestId: 'v' })
+    const refresh = await new BrowserRefreshTool(provider).verify!({ query: '', params: {} }, {} as never, { requestId: 'v' })
+    expect(back.ok).toBe(true)
+    expect(forward.ok).toBe(true)
+    expect(refresh.ok).toBe(true)
+    expect(provider.readPage).toHaveBeenCalled()
+  })
+
+  it('click confirms the session survived the click', async () => {
+    const tool = new BrowserClickTool(provider)
+    const v = await tool.verify!({ query: 'click', params: {} }, {} as never, { requestId: 'v' })
+    expect(v.ok).toBe(true)
+  })
+
+  it('type confirms the page stayed live after typing', async () => {
+    const tool = new BrowserTypeTool(provider)
+    const v = await tool.verify!({ query: 'type', params: {} }, {} as never, { requestId: 'v' })
+    expect(v.ok).toBe(true)
+  })
+
+  it('close verifies when the provider reports unavailable after closing', async () => {
+    provider = createMockBrowserProvider({
+      capabilities: () => ({
+        available: false,
+        reason: 'browser closed',
+        ops: { open: false, navigate: false, back: false, forward: false, refresh: false, click: false, type: false, readPage: false, search: false, screenshot: false, close: false },
+      }),
+    })
+    const tool = new BrowserCloseTool(provider)
+    const v = await tool.verify!({ query: 'close', params: {} }, {} as never, { requestId: 'v' })
+    expect(v.ok).toBe(true)
+    expect(v.message).toContain('confirmed closed')
+  })
+
+  it('close refutes when the browser is still reachable', async () => {
+    const tool = new BrowserCloseTool(provider)
+    const v = await tool.verify!({ query: 'close', params: {} }, {} as never, { requestId: 'v' })
+    expect(v.ok).toBe(false)
+    expect(v.message).toMatch(/still reachable/i)
   })
 })
 

@@ -9,10 +9,13 @@
  *   POST /api/device/claim          — PAIRED device claims a trusted identity
  *   POST /api/device/heartbeat      — trusted device liveness + telemetry
  *   POST /api/device/notify         — notify 'all' or one trusted device
+ *   POST /api/device/open-url       — ask an online trusted device to open a URL
  *   POST /api/device/file           — upload a bounded, optionally targeted file
  *   GET  /api/files|/api/files/:id  — list / download transferred files
  *   POST /api/inbound               — device → laptop text
  *   POST /api/assistant/state       — browser assistant runtime mirror
+ *   POST /api/ai/chat/completions   — server-side AI chat proxy (key stays on server)
+ *   POST /api/ai/embeddings         — server-side semantic-embedding proxy
  *   POST /api/wake                  — browser wake registry events
  *   GET  /                          — built SPA (when present)
  *   GET  /phone                     — companion device page
@@ -36,6 +39,7 @@ import type { DeviceRegistry } from './registry.js'
 import type { FileStore } from './files.js'
 import type { NativeStatus } from './native.js'
 import type { BackendHealth, InboundMessage, WakeState } from './types.js'
+import { AI_PROXY_SUBPATHS, proxyAiRequest, type AiProxyOptions, type AiProxySubpath } from './ai.js'
 
 const CORS_HEADERS: Record<string, string> = {
   'Access-Control-Allow-Origin': '*',
@@ -48,6 +52,7 @@ const MAX_BODY_BYTES = 48 * 1024 * 1024
 const TITLE_LIMIT = 120
 const MESSAGE_LIMIT = 2000
 const TEXT_LIMIT = 2000
+const URL_LIMIT = 2048
 const MAX_LIST_ITEMS = 40
 
 export interface RuntimeContext {
@@ -79,6 +84,8 @@ export interface HttpServerOptions {
   publicDir?: string
   /** Optional bearer token protecting POST endpoints. */
   token?: string
+  /** Optional server-side AI proxy configuration (JARVIS_AI_BASE_URL). */
+  ai?: AiProxyOptions
   log?: Logger
 }
 
@@ -115,7 +122,7 @@ function isAuthorized(token: string | undefined, req: IncomingMessage): boolean 
   return diff === 0
 }
 
-async function readJsonBody(req: IncomingMessage, maxBytes = MAX_BODY_BYTES): Promise<unknown> {
+async function readRawBody(req: IncomingMessage, maxBytes = MAX_BODY_BYTES): Promise<Buffer> {
   const chunks: Buffer[] = []
   let size = 0
   for await (const chunk of req) {
@@ -126,7 +133,11 @@ async function readJsonBody(req: IncomingMessage, maxBytes = MAX_BODY_BYTES): Pr
     }
     chunks.push(buf)
   }
-  const text = Buffer.concat(chunks).toString('utf8')
+  return Buffer.concat(chunks)
+}
+
+async function readJsonBody(req: IncomingMessage, maxBytes = MAX_BODY_BYTES): Promise<unknown> {
+  const text = (await readRawBody(req, maxBytes)).toString('utf8')
   if (!text.trim()) return {}
   return JSON.parse(text) as unknown
 }
@@ -229,6 +240,44 @@ export async function startHttpServer(options: HttpServerOptions): Promise<Runni
       if (req.method === 'POST' && pathname.startsWith('/api/')) {
         if (!isAuthorized(options.token, req)) {
           json(res, 401, { ok: false, error: 'unauthorized' })
+          return
+        }
+      }
+
+      /* ------------------------------- AI proxy (server-side key) ---------- */
+      // The browser cannot hold the AI key, so production routes /api/ai/* to a
+      // server-side proxy that injects JARVIS_API_KEY. Only two allow-listed
+      // OpenAI-compatible subpaths exist (chat + embeddings); when the proxy is
+      // configured the upstream status/body is passed through verbatim so the
+      // client reports failures honestly. Never logs the body or the key.
+      if (req.method === 'POST' && (pathname === '/api/ai' || pathname.startsWith('/api/ai/'))) {
+        if (!options.ai?.baseUrl) {
+          json(res, 503, { ok: false, error: 'ai_not_configured' })
+          return
+        }
+        const subpath: AiProxySubpath | '' = pathname === '/api/ai' ? '' : (`/${pathname.slice('/api/ai/'.length)}` as AiProxySubpath | '')
+        if (!(AI_PROXY_SUBPATHS as readonly string[]).includes(subpath)) {
+          json(res, 404, { ok: false, error: 'not_found' })
+          return
+        }
+        let body: Buffer
+        try {
+          body = await readRawBody(req)
+        } catch {
+          json(res, 413, { ok: false, error: 'body_too_large' })
+          return
+        }
+        try {
+          const result = await proxyAiRequest(options.ai, subpath as AiProxySubpath, body)
+          res.writeHead(result.status, { 'content-type': result.contentType, ...CORS_HEADERS })
+          res.end(result.body)
+          return
+        } catch (error) {
+          if (error instanceof Error && error.name === 'AbortError') {
+            json(res, 504, { ok: false, error: 'ai_upstream_timeout' })
+            return
+          }
+          json(res, 502, { ok: false, error: 'ai_upstream_unreachable' })
           return
         }
       }
@@ -373,6 +422,45 @@ export async function startHttpServer(options: HttpServerOptions): Promise<Runni
           })
         }
         json(res, 200, { ok: true, delivered: true, deliveredTo })
+        return
+      }
+
+      /* ------------------------------- open URL on a device --------------- */
+      if (req.method === 'POST' && pathname === '/api/device/open-url') {
+        const body = asRecord(await readJsonBody(req))
+        const deviceId = typeof body.deviceId === 'string' && body.deviceId.trim() ? body.deviceId.trim().toLowerCase() : ''
+        const rawUrl = stringSlice(body.url, URL_LIMIT)
+        if (!deviceId) {
+          json(res, 400, { ok: false, error: 'deviceId is required' })
+          return
+        }
+        if (!ctx.registry.isTrusted(deviceId)) {
+          json(res, 400, { ok: false, error: 'invalid_target', reason: `"${deviceId}" is not a trusted device id.` })
+          return
+        }
+        let url: URL
+        try {
+          url = new URL(rawUrl ?? '')
+        } catch {
+          json(res, 400, { ok: false, error: 'invalid_url', reason: 'The URL could not be parsed.' })
+          return
+        }
+        if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+          json(res, 400, { ok: false, error: 'invalid_url', reason: 'Only http/https URLs can be opened on a device.' })
+          return
+        }
+        const device = ctx.registry.get(deviceId)
+        if (!device?.online) {
+          json(res, 200, {
+            ok: false,
+            error: 'device_offline',
+            delivered: false,
+            reason: device ? `"${deviceId}" is offline right now, so the URL was not opened on it.` : 'device not found',
+          })
+          return
+        }
+        ctx.bus.publish({ type: 'open-url', at: ctx.now(), data: { deviceId, deviceName: device.name, url: url.toString(), at: ctx.now() } })
+        json(res, 200, { ok: true, delivered: true, deliveredTo: [deviceId] })
         return
       }
 

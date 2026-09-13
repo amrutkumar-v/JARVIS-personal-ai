@@ -1,5 +1,6 @@
 import type { EmbeddingProvider, ProviderHealth } from './embeddings'
 import { defaultDeterministicProvider } from './deterministicEmbeddingProvider'
+import { openAIEmbeddingProvider, isEmbeddingEndpointExplicitlyConfigured } from './openaiEmbeddingProvider'
 import { findMostSimilar } from './vectorSimilarity'
 
 /**
@@ -15,10 +16,15 @@ import { findMostSimilar } from './vectorSimilarity'
  *
  * The manager is provider-agnostic: it interacts only with the
  * `EmbeddingProvider` interface. Core code never contains vendor-specific
- * logic. A provider is injected explicitly or defaults to the deterministic
- * (test/development) provider. Config-validation errors, missing credentials,
- * and provider failures must never crash JARVIS — callers can fall back to
- * lexical retrieval, and the deterministic provider is always available.
+ * logic. The default provider is resolved deterministically:
+ *
+ *   - a REAL embeddings endpoint (explicit `VITE_JARVIS_EMBEDDING_*`
+ *     configuration) promotes the `OpenAIEmbeddingProvider`;
+ *   - otherwise the deterministic (test/development) provider stands in.
+ *
+ * Config-validation errors, missing credentials, and provider failures must
+ * never crash JARVIS — callers can fall back to lexical retrieval, and the
+ * deterministic provider is always available.
  */
 
 export interface EmbeddingManagerConfig {
@@ -62,6 +68,21 @@ const DEFAULT_RETRY_DELAY_MS = 200
 const DEFAULT_DEDUPLICATION_THRESHOLD = 0.95
 const HEALTH_CACHE_TTL_MS = 30_000
 
+/**
+ * Deterministic default provider selection.
+ *
+ * A REAL provider wins when semantic embedding configuration is EXPLICITLY
+ * declared (proxy/base URL/model/dimensions) — a chat-only AI endpoint is
+ * never silently promoted to "real semantic memory". Otherwise the clearly-
+ * labelled deterministic provider is used (development/tests/offline).
+ */
+export function resolveDefaultEmbeddingProvider(): EmbeddingProvider {
+  if (isEmbeddingEndpointExplicitlyConfigured()) {
+    return openAIEmbeddingProvider.isConfigured() ? openAIEmbeddingProvider : defaultDeterministicProvider
+  }
+  return defaultDeterministicProvider
+}
+
 export class EmbeddingManager {
   private provider: EmbeddingProvider
   private skipEmbeddings: boolean
@@ -73,11 +94,12 @@ export class EmbeddingManager {
   private healthCacheExpiry = 0
 
   constructor(config: EmbeddingManagerConfig = {}) {
-    // Default to the deterministic provider synchronously so that
-    // `isEnabled()`/`generateEmbedding()` are immediately usable after
-    // construction. Real providers are injected via config or setProvider(),
-    // keeping the core provider-agnostic.
-    this.provider = config.provider ?? defaultDeterministicProvider
+    // Default resolves deterministically: a real embeddings provider when the
+    // endpoint is explicitly configured, otherwise the deterministic provider.
+    // This keeps `isEnabled()`/`generateEmbedding()` immediately usable after
+    // construction. Real providers are also injectable via config or
+    // setProvider(), keeping the core provider-agnostic.
+    this.provider = config.provider ?? resolveDefaultEmbeddingProvider()
     this.skipEmbeddings = config.skipEmbeddings ?? false
     this.batchSize = Math.max(1, config.batchSize ?? DEFAULT_BATCH_SIZE)
     this.maxRetries = Math.max(0, config.maxRetries ?? DEFAULT_MAX_RETRIES)
