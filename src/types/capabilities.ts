@@ -3,6 +3,10 @@ export interface Capabilities {
   aiConnected: boolean
   /** A configured REAL AI provider is dialled in (mock provider ≠ AI). */
   aiConfigured: boolean
+  /** Detailed AI connection status (CONNECTED, MISCONFIGURED, AUTHENTICATION_FAILED, etc.) */
+  aiStatus?: 'CONNECTED' | 'MISCONFIGURED' | 'AUTHENTICATION_FAILED' | 'MODEL_UNAVAILABLE' | 'NETWORK_ERROR' | 'RATE_LIMITED' | 'DISCONNECTED'
+  /** Detailed message accompanying the status */
+  aiStatusMessage?: string
   /** Real speech recognition surface is available. */
   speechRecognitionAvailable: boolean
   /** Real speech synthesis surface is available. */

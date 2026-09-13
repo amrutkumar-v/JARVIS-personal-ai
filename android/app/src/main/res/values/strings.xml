@@ -1,0 +1,7 @@
+<resources>
+    <string name="app_name">JARVIS Companion</string>
+    <string name="connect_btn">Connect to JARVIS</string>
+    <string name="status_connected">Connected to JARVIS Core</string>
+    <string name="status_disconnected">Disconnected</string>
+    <string name="permissions_granted">All telephony &amp; contact permissions active</string>
+</resources>

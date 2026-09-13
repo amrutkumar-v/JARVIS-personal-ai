@@ -188,6 +188,8 @@ export interface ActivityEntry {
 const DEFAULT_CAPABILITIES: Capabilities = {
   aiConnected: false,
   aiConfigured: false,
+  aiStatus: 'DISCONNECTED',
+  aiStatusMessage: '',
   speechRecognitionAvailable: false,
   speechSynthesisAvailable: false,
   wakeWordAvailable: false,

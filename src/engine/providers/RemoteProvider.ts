@@ -117,7 +117,12 @@ function parseToolCalls(data: unknown): AIResponse['toolRequests'] {
 
 export class RemoteProvider implements AIProvider {
   readonly id = REMOTE_PROVIDER_ID
-  readonly label = 'Remote LLM'
+
+  get label(): string {
+    const cfg = getAiConfig()
+    if (cfg.model?.includes('gemini')) return `Gemini (${cfg.model})`
+    return cfg.model ? `Remote (${cfg.model})` : 'Remote LLM'
+  }
 
   isConfigured(): boolean {
     try {
@@ -132,10 +137,22 @@ export class RemoteProvider implements AIProvider {
     try {
       const cfg = resolveRemoteConfig()
       if (!cfg.baseUrl || !cfg.model) return false
+      const targetUrl = cfg.proxyMode ? `${cfg.baseUrl.replace(/\/+$/, '')}/health` : cfg.baseUrl
       const controller = new AbortController()
       const timer = setTimeout(() => controller.abort(), 8000)
       try {
-        const res = await fetch(cfg.baseUrl, { method: 'GET', signal: controller.signal })
+        const res = await fetch(targetUrl, { method: 'GET', signal: controller.signal })
+        if (res.ok) {
+          if (cfg.proxyMode) {
+            try {
+              const data = (await res.json()) as { status?: string }
+              return data.status === 'CONNECTED'
+            } catch {
+              return true
+            }
+          }
+          return true
+        }
         return res.status < 500
       } finally {
         clearTimeout(timer)

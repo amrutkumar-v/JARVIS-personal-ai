@@ -413,7 +413,17 @@ export function SettingsPanel({ open, onClose, providerLabel, modelLabel, endpoi
   }
 
   const capRows: Array<{ label: string; value: string; tone: 'on' | 'off' | 'dev' | 'planned' }> = [
-    { label: 'AI engine', value: caps.aiConnected ? providerLabel : caps.aiConfigured ? 'configured — unreachable' : 'none', tone: caps.aiConnected ? 'on' : 'dev' },
+    {
+      label: 'AI engine',
+      value: caps.aiConnected
+        ? `${providerLabel} (connected)`
+        : caps.aiStatus && caps.aiStatus !== 'DISCONNECTED'
+        ? `${caps.aiStatus.toLowerCase().replace(/_/g, ' ')}`
+        : caps.aiConfigured
+        ? 'configured — unreachable'
+        : 'none',
+      tone: caps.aiConnected ? 'on' : caps.aiConfigured ? 'dev' : 'off',
+    },
     { label: 'Model', value: modelLabel ?? '—', tone: modelLabel ? 'on' : 'off' },
     { label: 'Endpoint', value: endpointLabel ?? '—', tone: endpointLabel ? 'on' : 'off' },
     { label: 'Speech input', value: caps.speechRecognitionAvailable ? 'available' : 'unavailable', tone: caps.speechRecognitionAvailable ? 'on' : 'off' },
@@ -608,10 +618,12 @@ export function SettingsPanel({ open, onClose, providerLabel, modelLabel, endpoi
         <p className="settings-note">
           AI provider: {providerLabel}.
           {caps.aiConnected
-            ? ' Connected to a real AI endpoint.'
-            : caps.aiConfigured
-              ? ' Configured — the endpoint is currently unreachable, so execution is honestly limited.'
-              : ' Development mode: the clearly-labelled mock provider is active because no real AI configuration was found.'}
+            ? ` Connected to real AI endpoint (${caps.aiStatus || 'CONNECTED'}).`
+            : caps.aiStatus && caps.aiStatus !== 'DISCONNECTED'
+              ? ` AI status: ${caps.aiStatus.replace(/_/g, ' ')}${caps.aiStatusMessage ? ` (${caps.aiStatusMessage})` : ''}.`
+              : caps.aiConfigured
+                ? ' Configured — the endpoint is currently unreachable, so execution is honestly limited.'
+                : ' Development mode: the clearly-labelled mock provider is active because no real AI configuration was found.'}
           {' '}No keys are stored in this frontend.
           {!caps.visionAvailable
             ? ' Visual semantic understanding is unavailable until a real VisionProvider is configured.'

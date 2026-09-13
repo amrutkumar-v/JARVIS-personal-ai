@@ -78,6 +78,7 @@ import { understandRequest, type RequestClass } from './orchestrator/goalUnderst
 import { extractEntitiesFromResult, TaskContextStore } from './orchestrator/taskContext'
 import { PersonalAICore } from './orchestrator/orchestrator'
 import { planRequest } from './orchestrator/planner'
+import { checkAiHealth } from '../config/ai'
 import { planPostActionObservation } from './orchestrator/postActionVerify'
 import { applyResolutionToStepMeta } from './orchestrator/phase6/enrich'
 import type { Phase6StepMeta } from './orchestrator/phase6/planTypes'
@@ -1673,8 +1674,30 @@ export class AssistantEngine {
       })),
     })
 
-    const reachable = await this.provider.isReachable()
-    useJarvisStore.getState().setCapabilities({ aiConnected: reachable && this.provider.id !== 'mock' })
+    let reachable = false
+    let healthStatus: 'CONNECTED' | 'MISCONFIGURED' | 'AUTHENTICATION_FAILED' | 'MODEL_UNAVAILABLE' | 'NETWORK_ERROR' | 'RATE_LIMITED' | 'DISCONNECTED' = 'DISCONNECTED'
+    let healthMessage = ''
+
+    if (this.provider.id !== 'mock') {
+      try {
+        const health = await checkAiHealth()
+        healthStatus = health.status
+        healthMessage = health.message || ''
+        reachable = health.status === 'CONNECTED'
+      } catch {
+        reachable = await this.provider.isReachable()
+        healthStatus = reachable ? 'CONNECTED' : 'NETWORK_ERROR'
+      }
+    } else {
+      healthStatus = 'MISCONFIGURED'
+      healthMessage = 'Development mock provider active.'
+    }
+
+    useJarvisStore.getState().setCapabilities({
+      aiConnected: reachable && this.provider.id !== 'mock',
+      aiStatus: healthStatus,
+      aiStatusMessage: healthMessage,
+    })
     this.emit({ type: 'status', status: 'idle' })
 
     if (this.provider.id === 'mock') {
@@ -1686,10 +1709,21 @@ export class AssistantEngine {
       return
     }
     if (!reachable) {
+      const specificNotice =
+        healthStatus === 'AUTHENTICATION_FAILED'
+          ? 'AI service authentication failed: The API key was rejected by the upstream service.'
+          : healthStatus === 'MODEL_UNAVAILABLE'
+          ? `AI model unavailable: The configured model is not supported upstream.`
+          : healthStatus === 'RATE_LIMITED'
+          ? 'AI service rate limit reached upstream. Please wait a moment.'
+          : healthStatus === 'MISCONFIGURED'
+          ? 'AI service misconfigured: Server environment credentials missing or invalid.'
+          : 'AI service unreachable right now. I can still try local tools.'
+
       this.emit({
         type: 'notice',
         kind: 'warning',
-        text: 'AI service unreachable right now. I can still try local tools.',
+        text: specificNotice,
       })
     }
   }

@@ -63,8 +63,8 @@ const DOMAINS: readonly DomainDef[] = [
   },
   {
     domain: 'communication',
-    verbs: ['send', 'message', 'text', 'email', 'mail', 'call', 'phone', 'whatsapp', 'slack', 'discord', 'telegram', 'notify', 'tweet', 'post to'],
-    capabilityKeywords: ['message', 'communication', 'email', 'notification', 'call'],
+    verbs: ['send', 'message', 'text', 'sms', 'email', 'mail', 'call', 'phone', 'dial', 'ring', 'hang up', 'answer', 'reject call', 'end call', 'whatsapp', 'slack', 'discord', 'telegram', 'notify', 'tweet', 'post to'],
+    capabilityKeywords: ['message', 'communication', 'email', 'notification', 'call', 'phone', 'sms', 'contact', 'telephony'],
   },
   {
     domain: 'media',

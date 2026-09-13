@@ -21,6 +21,23 @@
 
 export type AiTransport = 'proxy' | 'direct' | 'none'
 
+export type AiConnectionStatus =
+  | 'CONNECTED'
+  | 'MISCONFIGURED'
+  | 'AUTHENTICATION_FAILED'
+  | 'MODEL_UNAVAILABLE'
+  | 'NETWORK_ERROR'
+  | 'RATE_LIMITED'
+  | 'DISCONNECTED'
+
+export interface AiHealthCheckResult {
+  status: AiConnectionStatus
+  code: AiConnectionStatus
+  message?: string
+  model?: string
+  upstream?: string
+}
+
 export interface AiConfig {
   /** Configured provider id ('remote') or 'mock' when none is set up. */
   providerId: string
@@ -48,11 +65,10 @@ function readConfig(): AiConfig {
   let temperature = Number(envString('VITE_JARVIS_AI_TEMPERATURE'))
   if (!Number.isFinite(temperature)) temperature = 0.7
   let maxTokens = Number(envString('VITE_JARVIS_AI_MAX_TOKENS'))
-  if (!Number.isFinite(maxTokens) || maxTokens <= 0) maxTokens = 1024
+  if (!Number.isFinite(maxTokens) || maxTokens <= 0) maxTokens = 2048
 
   const apiKeyEnv = 'JARVIS_API_KEY'
   const transport: AiTransport = proxyUrl ? 'proxy' : baseUrl ? 'direct' : 'none'
-  // An endpoint alone is not enough — a model name must also be declared.
   const configured = transport !== 'none' && Boolean(model)
 
   return {
@@ -64,6 +80,33 @@ function readConfig(): AiConfig {
     apiKeyEnv,
     temperature,
     maxTokens,
+  }
+}
+
+/** Check upstream AI health and distinguish connection status */
+export async function checkAiHealth(): Promise<AiHealthCheckResult> {
+  const cfg = getAiConfig()
+  const healthEndpoint =
+    cfg.transport === 'proxy' && cfg.proxyUrl
+      ? `${cfg.proxyUrl.replace(/\/+$/, '')}/health`
+      : '/api/ai/health'
+  try {
+    const res = await fetch(healthEndpoint, { method: 'GET' })
+    if (res.ok) {
+      const data = (await res.json()) as AiHealthCheckResult
+      return data
+    }
+    return {
+      status: 'DISCONNECTED',
+      code: 'DISCONNECTED',
+      message: `Health check endpoint returned status ${res.status}.`,
+    }
+  } catch (err: unknown) {
+    return {
+      status: 'NETWORK_ERROR',
+      code: 'NETWORK_ERROR',
+      message: err instanceof Error ? err.message : 'Cannot reach AI health endpoint.',
+    }
   }
 }
 

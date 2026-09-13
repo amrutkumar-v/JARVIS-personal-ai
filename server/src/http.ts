@@ -250,12 +250,30 @@ export async function startHttpServer(options: HttpServerOptions): Promise<Runni
       // OpenAI-compatible subpaths exist (chat + embeddings); when the proxy is
       // configured the upstream status/body is passed through verbatim so the
       // client reports failures honestly. Never logs the body or the key.
-      if (req.method === 'POST' && (pathname === '/api/ai' || pathname.startsWith('/api/ai/'))) {
-        if (!options.ai?.baseUrl) {
+      if (pathname === '/api/ai' || pathname.startsWith('/api/ai/')) {
+        const subpath: AiProxySubpath | '' = pathname === '/api/ai' ? '' : (`/${pathname.slice('/api/ai/'.length)}` as AiProxySubpath | '')
+        if (subpath === '/health') {
+          const aiOpts = options.ai || {
+            baseUrl: process.env.GEMINI_API_KEY ? 'https://generativelanguage.googleapis.com/v1beta/openai' : '',
+            key: process.env.GEMINI_API_KEY || '',
+            timeoutMs: 10000,
+          }
+          const result = await proxyAiRequest(aiOpts, '/health')
+          res.writeHead(result.status, { 'content-type': result.contentType, ...CORS_HEADERS })
+          res.end(result.body)
+          return
+        }
+
+        if (req.method !== 'POST') {
+          json(res, 405, { ok: false, error: 'method_not_allowed' })
+          return
+        }
+
+        const effectiveBase = options.ai?.baseUrl || (process.env.GEMINI_API_KEY ? 'https://generativelanguage.googleapis.com/v1beta/openai' : '')
+        if (!effectiveBase) {
           json(res, 503, { ok: false, error: 'ai_not_configured' })
           return
         }
-        const subpath: AiProxySubpath | '' = pathname === '/api/ai' ? '' : (`/${pathname.slice('/api/ai/'.length)}` as AiProxySubpath | '')
         if (!(AI_PROXY_SUBPATHS as readonly string[]).includes(subpath)) {
           json(res, 404, { ok: false, error: 'not_found' })
           return
@@ -268,7 +286,12 @@ export async function startHttpServer(options: HttpServerOptions): Promise<Runni
           return
         }
         try {
-          const result = await proxyAiRequest(options.ai, subpath as AiProxySubpath, body)
+          const aiOpts = options.ai || {
+            baseUrl: effectiveBase,
+            key: process.env.GEMINI_API_KEY || '',
+            timeoutMs: 45000,
+          }
+          const result = await proxyAiRequest(aiOpts, subpath as AiProxySubpath, body)
           res.writeHead(result.status, { 'content-type': result.contentType, ...CORS_HEADERS })
           res.end(result.body)
           return
