@@ -16,13 +16,12 @@ import { defineConfig, loadEnv, type Plugin, type ProxyOptions } from 'vite'
 // scripts and an HMR websocket, which a strict policy would break.
 const CSP_HEADERS = [
   "default-src 'self'",
-  "script-src 'self'",
-  "style-src 'self' 'unsafe-inline'",
-  "font-src 'self' https://fonts.gstatic.com",
+  "script-src 'self' 'unsafe-inline' 'unsafe-eval'",
+  "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+  "font-src 'self' https://fonts.gstatic.com data:",
   "img-src 'self' data: blob:",
   "media-src 'self' data: blob:",
-  "connect-src 'self' http://127.0.0.1:* ws://127.0.0.1:* http://localhost:* ws://localhost:* http://192.168.*",
-  "frame-ancestors 'none'",
+  "connect-src 'self' https: http: ws: wss: data: blob:",
   "base-uri 'none'",
   "form-action 'self'",
 ].join('; ')
@@ -76,6 +75,11 @@ export default defineConfig(({ mode }) => {
       target: 'es2022',
       sourcemap: false,
     },
-    server: { proxy },
+    server: {
+      host: '0.0.0.0',
+      port: 3000,
+      allowedHosts: true,
+      proxy,
+    },
   }
 })

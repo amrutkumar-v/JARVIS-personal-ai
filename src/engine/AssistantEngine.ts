@@ -4204,6 +4204,11 @@ export class AssistantEngine {
       case 'next_environment':
       case 'previous_environment':
         return 'switch to'
+      case 'set_theme':
+      case 'next_theme':
+        return 'set theme to'
+      default:
+        return 'interact with'
     }
   }
 

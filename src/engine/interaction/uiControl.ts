@@ -263,10 +263,10 @@ function detectEnvironmentIntent(text: string): UiControlIntent | undefined {
   const normalized = normalizeRequest(text)
 
   if (NEXT_ENV.test(normalized)) {
-    return { kind: 'next_environment', panelKnown: true, environmentKnown: true, raw: text }
+    return { kind: 'next_environment', panelKnown: true, environmentKnown: true, themeKnown: true, raw: text }
   }
   if (PREV_ENV.test(normalized)) {
-    return { kind: 'previous_environment', panelKnown: true, environmentKnown: true, raw: text }
+    return { kind: 'previous_environment', panelKnown: true, environmentKnown: true, themeKnown: true, raw: text }
   }
 
   // "switch to X", "go into X", "change to X" …
@@ -280,12 +280,13 @@ function detectEnvironmentIntent(text: string): UiControlIntent | undefined {
         environmentLabel: def?.label,
         environmentKnown: true,
         panelKnown: true,
+        themeKnown: true,
         raw: text,
       }
     }
     // Explicit environment wording with an unknown target: report honestly.
     if (/\b(?:environment|scene|station|mode)\b/.test(normalized)) {
-      return { kind: 'switch_environment', environmentKnown: false, panelKnown: true, raw: text }
+      return { kind: 'switch_environment', environmentKnown: false, panelKnown: true, themeKnown: true, raw: text }
     }
   }
 
@@ -299,6 +300,7 @@ function detectEnvironmentIntent(text: string): UiControlIntent | undefined {
       environmentLabel: def?.label,
       environmentKnown: true,
       panelKnown: true,
+      themeKnown: true,
       raw: text,
     }
   }
@@ -355,6 +357,7 @@ function detectPanelIntent(text: string): UiControlIntent | undefined {
       panelLabel: PANEL_BY_ID.get(hit.id)?.title,
       panelKnown: true,
       environmentKnown: true,
+      themeKnown: true,
       raw: text,
     }
   }
@@ -363,7 +366,7 @@ function detectPanelIntent(text: string): UiControlIntent | undefined {
   // that cannot be executed — surface it honestly instead of guessing.
   const rest = normalized.replace(/\b(?:open|launch|show|display|start|close|hide|dismiss|toggle|focus|please|me|us|the)\b/g, ' ').replace(/\s+/g, ' ').trim()
   if (rest.length > 0 && !/^what|^how|^who|^why|^do you/.test(normalized) && MODAL_SUFFIX.test(rest)) {
-    return { kind, panelKnown: false, environmentKnown: true, raw: text }
+    return { kind, panelKnown: false, environmentKnown: true, themeKnown: true, raw: text }
   }
 
   return undefined

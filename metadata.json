@@ -1,0 +1,11 @@
+{
+  "name": "JARVIS",
+  "description": "A personal AI assistant with voice interaction, 3D Arc Reactor, computer vision, and task automation.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
