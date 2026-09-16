@@ -10,6 +10,7 @@ import type {
 import type { ArchivedMemory, LifecycleReport } from '../../memory/lifecycle'
 import { episodeIdOf } from '../../memory/episodes'
 import type { Episode } from '../../memory/episodes'
+import { checkAiHealth, ROUTED_PROVIDER_IDS, type AiHealthCheckResult, type RoutedProviderId } from '../../config/ai'
 
 type MemoryAPI = {
   items: () => MemoryItem[]
@@ -387,6 +388,125 @@ function SchedulingSection() {
   )
 }
 
+function providerDisplayName(id: string): string {
+  switch (id) {
+    case 'gemini':
+      return 'Google Gemini'
+    case 'openai':
+      return 'OpenAI'
+    case 'anthropic':
+      return 'Anthropic Claude'
+    case 'openrouter':
+      return 'OpenRouter'
+    case 'local':
+      return 'Local (Ollama / LM Studio)'
+    case 'legacy':
+      return 'Custom / legacy endpoint'
+    case 'none':
+      return 'None'
+    default:
+      return id
+  }
+}
+
+function capabilityLabel(cap: string): string {
+  if (cap === 'reasoning') return 'chat'
+  return cap
+}
+
+/**
+ * AI Providers — read-only router status + a provider pin for chat/vision.
+ * Routing, keys and failover are strictly server-side; this panel never sees,
+ * stores or displays a key. The pin is persisted in preferences only.
+ */
+function AiProvidersSection({
+  open,
+  pinned,
+  onSelect,
+}: {
+  open: boolean
+  pinned: 'auto' | RoutedProviderId
+  onSelect: (pin: 'auto' | RoutedProviderId) => void
+}) {
+  const [health, setHealth] = useState<AiHealthCheckResult | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    checkAiHealth().then((h) => {
+      if (!cancelled) setHealth(h)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [open])
+
+  const tone = health
+    ? health.status === 'CONNECTED'
+      ? 'on'
+      : health.status === 'MISCONFIGURED'
+        ? 'off'
+        : 'dev'
+    : 'off'
+
+  return (
+    <section className="settings-block">
+      <h3>AI PROVIDERS</h3>
+      <div className="setting-row">
+        <span>Preferred provider</span>
+        <select
+          className="settings-select"
+          aria-label="Preferred AI provider"
+          value={pinned}
+          onChange={(e) => onSelect(e.target.value as 'auto' | RoutedProviderId)}
+        >
+          <option value="auto">Auto — server decides (with failover)</option>
+          {ROUTED_PROVIDER_IDS.map((id) => (
+            <option key={id} value={id}>
+              {providerDisplayName(id)}
+            </option>
+          ))}
+        </select>
+      </div>
+      {health ? (
+        <>
+          <div className="setting-row">
+            <span>Router status</span>
+            <span className="cap-value" data-tone={tone}>
+              {tone === 'on'
+                ? `CONNECTED — active: ${providerDisplayName(health.provider ?? '?')}`
+                : `${health.status.replace(/_/g, ' ')}${health.model ? ` · ${health.model}` : ''}`}
+            </span>
+          </div>
+          {health.message ? (
+            <p className="settings-note-inline">{health.message}</p>
+          ) : null}
+          {(health.providers?.length ?? 0) > 0 ? (
+            <ul className="cap-list">
+              {health.providers?.map((p) => (
+                <li key={p.id} className="cap-row">
+                  <span className="cap-label">{providerDisplayName(p.id)}</span>
+                  <span className="cap-value" data-tone={p.available ? 'on' : 'off'}>
+                    {health.provider === p.id ? '● ' : ''}
+                    {p.status}
+                    {p.model ? ` · ${p.model}` : ''}
+                    {p.capabilities?.length ? ` · ${p.capabilities.map(capabilityLabel).join(', ')}` : ''}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          ) : null}
+        </>
+      ) : (
+        <p className="settings-note-inline">Checking provider health…</p>
+      )}
+      <p className="settings-note-inline">
+        Provider routing, keys and failover are handled server-side. Pinning a provider sends it with each chat
+        request; no API key ever reaches this frontend.
+      </p>
+    </section>
+  )
+}
+
 export function SettingsPanel({ open, onClose, providerLabel, modelLabel, endpointLabel, memory, gesture }: Props) {
   const prefs = useJarvisStore.use.preferences()
   const caps = useJarvisStore.use.capabilities()
@@ -598,6 +718,16 @@ export function SettingsPanel({ open, onClose, providerLabel, modelLabel, endpoi
             <Switch checked={prefs.reducedMotion} onChange={(v) => savePrefs({ reducedMotion: v })} label="Reduced motion" />
           </div>
         </section>
+
+        <AiProvidersSection
+          open={open}
+          pinned={
+            prefs.providerId && (ROUTED_PROVIDER_IDS as readonly string[]).includes(prefs.providerId)
+              ? (prefs.providerId as RoutedProviderId)
+              : 'auto'
+          }
+          onSelect={(pin) => savePrefs({ providerId: pin === 'auto' ? 'mock' : pin })}
+        />
 
         {memory ? <MemorySection key={open ? 'open' : 'closed'} memory={memory} /> : null}
 

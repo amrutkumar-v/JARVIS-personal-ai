@@ -3,6 +3,8 @@ import { CanvasHost } from '../CanvasHost'
 import type { CanvasFrame } from '../CanvasHost'
 import { useThemeColors } from '../useThemeColors'
 import { deviceTier } from '../../utils/capabilities'
+import { useEnvironmentSnapshot } from '../useEnvironmentSnapshot'
+import { EnvironmentChrome } from '../EnvironmentChrome'
 
 /**
  * Phase 8 — Space environment.
@@ -63,6 +65,7 @@ export function SpaceScene() {
   const colorsRef = useThemeColors()
   const fieldRef = useRef<StarField | null>(null)
   const tier = useMemo(() => deviceTier(), [])
+  const snapshot = useEnvironmentSnapshot('space')
 
   const draw = useCallback((ctx: CanvasRenderingContext2D, frame: CanvasFrame) => {
     const { w, h, t, drive, pointerX, pointerY } = frame
@@ -140,7 +143,37 @@ export function SpaceScene() {
       ctx.stroke()
     }
     ctx.globalAlpha = 1
+
+    /* ---- Observatory reticle markings (subtle quadrant ticks) ---- */
+    ctx.strokeStyle = `hsla(${c.accentH} ${c.accentS}% ${c.accentL}% / 0.15)`
+    ctx.lineWidth = 1
+    const pad = 24
+    ctx.beginPath()
+    ctx.moveTo(pad, pad + 10)
+    ctx.lineTo(pad, pad)
+    ctx.lineTo(pad + 10, pad)
+    ctx.moveTo(w - pad, h - pad - 10)
+    ctx.lineTo(w - pad, h - pad)
+    ctx.lineTo(w - pad - 10, h - pad)
+    ctx.stroke()
   }, [colorsRef, tier])
 
-  return <CanvasHost draw={draw} className="space-scene" />
+  return (
+    <div className="space-scene">
+      <CanvasHost draw={draw} />
+      <EnvironmentChrome
+        moduleId="MOD-A4"
+        label="DEEP FIELD"
+        rows={[
+          { k: 'STARS', v: String(STAR_COUNT[tier] ?? 320) },
+          { k: 'EXEC', v: snapshot.statusLabel },
+          {
+            k: 'VOICE',
+            v: snapshot.voiceArmed ? 'ARMED' : 'STANDBY',
+            tone: snapshot.voiceArmed ? 'live' : undefined,
+          },
+        ]}
+      />
+    </div>
+  )
 }

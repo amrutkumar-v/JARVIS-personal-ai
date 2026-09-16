@@ -157,8 +157,8 @@ describe('AI proxy forwarder (unit)', () => {
     await expect(proxyAiRequest({ baseUrl: UPSTREAM_URL, key: UPSTREAM_KEY, timeoutMs: 1 }, '/chat/completions', Buffer.from('{}'))).rejects.toThrow(/abort|AbortError/i)
   })
 
-  it('only allows exactly the two allow-listed subpaths', () => {
-    expect(AI_PROXY_SUBPATHS).toEqual(['/chat/completions', '/embeddings'])
+  it('only allows exactly the allow-listed subpaths', () => {
+    expect(AI_PROXY_SUBPATHS).toEqual(['/chat/completions', '/embeddings', '/health'])
   })
 })
 

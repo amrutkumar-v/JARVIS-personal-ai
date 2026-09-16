@@ -13,9 +13,9 @@ import type { EnvironmentKind, VisualEnvironmentId } from './types'
 const ALL_KINDS: readonly EnvironmentKind[] = ['webgl', 'canvas', 'dom']
 
 describe('environment registry', () => {
-  it('exposes exactly the five canonical environments', () => {
+  it('exposes exactly the six canonical environments', () => {
     const ids = ENVIRONMENT_DEFINITIONS.map((d) => d.id)
-    expect(ids).toEqual(['arc', 'astra', 'control', 'space', 'tunnel'])
+    expect(ids).toEqual(['arc', 'astra', 'control', 'space', 'tunnel', 'neural'])
   })
 
   it('has globally unique ids with valid kinds', () => {
@@ -66,11 +66,13 @@ describe('environment stepping', () => {
     expect(stepEnvironment('astra', 1)).toBe('control')
     expect(stepEnvironment('control', 1)).toBe('space')
     expect(stepEnvironment('space', 1)).toBe('tunnel')
-    expect(stepEnvironment('tunnel', 1)).toBe('arc')
+    expect(stepEnvironment('tunnel', 1)).toBe('neural')
+    expect(stepEnvironment('neural', 1)).toBe('arc')
   })
 
   it('walks backward through the registry and wraps', () => {
-    expect(stepEnvironment('arc', -1)).toBe('tunnel')
+    expect(stepEnvironment('arc', -1)).toBe('neural')
+    expect(stepEnvironment('neural', -1)).toBe('tunnel')
     expect(stepEnvironment('tunnel', -1)).toBe('space')
     expect(stepEnvironment('space', -1)).toBe('control')
     expect(stepEnvironment('control', -1)).toBe('astra')

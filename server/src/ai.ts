@@ -58,7 +58,7 @@ export async function proxyAiRequest(
         JSON.stringify({
           status: 'MISCONFIGURED',
           code: 'MISCONFIGURED',
-          message: 'No AI API key or base URL configured.',
+          message: 'No AI base URL configured. Set JARVIS_AI_BASE_URL (or GEMINI_API_KEY for the default Gemini OpenAI-compatible endpoint) in the server environment and restart the backend.',
         }),
       )
       return { status: 200, contentType: 'application/json', body: resp }
@@ -72,14 +72,17 @@ export async function proxyAiRequest(
         JSON.stringify({
           status: 'MISCONFIGURED',
           code: 'MISCONFIGURED',
-          message: 'No AI API key found.',
+          message: 'No AI API key configured. Set JARVIS_API_KEY or GEMINI_API_KEY in the server environment and restart the backend.',
         }),
       )
       return { status: 200, contentType: 'application/json', body: resp }
     }
     const target = `${baseUrl.replace(/\/+$/, '')}/chat/completions`
     const controller = new AbortController()
-    const timer = setTimeout(() => controller.abort(), 6000)
+    // 15s, not 6s: a measured COLD TLS handshake to the Gemini endpoint takes
+    // ~6.5-10.4s, so a 6s budget aborted healthy connections and reported a
+    // FALSE NETWORK_ERROR. Warm calls still return in well under a second.
+    const timer = setTimeout(() => controller.abort(), 15000)
     try {
       const res = await fetch(target, {
         method: 'POST',

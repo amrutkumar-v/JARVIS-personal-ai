@@ -1,10 +1,12 @@
 import { useEffect } from 'react'
 import './App.css'
 import { useAssistant } from './hooks/useAssistant'
+import { useHudShortcuts } from './hooks/useHudShortcuts'
 import { JarvisShell } from './components/layout/JarvisShell'
 import { useJarvisStore } from './state/jarvis.store'
 import { ensureLayoutPersistence } from './panel/panelStore'
 import { EnvironmentHost } from './environment/EnvironmentHost'
+import { registerVoiceHandlers } from './interaction/controller'
 
 function App() {
   const assistant = useAssistant()
@@ -12,6 +14,24 @@ function App() {
   const demoMode = useJarvisStore.use.demoMode()
 
   useEffect(ensureLayoutPersistence, [])
+  useHudShortcuts()
+
+  // THE single voice-action route: UI dispatchInteraction() voice requests are
+  // routed to the REAL voice session layer through this registration. Nothing
+  // mutates the voice store directly.
+  useEffect(() => {
+    registerVoiceHandlers({
+      armWake: assistant.armWake,
+      disarmWake: assistant.disarmWake,
+      startListening: assistant.startListening,
+      stopListening: assistant.stopListening,
+    })
+  }, [
+    assistant.armWake,
+    assistant.disarmWake,
+    assistant.startListening,
+    assistant.stopListening,
+  ])
 
   return (
     <div className={`jarvis-app theme-${theme}${demoMode ? ' is-demo' : ''}`} data-theme={theme}>

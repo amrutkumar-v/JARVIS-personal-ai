@@ -64,6 +64,12 @@ export interface UserPreferences {
   volume: number
   animationIntensity: 'low' | 'medium' | 'high'
   reducedMotion: boolean
+  /**
+   * AI provider pin for the server-side router. 'mock' (default) means "server
+   * decides" (primary + fallback). One of the router's provider ids
+   * (gemini/openai/anthropic/openrouter/local) pins the chat/vision provider
+   * strictly via the `x-jarvis-provider` header — never a key.
+   */
   providerId: string
   /**
    * Phase 0.7 — opt-in automatic capture. When enabled, the engine runs a

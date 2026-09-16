@@ -27,6 +27,8 @@ export function ArcReactor() {
       <div className="arc-core" aria-hidden="true">
         <div className="arc-core-inner" />
       </div>
+      <div className="arc-ticks" aria-hidden="true" />
+      <div className="arc-reticle" aria-hidden="true" />
       <div className="arc-ring arc-ring-a" aria-hidden="true" />
       <div className="arc-ring arc-ring-b" aria-hidden="true" />
       <div className="arc-ring arc-ring-c" aria-hidden="true" />

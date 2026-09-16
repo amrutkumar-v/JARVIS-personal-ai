@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react'
 import { useJarvisStore } from '../state/jarvis.store'
 import { computeDrive } from '../environment/visualState'
+import { prefersReducedMotion } from '../utils/capabilities'
 import type { EnvironmentDrive } from './types'
 
 /**
@@ -50,6 +51,17 @@ export function CanvasHost({ draw, className }: CanvasHostProps) {
 
     let disposed = false
     let raf = 0
+    // OS-level motion preference, so the scenes slow down even when the user
+    // has not flipped the in-app toggle (the app toggle still wins as an AND).
+    let reducedMotion = prefersReducedMotion()
+    const motionMedia =
+      typeof window !== 'undefined'
+        ? window.matchMedia?.('(prefers-reduced-motion: reduce)') ?? null
+        : null
+    const onMotionChange = () => {
+      reducedMotion = motionMedia?.matches ?? false
+    }
+    motionMedia?.addEventListener?.('change', onMotionChange)
 
     const measure = () => {
       const rect = root.getBoundingClientRect()
@@ -91,7 +103,7 @@ export function CanvasHost({ draw, className }: CanvasHostProps) {
           s.isSpeaking,
           s.goalRun,
           s.backend.phase,
-          s.preferences.reducedMotion,
+          s.preferences.reducedMotion || reducedMotion,
           t,
         )
         drawRef.current(ctx, {
@@ -114,6 +126,7 @@ export function CanvasHost({ draw, className }: CanvasHostProps) {
       cancelAnimationFrame(raf)
       observer?.disconnect()
       window.removeEventListener('pointermove', onPointer)
+      motionMedia?.removeEventListener?.('change', onMotionChange)
     }
   }, [])
 

@@ -1,0 +1,26 @@
+#!/bin/sh
+#
+# JARVIS Companion Gradle wrapper launcher (POSIX). Requires a JDK 17+.
+#
+DIRNAME="$(dirname "$0")"
+APP_HOME="$DIRNAME"
+CLASSPATH="$APP_HOME/gradle/wrapper/gradle-wrapper.jar"
+
+if [ -n "$JAVA_HOME" ]; then
+    JAVA_EXE="$JAVA_HOME/bin/java"
+else
+    JAVA_EXE=java
+fi
+
+if ! command -v "$JAVA_EXE" >/dev/null 2>&1; then
+    echo "ERROR: JAVA_HOME not set and no 'java' executable found in PATH."
+    echo "Install JDK 17+ and retry."
+    exit 1
+fi
+
+if [ ! -f "$CLASSPATH" ]; then
+    echo "ERROR: $CLASSPATH is missing. Restore gradle/wrapper/gradle-wrapper.jar"
+    exit 1
+fi
+
+exec "$JAVA_EXE" -Xmx2048m -Dfile.encoding=UTF-8 -classpath "$CLASSPATH" org.gradle.wrapper.GradleWrapperMain "$@"

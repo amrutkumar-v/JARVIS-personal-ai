@@ -17,6 +17,7 @@ const ORDER: Record<VisualEnvironmentId, number> = {
   control: 2,
   space: 3,
   tunnel: 4,
+  neural: 5,
 }
 
 export function pickTransition(
@@ -43,6 +44,9 @@ export function pickTransition(
   ) {
     return 'dissolve'
   }
+
+  // Neural ↔ networked envs use the scan transition.
+  if (to === 'neural' || from === 'neural') return 'hud-scan'
 
   // Adjacent environments cross-fade; distant ones get a directional sweep.
   const distance = Math.abs(ORDER[to] - ORDER[from])

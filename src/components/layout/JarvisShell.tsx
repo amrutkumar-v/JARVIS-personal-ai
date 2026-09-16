@@ -4,6 +4,7 @@ import { Header } from './Header'
 import { JarvisTaskbar } from './JarvisTaskbar'
 import { CoreCaption } from '../core/CoreCaption'
 import { ArcReactor } from '../core/ArcReactor'
+import { CoreTelemetry } from '../core/CoreTelemetry'
 import { VoiceButton } from '../voice/VoiceButton'
 import { Notices } from '../system/Notices'
 import { SettingsPanel } from './SettingsPanel'
@@ -22,6 +23,7 @@ import { PanelHost } from '../panel/PanelHost'
 import { BackendStatus } from '../system/BackendStatus'
 import { ConnectivityStrip } from '../system/ConnectivityStrip'
 import { ActivityPanel } from '../system/ActivityPanel'
+import { DeviceTopology } from '../system/DeviceTopology'
 import { TranscriptLog } from '../conversation/TranscriptLog'
 import { CameraPanel } from '../camera/CameraPanel'
 import { GestureHud } from '../gesture/GestureHud'
@@ -36,6 +38,9 @@ import {
   applicationsRows,
 } from '../panel/capabilityData'
 import { usePanelLayoutStore } from '../../panel/panelStore'
+import { dispatchInteraction } from '../../interaction/controller'
+import { VoiceStatus } from '../voice/VoiceStatus'
+import { CrushButton } from '../system/CrushButton'
 
 interface AssistantAPI {
   status: ReturnType<typeof useJarvisStore.getState>['status']
@@ -164,10 +169,13 @@ export function JarvisShell({
         )
       case 'devices':
         return (
-          <CapabilityPanel
-            title="DEVICES"
-            rows={devicesRows(assistant.capabilities, assistant.backend, assistant.catalog)}
-          />
+          <>
+            <DeviceTopology />
+            <CapabilityPanel
+              title="DEVICES"
+              rows={devicesRows(assistant.capabilities, assistant.backend, assistant.catalog)}
+            />
+          </>
         )
       case 'files':
         return (
@@ -205,7 +213,12 @@ export function JarvisShell({
       <GestureHud gesture={assistant.gesture} />
 
       <main className="jarvis-stage">
-        {environmentId === 'arc' ? <ArcReactor /> : null}
+        {environmentId === 'arc' ? (
+          <>
+            <ArcReactor />
+            <CoreTelemetry />
+          </>
+        ) : null}
         {environmentId === 'arc' || environmentId === 'space' || environmentId === 'tunnel' ? (
           <CoreCaption />
         ) : null}
@@ -224,26 +237,15 @@ export function JarvisShell({
         <VoiceButton
           isListening={assistant.isRecognizing}
           isSpeaking={assistant.isSpeaking}
-          onStart={assistant.startListening}
-          onStop={assistant.stopListening}
+          onStart={() => {
+            dispatchInteraction({ action: 'listen_start' })
+          }}
+          onStop={() => {
+            dispatchInteraction({ action: 'listen_stop' })
+          }}
         />
-        {assistant.capabilities.wakeWordAvailable &&
-        assistant.preferences.wakeWordEnabled ? (
-          <button
-            type="button"
-            className={`wake-chip${assistant.voiceArmed ? ' is-armed' : ''}`}
-            aria-pressed={assistant.voiceArmed}
-            aria-label={
-              assistant.voiceArmed ? 'Disarm wake word' : 'Arm wake word'
-            }
-            onClick={assistant.voiceArmed ? assistant.disarmWake : assistant.armWake}
-          >
-            <span className="wake-dot" aria-hidden="true" />
-            {assistant.voiceArmed
-              ? assistant.voiceState.replace('_', ' ')
-              : 'WAKE'}
-          </button>
-        ) : null}
+        <VoiceStatus />
+        <CrushButton />
         <GoalComposer
           busy={task?.active ?? false}
           cancelVisible={task?.active ?? false}

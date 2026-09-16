@@ -126,11 +126,20 @@ export function PanelWindow({ def, rect, viewport, open, focused, onPointerDown,
       onPointerMove={handlePointerMove}
       onPointerUp={handlePointerUp}
     >
+      {/* HUD corner brackets */}
+      <span className="panel-corner corner-tl" aria-hidden="true" />
+      <span className="panel-corner corner-tr" aria-hidden="true" />
+      <span className="panel-corner corner-bl" aria-hidden="true" />
+      <span className="panel-corner corner-br" aria-hidden="true" />
+
       <div className="panel-window-titlebar" data-stop-drag>
         <span className="panel-window-icon" aria-hidden="true">
           {def.icon}
         </span>
         <span className="panel-window-label">{def.title}</span>
+        <span className="panel-window-subsystem" aria-hidden="true">
+          SYS // {def.id.toUpperCase()}
+        </span>
 
         <div className="panel-window-actions" data-stop-drag>
           <button

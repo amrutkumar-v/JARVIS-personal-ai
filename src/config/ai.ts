@@ -36,6 +36,26 @@ export interface AiHealthCheckResult {
   message?: string
   model?: string
   upstream?: string
+  /** Router fields (present when the endpoint is the JARVIS AI provider router). */
+  provider?: string
+  primary?: string
+  pinned?: string | null
+  configuredProviders?: string[]
+  availableProviders?: string[]
+  capabilities?: string[]
+  providersProbed?: string[]
+  providers?: AiProviderHealthSummary[]
+}
+
+export interface AiProviderHealthSummary {
+  id: string
+  name: string
+  enabled: boolean
+  configured: boolean
+  available: boolean
+  capabilities: string[]
+  model: string
+  status: string
 }
 
 export interface AiConfig {
@@ -126,3 +146,7 @@ export function resetAiConfigCache(): void {
 /** The placeholder name placed in `.env.example` (never a real key). */
 export const REMOTE_PROVIDER_ID = 'remote'
 export const MOCK_PROVIDER_ID = 'mock'
+
+/** Provider ids the JARVIS AI router can route to (server side). */
+export const ROUTED_PROVIDER_IDS = ['gemini', 'openai', 'anthropic', 'openrouter', 'local'] as const
+export type RoutedProviderId = (typeof ROUTED_PROVIDER_IDS)[number]

@@ -11,7 +11,7 @@ import type { JarvisStatus } from '../engine/types'
  */
 
 /** Canonical environment ids. Kept stable across versions for persistence. */
-export type VisualEnvironmentId = 'arc' | 'astra' | 'control' | 'space' | 'tunnel'
+export type VisualEnvironmentId = 'arc' | 'astra' | 'control' | 'space' | 'tunnel' | 'neural'
 
 export type EnvironmentKind = 'webgl' | 'canvas' | 'dom'
 

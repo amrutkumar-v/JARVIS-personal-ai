@@ -1,6 +1,7 @@
 import { execFile, spawn, type ChildProcess } from 'node:child_process'
 import { access, stat } from 'node:fs/promises'
-import { basename } from 'node:path'
+import { basename, dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { APP_LIMITS } from './limits.js'
 import { nativeError } from './errors.js'
 import type { NativeAppLaunchResult, NativeAppRefreshResult, NativeAppSpec, NativeAppStatusResult } from './protocol.js'
@@ -17,10 +18,12 @@ import { AppRegistry, type AppRecord } from './appRegistry.js'
  *  3. the launch mechanism is one of:
  *       - `exe`   — Node's `spawn` starts the executable with NO shell
  *                  (CreateProcess), detached, hidden, stdio fully detached;
- *       - `aumid` — `explorer.exe shell:AppsFolder\<aumid>` for validated
- *                  packaged (Store/MSIX) applications;
- *       - `uri`   — `explorer.exe <uri>` for a SAFE, allow-listed scheme
- *                  (currently only `ms-settings:`).
+ *       - `aumid` — the bundled ShellExec.exe helper performs ShellExecuteEx
+ *                  on `shell:AppsFolder\<aumid>` for validated packaged
+ *                  (Store/MSIX) applications — required so the packaged app
+ *                  surfaces as a persistent foreground WINDOW;
+ *       - `uri`   — the same ShellExecuteEx helper for a SAFE, allow-listed
+ *                  scheme (currently only `ms-settings:`).
  *  4. folders are only ever passed to records that declare `allowFolder`
  *     (File Explorer) and only as a validated absolute directory path;
  *  5. the process is observed over a bounded window with `tasklist` and the
@@ -113,15 +116,15 @@ export class RealAppBackend implements ApplicationBackend {
 
     switch (record.mechanism) {
       case 'aumid': {
-        const aumid = record.aumid ?? ''
-        const child = await spawnDetached(explorerPath(), ['shell:AppsFolder\\' + aumid], applicationId)
+        const route = 'shell:AppsFolder\\' + (record.aumid ?? '')
+        const child = await runShellRoute(route, applicationId)
         child.unref()
         const pid = child.pid
         return this.reportShellLaunch(record, applicationId, pid)
       }
       case 'uri': {
         const uri = record.uri ?? ''
-        const child = await spawnDetached(explorerPath(), [uri], applicationId)
+        const child = await runShellRoute(uri, applicationId)
         child.unref()
         const pid = child.pid
         return this.reportShellLaunch(record, applicationId, pid)
@@ -228,7 +231,7 @@ export class RealAppBackend implements ApplicationBackend {
   private async reportShellLaunch(record: AppRecord, applicationId: string, pid: number | undefined): Promise<NativeAppLaunchResult> {
     const image = imageName(record)
     if (image !== '') {
-      const observed = await observeRunning(image)
+      const observed = await observeRunningUntil(image)
       if (observed.running && observed.observed) {
         return {
           applicationId,
@@ -270,6 +273,15 @@ function imageName(record: AppRecord): string {
 function explorerPath(): string {
   const windir = process.env.windir ?? process.env.SystemRoot ?? 'C:\\Windows'
   return `${windir}\\explorer.exe`
+}
+
+/**
+ * Absolute path to the bundled ShellExec.exe helper (compiled by
+ * `npm run build`), which performs ShellExecute layout on a validated shell
+ * route. The helper lives beside the compiled agent in `dist/shellexec/`.
+ */
+export function shellExecHelperPath(): string {
+  return join(dirname(fileURLToPath(import.meta.url)), 'shellexec', 'ShellExec.exe')
 }
 
 function isAbsoluteWinPath(path: string): boolean {
@@ -351,9 +363,63 @@ async function observeRunning(image: string): Promise<RunningObservation> {
   return { running, observed: true }
 }
 
+/**
+ * Poll `tasklist` over the bounded verification window (same window the exe
+ * route uses) for a shell (aumid/uri) activation. Packaged apps surface their
+ * process a moment after `explorer.exe` hands off to the Store activation, so
+ * a single immediate probe would report a false negative for a window that is
+ * already opening.
+ */
+async function observeRunningUntil(image: string): Promise<RunningObservation> {
+  if (process.platform !== 'win32') {
+    return { running: false, observed: false }
+  }
+  const deadline = Date.now() + APP_LIMITS.PROCESS_VERIFY_TOTAL_MS
+  let sawObservation = false
+  while (Date.now() < deadline) {
+    const observed = await observeRunning(image)
+    if (observed.observed) {
+      sawObservation = true
+      if (observed.running) {
+        return { running: true, observed: true }
+      }
+    }
+    await new Promise((r) => setTimeout(r, APP_LIMITS.PROCESS_VERIFY_POLL_DELAY_MS))
+  }
+  return { running: false, observed: sawObservation }
+}
+
 /* ------------------------------------------------------------------ spawn */
 
+type LaunchSpawnOptions = { detached?: boolean; windowsHide?: boolean }
+
+/**
+ * Activate a validated shell route (`shell:AppsFolder\<aumid>` or an
+ * allow-listed URI) through the bundled ShellExec.exe helper, which performs
+ * the real ShellExecuteEx call. Packaged (Store/MSIX) apps only surface as
+ * persistent foreground WINDOWS through ShellExecute; a plain CreateProcess
+ * spawn (which is all Node `spawn`/`execFile` can do) gives the app a
+ * background activation that the shell quietly tears down seconds later.
+ *
+ * The helper is a fail-closed gateway: it re-runs the same structural
+ * validation the registry already applied (an AUMID route or an allow-listed
+ * URI) and refuses anything else. All arguments are constructed by the agent
+ * from validated registry fields — never from user/model text.
+ */
+function runShellRoute(route: string, applicationId: string): Promise<ChildProcess> {
+  return spawnProcess(shellExecHelperPath(), [route], applicationId, { detached: false, windowsHide: false })
+}
+
 function spawnDetached(target: string, args: string[], applicationId: string): Promise<ChildProcess> {
+  return spawnProcess(target, args, applicationId, { detached: true, windowsHide: true })
+}
+
+function spawnProcess(
+  target: string,
+  args: string[],
+  applicationId: string,
+  opts: LaunchSpawnOptions,
+): Promise<ChildProcess> {
   return new Promise<ChildProcess>((resolve, reject) => {
     let settled = false
     const timer = setTimeout(() => {
@@ -365,9 +431,9 @@ function spawnDetached(target: string, args: string[], applicationId: string): P
     let child: ChildProcess
     try {
       child = spawn(target, args, {
-        detached: true,
+        detached: opts.detached ?? true,
         stdio: 'ignore',
-        windowsHide: true,
+        windowsHide: opts.windowsHide ?? true,
         shell: false,
       })
     } catch (err) {

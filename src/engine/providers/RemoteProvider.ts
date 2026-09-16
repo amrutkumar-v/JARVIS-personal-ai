@@ -1,7 +1,24 @@
 import type { AIProvider, AIRequest, AIResponse, AIMessage, AIProviderInfo, ToolDefinition } from '../provider'
 import type { EngineOutMessage } from '../contracts'
 import { ProviderError } from './ProviderError'
-import { getAiConfig, REMOTE_PROVIDER_ID } from '../../config/ai'
+import { getAiConfig, REMOTE_PROVIDER_ID, ROUTED_PROVIDER_IDS } from '../../config/ai'
+import { useJarvisStore } from '../../state/jarvis.store'
+
+/**
+ * Client-side provider pin. Returns one of the router's named provider ids
+ * only when the user has chosen it in Settings; `null` otherwise (server
+ * decides primary + fallback). Never sent off the proxy transport.
+ */
+export function resolveProviderPin(): string | null {
+  const pref = useJarvisStore.getState().preferences?.providerId
+  return pref && (ROUTED_PROVIDER_IDS as readonly string[]).includes(pref) ? pref : null
+}
+
+export function withProviderPin(headers: Record<string, string>, proxyMode: boolean): void {
+  if (!proxyMode) return
+  const pin = resolveProviderPin()
+  if (pin) headers['x-jarvis-provider'] = pin
+}
 
 /**
  * Remote provider — OpenAI-compatible Chat Completions.
@@ -195,6 +212,7 @@ export class RemoteProvider implements AIProvider {
     // key (tests/Electron) sets an Authorization header — never the browser.
     // A direct request without a key is a legitimate keyless-local attempt.
     if (cfg.key && !cfg.proxyMode) headers.Authorization = `Bearer ${cfg.key}`
+    withProviderPin(headers, cfg.proxyMode)
 
     const controller = new AbortController()
     const timeout = setTimeout(() => controller.abort(), 45000)

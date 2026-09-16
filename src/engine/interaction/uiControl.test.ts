@@ -167,7 +167,7 @@ describe('uiControl — compound commands', () => {
 
 describe('uiControl — honest choices from registries', () => {
   it('lists the real environments', () => {
-    expect(environmentChoices()).toEqual(['Arc Reactor', 'Astra HUD', 'Control Panel', 'Space', 'Tunnel'])
+    expect(environmentChoices()).toEqual(['Arc Reactor', 'Astra HUD', 'Control Panel', 'Space', 'Tunnel', 'Neural'])
   })
 
   it('lists the real panels', () => {

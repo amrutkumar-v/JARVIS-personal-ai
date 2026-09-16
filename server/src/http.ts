@@ -8,14 +8,17 @@
  *   GET  /api/device/list           — device registry snapshot (alias)
  *   POST /api/device/claim          — PAIRED device claims a trusted identity
  *   POST /api/device/heartbeat      — trusted device liveness + telemetry
+ *   POST /api/device/pair/begin     — start a phone pairing session (code shown on the laptop)
+ *   POST /api/device/ping           — queue a verifiable ping for a trusted phone
+ *   POST /api/device/ping/result    — read the result of a queued ping (loopback only)
  *   POST /api/device/notify         — notify 'all' or one trusted device
  *   POST /api/device/open-url       — ask an online trusted device to open a URL
  *   POST /api/device/file           — upload a bounded, optionally targeted file
  *   GET  /api/files|/api/files/:id  — list / download transferred files
  *   POST /api/inbound               — device → laptop text
  *   POST /api/assistant/state       — browser assistant runtime mirror
- *   POST /api/ai/chat/completions   — server-side AI chat proxy (key stays on server)
- *   POST /api/ai/embeddings         — server-side semantic-embedding proxy
+ *   POST /api/ai/chat/completions   — AI Provider Router: chat (multi-provider)
+ *   POST /api/ai/embeddings         — AI Provider Router: semantic embeddings
  *   POST /api/wake                  — browser wake registry events
  *   GET  /                          — built SPA (when present)
  *   GET  /phone                     — companion device page
@@ -25,6 +28,10 @@
  * only targets canonical trusted ids, and every `/api/*` POST requires the
  * bearer token when one is configured. The assistant engine itself stays
  * browser-hosted (see version.ts); the backend is the durable coordinator.
+ *
+ * Android companion pairing: the main backend stays loopback-only. The phone
+ * reaches JARVIS through the separate phone listener (phoneServer.ts) on the
+ * LAN; this server only starts pairing sessions and queues/verifies pings.
  */
 
 import { createServer } from 'node:http'
@@ -39,12 +46,16 @@ import type { DeviceRegistry } from './registry.js'
 import type { FileStore } from './files.js'
 import type { NativeStatus } from './native.js'
 import type { BackendHealth, InboundMessage, WakeState } from './types.js'
-import { AI_PROXY_SUBPATHS, proxyAiRequest, type AiProxyOptions, type AiProxySubpath } from './ai.js'
+import { AI_PROXY_SUBPATHS, type AiProxyOptions, type AiProxySubpath } from './ai.js'
+import { createAiProviderRouter, type AiRouter, type AiRouteResult } from './aiProvider.js'
+import { PhoneTrust } from './phoneTrust.js'
+import { PhoneCommandQueue } from './phoneCommands.js'
 
 const CORS_HEADERS: Record<string, string> = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
   'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+  'Access-Control-Expose-Headers': 'x-jarvis-provider, x-jarvis-provider-model',
   'Access-Control-Max-Age': '0',
 }
 
@@ -72,6 +83,10 @@ export interface RuntimeContext {
   wake: WakeState
   now: () => number
   health: () => BackendHealth
+  /** Phone pairing trust store (optional — created in-memory when absent). */
+  pairing?: PhoneTrust
+  /** Queued outbound phone commands (optional — created in-memory when absent). */
+  deviceCommands?: PhoneCommandQueue
 }
 
 export interface HttpServerOptions {
@@ -103,6 +118,11 @@ function json(res: ServerResponse, status: number, body: unknown): void {
     ...CORS_HEADERS,
   })
   res.end(payload)
+}
+
+function appendAiRouteHeaders(res: ServerResponse, route: AiRouteResult): void {
+  if (route.provider !== 'none') res.setHeader('x-jarvis-provider', route.provider)
+  if (route.model) res.setHeader('x-jarvis-provider-model', route.model)
 }
 
 function corsOnly(res: ServerResponse): void {
@@ -223,6 +243,22 @@ export async function startHttpServer(options: HttpServerOptions): Promise<Runni
   const ctx = options.context
   const sseClients = new Set<{ id: string; res: ServerResponse }>()
 
+  // Phone pairing trust + outbound command queue. Created in-memory when the
+  // caller (tests) does not provide persisted instances; the backend wires
+  // persistent ones in.
+  const pairing = ctx.pairing ?? new PhoneTrust({ now: ctx.now })
+  const deviceCommands = ctx.deviceCommands ?? new PhoneCommandQueue({ now: ctx.now })
+
+  // One self-contained AI Provider Router per server. When JARVIS_AI_BASE_URL is
+  // set it seeds the legacy single-upstream provider; otherwise the router reads
+  // the provider-router env (JARVIS_AI_PRIMARY_PROVIDER / keys / locales) plus
+  // the historical GEMINI_API_KEY default. Keys stay server-side.
+  const aiRouter: AiRouter = createAiProviderRouter({
+    legacy: options.ai?.baseUrl
+      ? { baseUrl: options.ai.baseUrl, key: options.ai.key ?? '', timeoutMs: options.ai.timeoutMs }
+      : undefined,
+  })
+
   const server: Server = createServer(async (req, res) => {
     res.on('error', () => undefined)
     if (req.method === 'OPTIONS') {
@@ -244,23 +280,21 @@ export async function startHttpServer(options: HttpServerOptions): Promise<Runni
         }
       }
 
-      /* ------------------------------- AI proxy (server-side key) ---------- */
-      // The browser cannot hold the AI key, so production routes /api/ai/* to a
-      // server-side proxy that injects JARVIS_API_KEY. Only two allow-listed
-      // OpenAI-compatible subpaths exist (chat + embeddings); when the proxy is
-      // configured the upstream status/body is passed through verbatim so the
-      // client reports failures honestly. Never logs the body or the key.
+      /* -------------------------- AI Provider Router (server-side keys) ----- */
+      // The browser can never hold the AI key, so `/api/ai/*` routes through
+      // the provider router, which selects the primary provider, fails over to
+      // explicitly configured fallbacks on retryable failures, and translates
+      // Claude to/from the OpenAI-Compatible envelope the client speaks. Only
+      // two allow-listed subpaths exist (chat + embeddings). The router passes
+      // upstream status/body through so the client reports failures honestly,
+      // and NEVER logs the body or any key.
       if (pathname === '/api/ai' || pathname.startsWith('/api/ai/')) {
         const subpath: AiProxySubpath | '' = pathname === '/api/ai' ? '' : (`/${pathname.slice('/api/ai/'.length)}` as AiProxySubpath | '')
+
         if (subpath === '/health') {
-          const aiOpts = options.ai || {
-            baseUrl: process.env.GEMINI_API_KEY ? 'https://generativelanguage.googleapis.com/v1beta/openai' : '',
-            key: process.env.GEMINI_API_KEY || '',
-            timeoutMs: 10000,
-          }
-          const result = await proxyAiRequest(aiOpts, '/health')
-          res.writeHead(result.status, { 'content-type': result.contentType, ...CORS_HEADERS })
-          res.end(result.body)
+          const result = await aiRouter.getHealth()
+          res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', ...CORS_HEADERS })
+          res.end(JSON.stringify(result))
           return
         }
 
@@ -269,15 +303,11 @@ export async function startHttpServer(options: HttpServerOptions): Promise<Runni
           return
         }
 
-        const effectiveBase = options.ai?.baseUrl || (process.env.GEMINI_API_KEY ? 'https://generativelanguage.googleapis.com/v1beta/openai' : '')
-        if (!effectiveBase) {
-          json(res, 503, { ok: false, error: 'ai_not_configured' })
-          return
-        }
         if (!(AI_PROXY_SUBPATHS as readonly string[]).includes(subpath)) {
           json(res, 404, { ok: false, error: 'not_found' })
           return
         }
+
         let body: Buffer
         try {
           body = await readRawBody(req)
@@ -285,15 +315,37 @@ export async function startHttpServer(options: HttpServerOptions): Promise<Runni
           json(res, 413, { ok: false, error: 'body_too_large' })
           return
         }
+
         try {
-          const aiOpts = options.ai || {
-            baseUrl: effectiveBase,
-            key: process.env.GEMINI_API_KEY || '',
-            timeoutMs: 45000,
+          const route = await aiRouter.route({
+            subpath: subpath as '/chat/completions' | '/embeddings',
+            body,
+            pinned: typeof req.headers['x-jarvis-provider'] === 'string' ? req.headers['x-jarvis-provider'] : null,
+          })
+          if (route.errorCode === 'ai_not_configured') {
+            json(res, 503, { ok: false, error: 'ai_not_configured' })
+            return
           }
-          const result = await proxyAiRequest(aiOpts, subpath as AiProxySubpath, body)
-          res.writeHead(result.status, { 'content-type': result.contentType, ...CORS_HEADERS })
-          res.end(result.body)
+          if (route.errorCode === 'ai_upstream_unreachable') {
+            json(res, 502, { ok: false, error: 'ai_upstream_unreachable' })
+            return
+          }
+          if (route.errorCode === 'ai_upstream_timeout') {
+            json(res, 504, { ok: false, error: 'ai_upstream_timeout' })
+            return
+          }
+          if (route.errorCode === 'unsupported_capability' || route.errorCode === 'provider_not_configured') {
+            json(res, 503, { ok: false, error: route.errorCode, message: route.errorMessage })
+            return
+          }
+          if (route.errorCode === 'invalid_body') {
+            json(res, 400, { ok: false, error: 'invalid_body' })
+            return
+          }
+          // Additive, key-free provider transparency headers always travel back.
+          appendAiRouteHeaders(res, route)
+          res.writeHead(route.status, { 'content-type': route.contentType, ...CORS_HEADERS })
+          res.end(route.body)
           return
         } catch (error) {
           if (error instanceof Error && error.name === 'AbortError') {
@@ -406,6 +458,102 @@ export async function startHttpServer(options: HttpServerOptions): Promise<Runni
           : false
         if (ok) ctx.bus.publish({ type: 'device', at: ctx.now(), data: { event: 'heartbeat', device: id } })
         json(res, 200, ok ? { ok: true } : { ok: false, error: 'unknown_device' })
+        return
+      }
+
+      /* ------------------------------- phone pairing --------------- */
+      // Start a phone pairing session. Loopback-only (this server binds
+      // 127.0.0.1): the 6-digit code is displayed locally so the person at the
+      // laptop can type it into the Android app; it is never exposed over the
+      // LAN or over SSE.
+      if (req.method === 'POST' && pathname === '/api/device/pair/begin') {
+        const body = asRecord(await readJsonBody(req))
+        const device = typeof body.device === 'string' && body.device.trim() ? body.device.trim().toLowerCase().slice(0, 80) : ''
+        if (!device) {
+          json(res, 400, { ok: false, error: 'device is required' })
+          return
+        }
+        const begun = pairing.begin(device)
+        if (!begun) {
+          json(res, 400, {
+            ok: false,
+            error: 'not_a_phone_device',
+            reason: `"${device}" is not one of the trusted Android devices. Only the trusted phones (s26-ultra, s23-fe) can pair.`,
+          })
+          return
+        }
+        log.info('phone', 'pairing code generated', { code: begun.code, device: begun.deviceId, expiresInMs: begun.expiresInMs })
+        json(res, 200, {
+          ok: true,
+          code: begun.code,
+          device: begun.deviceId,
+          expiresAt: begun.expiresAt,
+          expiresInMs: begun.expiresInMs,
+          note: 'Type this code into the JARVIS Companion app on the phone. It expires in 10 minutes.',
+        })
+        return
+      }
+
+      /* ------------------------------- phone ping command --------------- */
+      if (req.method === 'POST' && pathname === '/api/device/ping') {
+        const body = asRecord(await readJsonBody(req))
+        const device = typeof body.device === 'string' && body.device.trim() ? body.device.trim().toLowerCase().slice(0, 80) : ''
+        if (!device) {
+          json(res, 400, { ok: false, error: 'device is required' })
+          return
+        }
+        if (!ctx.registry.isTrusted(device)) {
+          json(res, 400, { ok: false, error: 'invalid_target', reason: `"${device}" is not a trusted device id.` })
+          return
+        }
+        const deviceRecord = ctx.registry.get(device)
+        const dispatch = deviceCommands.dispatchPing(device, deviceRecord?.online === true)
+        if (!dispatch.command) {
+          json(res, 429, { ok: false, error: 'ping_queue_full', reason: dispatch.reason })
+          return
+        }
+        json(res, 200, {
+          ok: true,
+          commandId: dispatch.command.commandId,
+          requestId: dispatch.command.requestId,
+          delivered: dispatch.delivered,
+          device,
+          status: dispatch.delivered ? 'queued' : 'offline',
+          reason: dispatch.reason,
+        })
+        return
+      }
+
+      if (req.method === 'POST' && pathname === '/api/device/ping/result') {
+        const body = asRecord(await readJsonBody(req))
+        const device = typeof body.device === 'string' && body.device.trim() ? body.device.trim().toLowerCase().slice(0, 80) : ''
+        if (!device) {
+          json(res, 400, { ok: false, error: 'device is required' })
+          return
+        }
+        if (!ctx.registry.isTrusted(device)) {
+          json(res, 400, { ok: false, error: 'invalid_target', reason: `"${device}" is not a trusted device id.` })
+          return
+        }
+        const requestId = typeof body.requestId === 'string' && body.requestId.trim() ? body.requestId.trim().slice(0, 120) : undefined
+        const result = deviceCommands.pingResult(requestId, device)
+        if (!result) {
+          json(res, 404, { ok: false, error: 'no_ping_found', reason: 'No ping command was found for that device/id.' })
+          return
+        }
+        const deviceRecord = ctx.registry.get(device)
+        json(res, 200, {
+          ok: true,
+          device,
+          requestId: result.requestId,
+          pending: result.pending,
+          acknowledged: result.ackedAt !== undefined,
+          ackedAt: result.ackedAt,
+          // The phone's concrete result — only ever true when /phone/ack said so.
+          result: result.ok ?? null,
+          detail: result.detail ?? null,
+          deviceOnline: deviceRecord?.online === true,
+        })
         return
       }
 

@@ -5,6 +5,7 @@ import { ENVIRONMENT_DEFINITIONS } from '../registry'
 import { controlSections } from '../bridge'
 import { usePanelLayoutStore } from '../../panel/panelStore'
 import type { PanelId } from '../../panel/types'
+import { EnvModuleTag } from '../EnvironmentChrome'
 
 /**
  * Phase 8 — Command Control environment.
@@ -31,6 +32,7 @@ export function ControlScene() {
 
   return (
     <div className="control-scene">
+      <EnvModuleTag moduleId="MOD-A3" label="CONTROL" />
       <header className="control-header">
         <div className="control-heading">
           <span className="control-kicker">COMMAND</span>

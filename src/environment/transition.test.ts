@@ -9,6 +9,7 @@ const ALL: readonly VisualEnvironmentId[] = [
   'control',
   'space',
   'tunnel',
+  'neural',
 ]
 
 describe('pickTransition', () => {

@@ -6,7 +6,7 @@ import { useEnvironmentSnapshot } from '../useEnvironmentSnapshot'
 import { hudTelemetry } from '../bridge'
 import type { ThemeColors } from '../useThemeColors'
 import type { VisualState } from '../types'
-import { deviceTier } from '../../utils/capabilities'
+import { EnvModuleTag } from '../EnvironmentChrome'
 
 /**
  * Phase 8 — Astra HUD environment.
@@ -213,7 +213,6 @@ function drawHud(ctx: CanvasRenderingContext2D, frame: CanvasFrame, c: ThemeColo
 export function AstraScene() {
   const colorsRef = useThemeColors()
   const snapshot = useEnvironmentSnapshot('astra')
-  const tier = useMemo(() => deviceTier(), [])
 
   const draw = useCallback(
     (ctx: CanvasRenderingContext2D, frame: CanvasFrame) => {
@@ -222,7 +221,6 @@ export function AstraScene() {
     [colorsRef],
   )
 
-  void tier
   const telemetry = useMemo(
     () => hudTelemetry(snapshot),
     [snapshot],
@@ -231,6 +229,7 @@ export function AstraScene() {
   return (
     <div className="astra-scene">
       <CanvasHost draw={draw} className="astra-canvas" />
+      <EnvModuleTag moduleId="MOD-A2" label="ASTRA HUD" />
       <div className="astra-overlay" aria-hidden="false">
         <div className="astra-corner astra-corner--tl">
           <span className="astra-kicker">JARVIS</span>

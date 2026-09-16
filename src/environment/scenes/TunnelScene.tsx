@@ -2,6 +2,8 @@ import { useCallback, useRef, useState } from 'react'
 import { CanvasHost } from '../CanvasHost'
 import type { CanvasFrame } from '../CanvasHost'
 import { useThemeColors } from '../useThemeColors'
+import { useEnvironmentSnapshot } from '../useEnvironmentSnapshot'
+import { EnvironmentChrome } from '../EnvironmentChrome'
 
 /**
  * Phase 8 — Tunnel environment.
@@ -38,6 +40,7 @@ export function TunnelScene() {
   const colorsRef = useThemeColors()
   const speedRef = useRef<number>(1)
   const [level, setLevel] = useState<SpeedLevel>('normal')
+  const snapshot = useEnvironmentSnapshot('tunnel')
 
   const chooseSpeed = useCallback((l: SpeedLevel) => {
     speedRef.current = SPEED_MULTIPLIER[l]
@@ -134,6 +137,19 @@ export function TunnelScene() {
   return (
     <div className="tunnel-scene">
       <CanvasHost draw={draw} />
+      <EnvironmentChrome
+        moduleId="MOD-A5"
+        label="TUNNEL"
+        rows={[
+          { k: 'TRAVEL', v: SPEED_LABELS[level] },
+          { k: 'EXEC', v: snapshot.statusLabel },
+          {
+            k: 'VOICE',
+            v: snapshot.voiceArmed ? 'ARMED' : 'STANDBY',
+            tone: snapshot.voiceArmed ? 'live' : undefined,
+          },
+        ]}
+      />
       <div className="tunnel-controls" role="group" aria-label="Tunnel travel speed">
         {(['slow', 'normal', 'fast'] as const).map((l) => (
           <button

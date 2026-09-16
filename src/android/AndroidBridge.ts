@@ -103,7 +103,6 @@ class AndroidBridgeManager {
   ]
 
   private spamFilterEnabled = true
-  private quietHoursEnabled = false
   private listeners: Array<() => void> = []
   private callTimer: any = null
 

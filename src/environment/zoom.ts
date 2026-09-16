@@ -38,6 +38,7 @@ export const ENVIRONMENT_ZOOM_BOUNDS: Record<VisualEnvironmentId, ZoomBounds> = 
   control: { min: 0.6, max: 1.6 },
   space: { min: 0.5, max: 1.8 },
   tunnel: { min: 0.55, max: 1.75 },
+  neural: { min: 0.5, max: 1.8 },
 }
 
 export function zoomBoundsFor(environmentId: VisualEnvironmentId): ZoomBounds {

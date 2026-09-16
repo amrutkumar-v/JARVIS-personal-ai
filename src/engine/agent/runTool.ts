@@ -90,8 +90,12 @@ async function withTimeout(
 ): Promise<{ ok: boolean; message: string; data?: unknown; rejected?: boolean }> {
   let timer: ReturnType<typeof setTimeout> | undefined
   try {
+    // Absorb a tool that settles after the timeout has already fired, so its
+    // late rejection can never surface as an unhandled promise rejection.
+    const execution = tool.execute(input, ctx)
+    execution.catch(() => {})
     return await Promise.race([
-      tool.execute(input, ctx),
+      execution,
       new Promise<never>((_, reject) => {
         timer = setTimeout(() => {
           reject(new ToolExecutionError('timeout', `Timed out after ${timeoutMs}ms.`))

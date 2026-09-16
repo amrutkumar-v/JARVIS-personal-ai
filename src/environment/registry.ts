@@ -40,6 +40,13 @@ export const ENVIRONMENT_DEFINITIONS: readonly EnvironmentDefinition[] = [
     kind: 'canvas',
     glyph: '\u25c8',
   },
+  {
+    id: 'neural',
+    label: 'Neural',
+    description: 'A living synaptic web — signals pulse across the network with the core state.',
+    kind: 'canvas',
+    glyph: '\u221e',
+  },
 ] as const
 
 export const ENVIRONMENT_BY_ID = new Map<VisualEnvironmentId, EnvironmentDefinition>(

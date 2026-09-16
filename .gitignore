@@ -23,6 +23,15 @@ dist-ssr
 # Runtime backend state (device registry, PID, served files) — never commit
 server/data
 
+# Android build outputs & local Gradle caches (wrapper jar is committed)
+android/.gradle
+android/build
+android/app/build
+android/local.properties
+android/.kotlin
+*.hprof
+.cxx
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
@@ -36,3 +45,4 @@ server/data
 
 .vercel
 .env*
+!.env.example

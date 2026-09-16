@@ -14,7 +14,7 @@
  * honest refusals and executes NOTHING.
  */
 
-import { RemoteProvider, resolveEndpoint, resolveRemoteConfig } from '../providers/RemoteProvider'
+import { RemoteProvider, resolveEndpoint, resolveRemoteConfig, withProviderPin } from '../providers/RemoteProvider'
 import { ProviderError } from '../providers/ProviderError'
 import type { StructuredPlanProvider } from './provider'
 import type { ReasoningRequest } from './contract'
@@ -71,6 +71,7 @@ export class ReasoningProvider extends RemoteProvider implements StructuredPlanP
     }
     const headers: Record<string, string> = { 'Content-Type': 'application/json' }
     if (cfg.key && !cfg.proxyMode) headers.Authorization = `Bearer ${cfg.key}`
+    withProviderPin(headers, cfg.proxyMode)
 
     const controller = new AbortController()
     const timer = setTimeout(() => controller.abort(), REASONING_PLAN_LIMITS.planDeadlineMs)

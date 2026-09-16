@@ -9,6 +9,7 @@ import { AstraScene } from './scenes/AstraScene'
 import { ControlScene } from './scenes/ControlScene'
 import { SpaceScene } from './scenes/SpaceScene'
 import { TunnelScene } from './scenes/TunnelScene'
+import { NeuralScene } from './scenes/NeuralScene'
 import { useJarvisStore } from '../state/jarvis.store'
 import { useZoomStore } from './zoomStore'
 
@@ -44,6 +45,8 @@ function RenderEnvironment({ id }: { id: VisualEnvironmentId }) {
       return <SpaceScene />
     case 'tunnel':
       return <TunnelScene />
+    case 'neural':
+      return <NeuralScene />
     default:
       return null
   }

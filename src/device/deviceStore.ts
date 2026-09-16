@@ -141,10 +141,14 @@ devices: seedState(),
         }
         set({ isRefreshing: true, refreshError: null })
         try {
-          const devices = await Promise.race([
-            providerRef.refresh(),
-            timeoutPromise(DEVICE_REFRESH_TIMEOUT_MS),
-          ])
+          const refreshPromise = providerRef.refresh()
+          const timerPromise = timeoutPromise(DEVICE_REFRESH_TIMEOUT_MS)
+          // Absorb the losing side: a provider that settles after the timeout
+          // (or a timeout that fires after a fast refresh) must never leave an
+          // unobserved rejection behind.
+          refreshPromise.catch(() => {})
+          timerPromise.catch(() => {})
+          const devices = await Promise.race([refreshPromise, timerPromise])
           const now = Date.now()
           const snapshot = devices.map((d) => {
             const fresh = now - d.lastHeartbeatAt <= DEVICE_STATE_TTL_MS

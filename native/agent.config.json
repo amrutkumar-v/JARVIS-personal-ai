@@ -9,11 +9,15 @@
   "applications": {
     "notepad": {
       "name": "Notepad",
-      "target": "{windir}\\System32\\notepad.exe"
+      "mechanism": "aumid",
+      "aumid": "Microsoft.WindowsNotepad_8wekyb3d8bbwe!App",
+      "processImage": "notepad"
     },
     "calculator": {
       "name": "Calculator",
-      "target": "{windir}\\System32\\calc.exe"
+      "mechanism": "aumid",
+      "aumid": "Microsoft.WindowsCalculator_8wekyb3d8bbwe!App",
+      "processImage": "CalculatorApp"
     }
   }
 }

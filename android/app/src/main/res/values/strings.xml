@@ -1,7 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">JARVIS Companion</string>
-    <string name="connect_btn">Connect to JARVIS</string>
-    <string name="status_connected">Connected to JARVIS Core</string>
-    <string name="status_disconnected">Disconnected</string>
-    <string name="permissions_granted">All telephony &amp; contact permissions active</string>
+    <string name="pair_state_default">Not paired yet</string>
+    <string name="host_hint">Laptop host:port, e.g. 192.168.1.3:8788</string>
+    <string name="code_hint">6-digit pairing code</string>
+    <string name="pair">Pair with JARVIS</string>
+    <string name="refresh_status">Refresh backend status</string>
+    <string name="ping_core">Ping JARVIS core</string>
+    <string name="forget_pairing">Forget pairing</string>
+    <string name="channel_name">JARVIS Companion sync</string>
+    <string name="channel_description">Keeps the phone present to JARVIS Core over the home Wi-Fi</string>
+    <string name="notification_title">JARVIS Companion active</string>
 </resources>

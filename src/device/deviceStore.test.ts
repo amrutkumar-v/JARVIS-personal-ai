@@ -155,6 +155,35 @@ describe('Phase 11 — device store (Work 11.2 trust + 11.19 bounded refresh)', 
     expect(after.refreshError).toContain('refresh')
   })
 
+  it('a fast refresh never leaves an unarmed timeout rejection behind', async () => {
+    const events: unknown[] = []
+    const hook = (reason: unknown) => events.push(reason)
+    interface Proc {
+      on: (event: string, handler: (reason: unknown) => void) => void
+      off: (event: string, handler: (reason: unknown) => void) => void
+    }
+    const proc = (globalThis as unknown as { process?: Proc }).process
+    proc?.on('unhandledRejection', hook)
+    vi.useFakeTimers()
+    try {
+      setDeviceProvider(sameDeviceProvider([record('s26-ultra', true, Date.now())]))
+
+      await useDeviceStore.getState().refreshFromProvider()
+
+      const after = useDeviceStore.getState()
+      expect(after.isRefreshing).toBe(false)
+      expect(after.refreshError).toBeNull()
+      expect(after.devices.get('s26-ultra')?.online).toBe(true)
+
+      // Fire the timeout window that would otherwise reject with no listener.
+      await vi.advanceTimersByTimeAsync(DEVICE_REFRESH_TIMEOUT_MS + 1)
+      await vi.advanceTimersByTimeAsync(0)
+      expect(events).toEqual([])
+    } finally {
+      proc?.off('unhandledRejection', hook)
+    }
+  })
+
   it('reports an honest error when no provider is bound', async () => {
     setDeviceProvider(undefined)
     useDeviceStore.setState({ refreshError: null })

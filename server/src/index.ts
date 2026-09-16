@@ -21,6 +21,13 @@
  *   JARVIS_AI_TIMEOUT_MS           AI proxy upstream timeout (default 60000)
  *   JARVIS_BACKEND_SILENT          (default false) no stdout log lines
  *
+ * Android companion (Phase 4.1): the main backend stays loopback-only; a
+ * SEPARATE narrow phone listener serves the Android app on the LAN.
+ *   JARVIS_PHONE_ENABLED           (default true) run the phone LAN listener
+ *   JARVIS_PHONE_HOST              bind host for the phone listener (default 0.0.0.0 —
+ *                                  use your LAN IP, e.g. 192.168.1.3, to bind one adapter)
+ *   JARVIS_PHONE_PORT              phone listener port (default 8788)
+ *
  * Single instance: a lock file in the data dir guards against duplicates.
  */
 
@@ -34,6 +41,9 @@ import { FileStore } from './files.js'
 import { buildNativeAgentArgs, NativeSupervisor } from './native.js'
 import { buildHealth } from './health.js'
 import { startHttpServer, type RuntimeContext } from './http.js'
+import { startPhoneServer } from './phoneServer.js'
+import { PhoneTrust } from './phoneTrust.js'
+import { PhoneCommandQueue } from './phoneCommands.js'
 import { BACKEND_NAME, BACKEND_PROTOCOL, BACKEND_VERSION } from './version.js'
 
 interface Env {
@@ -53,6 +63,9 @@ interface Env {
   aiKey: string
   aiTimeoutMs: number
   silent: boolean
+  phoneEnabled: boolean
+  phoneHost: string
+  phonePort: number
 }
 
 function envString(name: string, fallback = ''): string {
@@ -103,6 +116,9 @@ function readEnv(): Env {
     aiKey: envString('JARVIS_API_KEY'),
     aiTimeoutMs: envInt('JARVIS_AI_TIMEOUT_MS', 60000),
     silent: envBool('JARVIS_BACKEND_SILENT', false),
+    phoneEnabled: envBool('JARVIS_PHONE_ENABLED', true),
+    phoneHost: envString('JARVIS_PHONE_HOST', '0.0.0.0'),
+    phonePort: envInt('JARVIS_PHONE_PORT', 8788),
   }
 }
 
@@ -189,6 +205,9 @@ class Backend {
     await registry.load()
     const bus = new EventBus()
     const files = new FileStore({ dir: join(this.env.dataDir, 'files'), now: this.now })
+    const pairing = new PhoneTrust({ persistFile: join(this.env.dataDir, 'phoneTrust.json'), now: () => this.now() })
+    await pairing.load()
+    const deviceCommands = new PhoneCommandQueue({ now: () => this.now() })
 
     const nativeArgs = buildNativeAgentArgs({
       port: this.env.nativeUrl.match(/:(\d+)/)?.[1] ? Number(this.env.nativeUrl.match(/:(\d+)/)![1]) : 8765,
@@ -224,6 +243,8 @@ class Backend {
       assistant: this.assistant,
       wake: this.wake,
       now: this.now,
+      pairing,
+      deviceCommands,
       health: () =>
         buildHealth({
           name: BACKEND_NAME,
@@ -258,12 +279,38 @@ class Backend {
 
     this.logger.info('core', 'ready', { url: running.url })
 
+    let phoneRunning: { url: string; port: number; close(): Promise<void> } | null = null
+    if (this.env.phoneEnabled) {
+      try {
+        phoneRunning = await startPhoneServer({
+          host: this.env.phoneHost,
+          port: this.env.phonePort,
+          registry,
+          pairing,
+          commands: deviceCommands,
+          now: this.now,
+          log: this.logger,
+        })
+        this.logger.info('phone', 'phone listener ready (Android companion over LAN)', {
+          url: phoneRunning.url,
+          note: 'Allow this port through Windows Firewall for Private networks only, and keep the machine on your home LAN.',
+        })
+      } catch (error) {
+        this.logger.error('phone', 'phone listener failed to start', {
+          host: this.env.phoneHost,
+          port: this.env.phonePort,
+          error: error instanceof Error ? error.message : String(error),
+        })
+      }
+    }
+
     let closing = false
     const shutdown = async (): Promise<void> => {
       if (closing) return
       closing = true
       this.logger.info('core', 'shutting down')
       this.supervisor?.stop()
+      await phoneRunning?.close()
       await running.close()
       await registry.persist()
       await this.releaseLock()
