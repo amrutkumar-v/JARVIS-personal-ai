@@ -57,6 +57,7 @@ function backend(overrides: Partial<BackendUiState> = {}): BackendUiState {
     health: null,
     devices: [],
     lastInboundAt: null,
+    lastWake: null,
     ...overrides,
   }
 }

@@ -46,7 +46,7 @@ function deviceSummary(d: DeviceRecord): string {
  * registry snapshot. No fabricated states.
  */
 export function BackendStatus({ backend }: Props) {
-  const { phase, health, devices, lastInboundAt } = backend
+  const { phase, health, devices, lastInboundAt, lastWake } = backend
   const connected = phase === 'connected'
   const native = health?.native
 
@@ -88,11 +88,11 @@ export function BackendStatus({ backend }: Props) {
               </span>
             </li>
           ) : null}
-          {health.wake?.browserOnly ? null : (
+          {health.wake?.browserOnly && !lastWake ? null : (
             <li className="cap-row">
               <span className="cap-label">Wake word</span>
-              <span className="cap-value" data-tone="on">
-                mirrored to backend
+              <span className="cap-value" data-tone={lastWake ? 'on' : 'off'}>
+                {lastWake ? `last ${lastWake.event} · ${whenLabel(lastWake.at)}` : 'mirrored to backend'}
               </span>
             </li>
           )}

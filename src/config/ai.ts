@@ -42,8 +42,10 @@ export interface AiHealthCheckResult {
   pinned?: string | null
   configuredProviders?: string[]
   availableProviders?: string[]
+  /** Providers a REAL probe proved reachable (empty when nothing was probed). */
+  healthyProviders?: string[]
   capabilities?: string[]
-  providersProbed?: string[]
+  providersProbed?: boolean
   providers?: AiProviderHealthSummary[]
 }
 
@@ -52,10 +54,17 @@ export interface AiProviderHealthSummary {
   name: string
   enabled: boolean
   configured: boolean
+  /** Usable right now: configured, or a real probe found the local models. */
   available: boolean
   capabilities: string[]
   model: string
   status: string
+  /** A real probe reached this provider in this process. */
+  discovered?: boolean
+  /** Models the provider really reports (local engines). */
+  models?: string[]
+  probedAt?: number
+  lastError?: string
 }
 
 export interface AiConfig {
@@ -147,6 +156,10 @@ export function resetAiConfigCache(): void {
 export const REMOTE_PROVIDER_ID = 'remote'
 export const MOCK_PROVIDER_ID = 'mock'
 
-/** Provider ids the JARVIS AI router can route to (server side). */
-export const ROUTED_PROVIDER_IDS = ['gemini', 'openai', 'anthropic', 'openrouter', 'local'] as const
+/**
+ * Provider ids the JARVIS AI router can route to (server side). The local
+ * engines are pinnable too, so "use Ollama for this task" is a real request the
+ * router honors (and honestly refuses when nothing is running).
+ */
+export const ROUTED_PROVIDER_IDS = ['gemini', 'openai', 'anthropic', 'openrouter', 'local', 'ollama', 'lmstudio'] as const
 export type RoutedProviderId = (typeof ROUTED_PROVIDER_IDS)[number]

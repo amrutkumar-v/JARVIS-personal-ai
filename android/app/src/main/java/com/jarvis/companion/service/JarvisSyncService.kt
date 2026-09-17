@@ -249,8 +249,17 @@ class JarvisSyncService : Service() {
                     ackAndReport(host, token, deviceId, command, false, "PERMISSION_REQUIRED: READ_CONTACTS is not granted, so \"$requestedName\" could not be resolved to a number.")
                     return
                 }
+                is ContactsResolver.ContactLookup.Ambiguous -> {
+                    // NEVER guess between several contacts: ack the real choices
+                    // and ask. The numbers are shown only by their last four
+                    // digits — enough for the user to choose, without spraying
+                    // full numbers into the event stream.
+                    val choices = lookup.candidates.joinToString("; ") { "${it.name} (…${it.number.takeLast(4)})" }
+                    ackAndReport(host, token, deviceId, command, false, "FAILED: \"$requestedName\" matches ${lookup.candidates.size} contacts: $choices. Which one should I call?")
+                    return
+                }
                 is ContactsResolver.ContactLookup.NotFound -> {
-                    ackAndReport(host, token, deviceId, command, false, "FAILED: no contact matched \"$requestedName\".")
+                    ackAndReport(host, token, deviceId, command, false, "FAILED: no contact matched \"$requestedName\". Tell me the number, or the exact name as it is saved in Contacts.")
                     return
                 }
                 is ContactsResolver.ContactLookup.Unavailable -> {
@@ -322,10 +331,15 @@ class JarvisSyncService : Service() {
         detail: String,
     ) {
         client.ack(host, token, deviceId, command.commandId, ok, detail)
+        // The ack keeps its wire format (`STATE: detail`); the pushed EVENT
+        // carries the reason without the state prefix so the PC can show the
+        // phone's own words (e.g. "which one should I call?" for an ambiguous
+        // contact name).
         val state = detail.substringBefore(':')
+        val reason = detail.substringAfter(':', detail).trim()
         _state.value = _state.value.copy(lastCallState = state)
         val number = command.payload?.get("number")
-        pushCallEvent(state, "outgoing", command.commandId, command.payload?.get("contactName"), number, detail)
+        pushCallEvent(state, "outgoing", command.commandId, command.payload?.get("contactName"), number, reason)
     }
 
     /** Push one REAL call-state observation to the core (best effort, bounded). */

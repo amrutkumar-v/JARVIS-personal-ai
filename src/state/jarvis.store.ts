@@ -48,6 +48,11 @@ export interface BackendUiState {
   devices: DeviceRecord[]
   /** Last inbound (device → JARVIS) message time. */
   lastInboundAt: number | null
+  /**
+   * Last `wake` event the backend actually published (arm/disarm/wake). Mirrored
+   * from the real SSE frame — the wake registry is never assumed to be armed.
+   */
+  lastWake: { event: string; at: number } | null
 }
 
 /**
@@ -223,6 +228,7 @@ const DEFAULT_BACKEND: BackendUiState = {
   health: null,
   devices: [],
   lastInboundAt: null,
+  lastWake: null,
 }
 
 const DEFAULT_GESTURE: GestureUiState = {

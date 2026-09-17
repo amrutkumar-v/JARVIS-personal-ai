@@ -24,6 +24,18 @@ import { callActionPermission, phoneSupportsAction } from './provider'
 
 /** How long a verifier waits for the OS-observed call state (ms). */
 export const CALL_VERIFY_TIMEOUT_MS = 8_000
+/** Slice of the verify window after which a refused call is reported. */
+export const CALL_REFUSAL_POLL_MS = 1_500
+/** Upper bound on refusal checks inside one verify window. */
+const MAX_REFUSAL_CHECKS = 6
+
+/**
+ * States that mean the phone REFUSED (or could not start) the action. They end
+ * verification immediately with the phone's own reason, so an ambiguous contact
+ * name, a denied permission or an offline radio is reported in ~1.5s with the
+ * real explanation instead of a generic 8s timeout.
+ */
+const REFUSING_STATES: CallState[] = ['FAILED', 'REJECTED', 'CANCELLED', 'PERMISSION_REQUIRED', 'NOT_SUPPORTED', 'DEVICE_OFFLINE']
 /** Execution budget for queueing one telephony command (ms). */
 const CALL_EXECUTE_TIMEOUT_MS = 15_000
 
@@ -166,23 +178,52 @@ abstract class BaseAndroidCallTool implements Tool {
     if (!deviceId) {
       return { ok: false, message: 'No companion device id was recorded, so the call could not be observed.', checks: [] }
     }
-    const observed = await this.provider.awaitCallState({
-      deviceId,
-      commandId: data.commandId,
-      states: CONFIRMING_STATES[action],
-      timeoutMs: CALL_VERIFY_TIMEOUT_MS,
-      signal: ctx.signal,
-    })
-    if (!observed) {
-      return {
-        ok: false,
-        message: `The phone did not report a confirming call state within ${CALL_VERIFY_TIMEOUT_MS / 1000}s.`,
-        checks: ['call-state-observed'],
+    const started = Date.now()
+    const deadline = started + CALL_VERIFY_TIMEOUT_MS
+    // Bounded on BOTH axes: wall clock and checks, so a provider that answers
+    // instantly without an event can never spin the verifier.
+    for (let attempt = 0; attempt < MAX_REFUSAL_CHECKS && Date.now() < deadline; attempt += 1) {
+      if (ctx.signal?.aborted) {
+        return { ok: false, message: 'The call verification was cancelled.', checks: [] }
+      }
+      const window = Math.min(CALL_REFUSAL_POLL_MS, deadline - Date.now())
+      const observed = await this.provider.awaitCallState({
+        deviceId,
+        commandId: data.commandId,
+        states: CONFIRMING_STATES[action],
+        timeoutMs: window,
+        signal: ctx.signal,
+      })
+      if (observed) {
+        return {
+          ok: true,
+          message: `The phone reported call state ${observed.state}${observed.contactName ? ` for ${observed.contactName}` : ''}.`,
+          checks: ['call-state-observed'],
+        }
+      }
+      // A refusal the phone itself reported ends the wait immediately — and its
+      // reason is passed through verbatim (this is how "which one should I call?"
+      // for an ambiguous contact name reaches the user).
+      const refusal = this.provider
+        .recentCallEvents(8)
+        .find(
+          (event) =>
+            event.deviceId === deviceId &&
+            REFUSING_STATES.includes(event.state) &&
+            (!data.commandId || !event.commandId || event.commandId === data.commandId) &&
+            event.at >= started - 1_000,
+        )
+      if (refusal) {
+        return {
+          ok: false,
+          message: `The phone did not place the call (${refusal.state}): ${refusal.reason ?? 'no reason reported'}`,
+          checks: ['call-state-observed'],
+        }
       }
     }
     return {
-      ok: true,
-      message: `The phone reported call state ${observed.state}${observed.contactName ? ` for ${observed.contactName}` : ''}.`,
+      ok: false,
+      message: `The phone did not report a confirming call state within ${CALL_VERIFY_TIMEOUT_MS / 1000}s.`,
       checks: ['call-state-observed'],
     }
   }

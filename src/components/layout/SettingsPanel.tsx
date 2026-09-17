@@ -400,6 +400,10 @@ function providerDisplayName(id: string): string {
       return 'OpenRouter'
     case 'local':
       return 'Local (Ollama / LM Studio)'
+    case 'ollama':
+      return 'Ollama (local server)'
+    case 'lmstudio':
+      return 'LM Studio (local server)'
     case 'legacy':
       return 'Custom / legacy endpoint'
     case 'none':
@@ -459,7 +463,7 @@ function AiProvidersSection({
           value={pinned}
           onChange={(e) => onSelect(e.target.value as 'auto' | RoutedProviderId)}
         >
-          <option value="auto">Auto — server decides (with failover)</option>
+          <option value="auto">Auto — server picks the healthiest (with failover)</option>
           {ROUTED_PROVIDER_IDS.map((id) => (
             <option key={id} value={id}>
               {providerDisplayName(id)}
@@ -489,12 +493,22 @@ function AiProvidersSection({
                     {health.provider === p.id ? '● ' : ''}
                     {p.status}
                     {p.model ? ` · ${p.model}` : ''}
+                    {p.models?.length
+                      ? ` · ${p.models.length} model${p.models.length === 1 ? '' : 's'}`
+                      : ''}
                     {p.capabilities?.length ? ` · ${p.capabilities.map(capabilityLabel).join(', ')}` : ''}
                   </span>
                 </li>
               ))}
             </ul>
           ) : null}
+          {(health.providers ?? [])
+            .filter((p) => p.status !== 'CONNECTED' && p.lastError)
+            .map((p) => (
+              <p key={`issue-${p.id}`} className="settings-note-inline">
+                {providerDisplayName(p.id)}: {p.lastError}
+              </p>
+            ))}
         </>
       ) : (
         <p className="settings-note-inline">Checking provider health…</p>

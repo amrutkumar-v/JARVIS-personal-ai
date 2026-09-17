@@ -157,6 +157,32 @@ describe('Phase 10 — Android call tools', () => {
     expect(verification.message).toContain('did not report a confirming call state')
   })
 
+  it('reports the phone\'s own refusal immediately instead of waiting out the timeout', async () => {
+    const provider = new FakeAndroidProvider()
+    provider.emitEventOnRequest = false
+    provider.outcome = { ok: false, state: 'FAILED', message: 'ambiguous contact', deviceId: 's26-ultra', commandId: 'cmd-7' }
+    provider.events = [
+      {
+        deviceId: 's26-ultra',
+        state: 'FAILED',
+        direction: 'outgoing',
+        commandId: 'cmd-7',
+        contactName: 'Sam',
+        reason: '"Sam" matches 2 contacts: Samantha (…1234); Samuel (…5678). Which one should I call?',
+        at: Date.now(),
+      },
+    ]
+    const dial = tool(provider, 'call.dial')
+    const result = await dial.execute({ query: 'call Sam', params: { target: 'Sam' } }, ctx)
+    expect(result.ok).toBe(false)
+    const verification = await dial.verify!({ query: 'call Sam', params: { target: 'Sam' } }, result, ctx)
+    expect(verification.ok).toBe(false)
+    // The phone's real reason is passed through — JARVIS asks WHICH contact
+    // rather than picking one, and never claims the call happened.
+    expect(verification.message).toContain('Which one should I call?')
+    expect(verification.message).toContain('Samantha')
+  })
+
   it('refuses while the companion is unreachable, with the device-disconnected code', async () => {
     const provider = new FakeAndroidProvider()
     provider.capabilitiesResult = { available: false, reason: 'JARVIS Core backend is not connected.' }

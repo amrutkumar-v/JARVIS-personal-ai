@@ -45,6 +45,11 @@ function makeFetch(handler: (url: string, init?: RequestInit) => Promise<Respons
   return { fetchImpl: fn as unknown as NonNullable<AiRouterCreateOptions['fetchImpl']>, calls: fn }
 }
 
+function callsAt(fetchImpl: NonNullable<AiRouterCreateOptions['fetchImpl']>, index: number): unknown {
+  const mocked = fetchImpl as unknown as { mock?: { calls: unknown[][] } }
+  return mocked.mock?.calls[index]?.[0]
+}
+
 const CHAT_BODY = jsonBody({
   model: 'client-model',
   messages: [{ role: 'user', content: 'hello' }],
@@ -613,6 +618,311 @@ describe('aiProvider router — health and security', () => {
     expect(snapshot.providers.filter((p) => p.enabled).map((p) => p.id)).toEqual(['gemini', 'openai'])
     expect(snapshot.providers.find((p) => p.id === 'anthropic')?.capabilities).toEqual(['reasoning'])
     expect(snapshot.providers.find((p) => p.id === 'openrouter')?.capabilities).toEqual(['reasoning', 'vision'])
+  })
+})
+
+describe('aiProvider router — auto routing, discovery and truthful states', () => {
+  it('accepts `auto` as the primary selection instead of degrading to none', () => {
+    const router = createAiProviderRouter({
+      env: {
+        JARVIS_AI_PRIMARY_PROVIDER: 'auto',
+        JARVIS_AI_FALLBACK_PROVIDERS: 'openai',
+        GEMINI_API_KEY: 'sk-g',
+        OPENAI_API_KEY: 'sk-o',
+      },
+    })
+    const snapshot = router.registry()
+    expect(snapshot.explicitMode).toBe(true)
+    expect(snapshot.primary).toBe('auto')
+    expect(snapshot.fallbacks).toEqual(['openai'])
+    expect(snapshot.providers.filter((p) => p.enabled).map((p) => p.id)).toEqual(['gemini', 'openai'])
+  })
+
+  it('routes an `auto` request to the first usable provider and reports auto as primary', async () => {
+    const { fetchImpl, calls } = makeFetch(async (url) => {
+      if (url.includes('api.openai.com')) return chatReply('openai served this')
+      throw new Error(`unexpected url ${url}`)
+    })
+    const router = createAiProviderRouter({
+      env: {
+        JARVIS_AI_PRIMARY_PROVIDER: 'auto',
+        JARVIS_AI_FALLBACK_PROVIDERS: 'openai',
+        GEMINI_API_KEY: 'sk-g',
+        OPENAI_API_KEY: 'sk-o',
+      },
+      fetchImpl,
+    })
+    // With `auto` the fallback list is the operator's preferred order, so the
+    // healthy first choice serves immediately (no wasted round trip).
+    const result = await router.route({ subpath: '/chat/completions', body: CHAT_BODY })
+    expect(result.provider).toBe('openai')
+    expect(result.usedFallback).toBe(false)
+    expect(String(calls.mock.calls[0]?.[0])).toContain('api.openai.com')
+    const report = await router.getHealth()
+    expect(report.primary).toBe('auto')
+  })
+
+  it('falls over across usable providers when the auto head is unreachable', async () => {
+    const { fetchImpl } = makeFetch(async (url) => {
+      if (url.includes('api.openai.com')) throw new Error('ECONNREFUSED')
+      if (url.includes('generativelanguage')) return chatReply('gemini served this')
+      throw new Error(`unexpected url ${url}`)
+    })
+    const router = createAiProviderRouter({
+      env: {
+        JARVIS_AI_PRIMARY_PROVIDER: 'auto',
+        JARVIS_AI_FALLBACK_PROVIDERS: 'openai',
+        GEMINI_API_KEY: 'sk-g',
+        OPENAI_API_KEY: 'sk-o',
+      },
+      fetchImpl,
+    })
+    const result = await router.route({ subpath: '/chat/completions', body: CHAT_BODY })
+    expect(result.provider).toBe('gemini')
+    expect(result.usedFallback).toBe(true)
+  })
+
+  it('deprioritizes a provider whose LAST REAL request failed (auto routing uses real health)', async () => {
+    const { fetchImpl } = makeFetch(async (url) => {
+      if (url.includes('generativelanguage')) return fakeResponse(503, '{}')
+      if (url.includes('api.openai.com')) return chatReply('openai is up')
+      throw new Error(`unexpected url ${url}`)
+    })
+    const router = createAiProviderRouter({
+      env: {
+        JARVIS_AI_PRIMARY_PROVIDER: 'auto',
+        JARVIS_AI_FALLBACK_PROVIDERS: 'gemini,openai',
+        GEMINI_API_KEY: 'sk-g',
+        OPENAI_API_KEY: 'sk-o',
+      },
+      fetchImpl,
+    })
+    const first = await router.route({ subpath: '/chat/completions', body: CHAT_BODY })
+    expect(first.provider).toBe('openai')
+    expect(first.usedFallback).toBe(true)
+    // The failed provider is remembered, so the very next request goes STRAIGHT
+    // to the provider that actually worked — no repeated dead round trip.
+    expect(String(callsAt(fetchImpl, 0))).toContain('generativelanguage')
+    const second = await router.route({ subpath: '/chat/completions', body: CHAT_BODY })
+    expect(second.provider).toBe('openai')
+    expect(second.usedFallback).toBe(false)
+    expect(String(callsAt(fetchImpl, 2))).toContain('api.openai.com')
+  })
+
+  it('discovers the models a running Ollama really has and uses one as the default', async () => {
+    const { fetchImpl, calls } = makeFetch(async (url, init) => {
+      if (url.endsWith('/api/tags')) {
+        // Discovery uses Ollama's NATIVE route, never the /v1 OpenAI prefix.
+        expect(url).toBe('http://127.0.0.1:11434/api/tags')
+        return okResponse({ models: [{ name: 'llama3.2:latest' }, { name: 'qwen2.5:7b' }] })
+      }
+      if (url.endsWith('/chat/completions')) {
+        // ...while chat uses /v1 (the bare host answers "404 page not found").
+        expect(url).toBe('http://127.0.0.1:11434/v1/chat/completions')
+        expect((bodyOf(init) as { model: string }).model).toBe('llama3.2:latest')
+        return chatReply('ollama says hi')
+      }
+      throw new Error(`unexpected url ${url}`)
+    })
+    const router = createAiProviderRouter({
+      env: { JARVIS_AI_PRIMARY_PROVIDER: 'auto', OLLAMA_BASE_URL: 'http://127.0.0.1:11434' },
+      fetchImpl,
+    })
+    const report = await router.getHealth()
+    const ollama = report.providers.find((p) => p.id === 'ollama')
+    expect(ollama?.status).toBe('CONNECTED')
+    expect(ollama?.discovered).toBe(true)
+    expect(ollama?.models).toEqual(['llama3.2:latest', 'qwen2.5:7b'])
+    expect(ollama?.model).toBe('llama3.2:latest')
+    expect(report.healthyProviders).toContain('ollama')
+    expect(report.provider).toBe('ollama')
+    expect(report.status).toBe('CONNECTED')
+
+    const result = await router.route({ subpath: '/chat/completions', body: CHAT_BODY })
+    expect(result.provider).toBe('ollama')
+    expect(result.model).toBe('llama3.2:latest')
+    expect(calls.mock.calls.filter((c) => String(c[0]).endsWith('/api/tags')).length).toBe(1)
+  })
+
+  it('discovers LM Studio models through the OpenAI /models route', async () => {
+    const { fetchImpl } = makeFetch(async (url) => {
+      if (url.endsWith('/models')) return okResponse({ data: [{ id: 'qwen2.5-7b-instruct' }] })
+      throw new Error(`unexpected url ${url}`)
+    })
+    const router = createAiProviderRouter({
+      env: {
+        JARVIS_AI_PRIMARY_PROVIDER: 'auto',
+        LMSTUDIO_BASE_URL: 'http://127.0.0.1:1234/v1',
+      },
+      fetchImpl,
+    })
+    const report = await router.getHealth()
+    const lmstudio = report.providers.find((p) => p.id === 'lmstudio')
+    expect(lmstudio?.status).toBe('CONNECTED')
+    expect(lmstudio?.models).toEqual(['qwen2.5-7b-instruct'])
+    expect(report.provider).toBe('lmstudio')
+  })
+
+  it('reports a reachable local engine with no models as MODEL_UNAVAILABLE with a fix', async () => {
+    const { fetchImpl } = makeFetch(async () => okResponse({ models: [] }))
+    const router = createAiProviderRouter({
+      env: { JARVIS_AI_PRIMARY_PROVIDER: 'auto', OLLAMA_BASE_URL: 'http://127.0.0.1:11434' },
+      fetchImpl,
+    })
+    const report = await router.getHealth()
+    const ollama = report.providers.find((p) => p.id === 'ollama')
+    expect(ollama?.status).toBe('MODEL_UNAVAILABLE')
+    expect(ollama?.discovered).toBe(false)
+    expect(report.status).toBe('MODEL_UNAVAILABLE')
+    expect(report.message).toContain('ollama pull')
+  })
+
+  it('never reports CONNECTED for an unreachable or unauthorized provider', async () => {
+    const { fetchImpl } = makeFetch(async () => {
+      throw new Error('ECONNREFUSED')
+    })
+    const router = createAiProviderRouter({
+      env: {
+        JARVIS_AI_PRIMARY_PROVIDER: 'auto',
+        JARVIS_AI_FALLBACK_PROVIDERS: 'anthropic',
+        GEMINI_API_KEY: 'sk-g',
+        ANTHROPIC_API_KEY: 'sk-a',
+      },
+      fetchImpl,
+    })
+    const report = await router.getHealth()
+    expect(report.status).not.toBe('CONNECTED')
+    expect(report.healthyProviders).toEqual([])
+    for (const provider of report.providers) {
+      expect(provider.status).not.toBe('CONNECTED')
+    }
+  })
+
+  it('says KEY_REQUIRED when a key-based provider has no credential', async () => {
+    const router = createAiProviderRouter({
+      env: { JARVIS_AI_PRIMARY_PROVIDER: 'gemini', OPENAI_BASE_URL: 'https://api.openai.com/v1' },
+      fetchImpl: makeFetch(async () => chatReply('x')).fetchImpl,
+    })
+    const report = await router.getHealth()
+    const openai = report.providers.find((p) => p.id === 'openai')
+    expect(openai?.status).toBe('KEY_REQUIRED')
+    expect(openai?.available).toBe(false)
+  })
+
+  it('reports DISABLED (and never routes) for JARVIS_AI_DISABLED_PROVIDERS', async () => {
+    const { fetchImpl } = makeFetch(async (url) => {
+      if (url.includes('api.openai.com')) return chatReply('openai served this')
+      throw new Error(`unexpected url ${url}`)
+    })
+    const router = createAiProviderRouter({
+      env: {
+        JARVIS_AI_PRIMARY_PROVIDER: 'gemini',
+        JARVIS_AI_DISABLED_PROVIDERS: 'gemini',
+        GEMINI_API_KEY: 'sk-g',
+        OPENAI_API_KEY: 'sk-o',
+      },
+      fetchImpl,
+    })
+    const snapshot = router.registry()
+    expect(snapshot.disabled).toEqual(['gemini'])
+    expect(snapshot.providers.find((p) => p.id === 'gemini')?.enabled).toBe(false)
+    const report = await router.getHealth()
+    expect(report.providers.find((p) => p.id === 'gemini')?.status).toBe('DISABLED')
+    // A disabled provider must not be picked up as the active one.
+    expect(report.provider).toBe('openai')
+  })
+
+  it('does not demote a provider because of a client payload (400) error', async () => {
+    const { fetchImpl, calls } = makeFetch(async (url) => {
+      if (url.includes('generativelanguage')) return fakeResponse(400, '{"error":"bad model"}')
+      if (url.includes('api.openai.com')) return chatReply('openai is up')
+      throw new Error(`unexpected url ${url}`)
+    })
+    const router = createAiProviderRouter({
+      env: {
+        JARVIS_AI_PRIMARY_PROVIDER: 'auto',
+        JARVIS_AI_FALLBACK_PROVIDERS: 'gemini,openai',
+        GEMINI_API_KEY: 'sk-g',
+        OPENAI_API_KEY: 'sk-o',
+      },
+      fetchImpl,
+    })
+    const first = await router.route({ subpath: '/chat/completions', body: CHAT_BODY })
+    expect(first.status).toBe(400)
+    // Gemini is still tried first: a 400 is the caller's payload, not a
+    // provider outage.
+    const second = await router.route({ subpath: '/chat/completions', body: CHAT_BODY })
+    expect(second.status).toBe(400)
+    expect(String(calls.mock.calls[1]?.[0])).toContain('generativelanguage')
+  })
+
+  it('routes to a running local engine with NO prior health call (cold start)', async () => {
+    const { fetchImpl } = makeFetch(async (url, init) => {
+      if (url.endsWith('/api/tags')) return okResponse({ models: [{ name: 'qwen3:8b' }] })
+      if (url.endsWith('/chat/completions')) {
+        expect(url).toBe('http://localhost:11434/v1/chat/completions')
+        expect((bodyOf(init) as { model: string }).model).toBe('qwen3:8b')
+        return chatReply('cold start ok')
+      }
+      // LM Studio / generic local: nothing is listening in this test.
+      throw new Error(`ECONNREFUSED ${url}`)
+    })
+    const router = createAiProviderRouter({
+      env: { JARVIS_AI_PRIMARY_PROVIDER: 'auto' },
+      fetchImpl,
+    })
+    // No getHealth() first: `auto` must discover and use the local engine on the
+    // request itself, not answer "no provider is configured".
+    const result = await router.route({ subpath: '/chat/completions', body: CHAT_BODY })
+    expect(result.status).toBe(200)
+    expect(result.provider).toBe('ollama')
+    expect(result.model).toBe('qwen3:8b')
+  })
+
+  it('keeps a discovered local engine routable after the probe TTL expires', async () => {
+    let clock = 1_000_000
+    const { fetchImpl } = makeFetch(async (url) => {
+      if (url.endsWith('/api/tags')) return okResponse({ models: [{ name: 'qwen3:8b' }] })
+      if (url.endsWith('/chat/completions')) return chatReply('still routed')
+      throw new Error(`ECONNREFUSED ${url}`)
+    })
+    const router = createAiProviderRouter({
+      env: { JARVIS_AI_PRIMARY_PROVIDER: 'auto', OLLAMA_BASE_URL: 'http://localhost:11434' },
+      fetchImpl,
+      now: () => clock,
+      probeTtlMs: 15_000,
+    })
+    await router.getHealth()
+    // A minute later the health CLAIM is stale (and re-probed), but routing
+    // availability must not silently expire.
+    clock += 60_000
+    const result = await router.route({ subpath: '/chat/completions', body: CHAT_BODY })
+    expect(result.provider).toBe('ollama')
+  })
+
+  it('gives local engines a long budget (model load) and honors an explicit override', () => {
+    const router = createAiProviderRouter({
+      env: { JARVIS_AI_PRIMARY_PROVIDER: 'auto', OLLAMA_BASE_URL: 'http://localhost:11434', LMSTUDIO_AI_TIMEOUT_MS: '5000' },
+    })
+    const providers = router.registry().providers
+    // Ollama loads the model on the request: the default must not be the 45s
+    // hosted-provider budget.
+    expect(providers.find((p) => p.id === 'ollama')?.timeoutMs).toBe(180_000)
+    expect(providers.find((p) => p.id === 'gemini')?.timeoutMs).toBe(45_000)
+    // An explicit env value always wins.
+    expect(providers.find((p) => p.id === 'lmstudio')?.timeoutMs).toBe(5_000)
+  })
+
+  it('never leaks an api key through discovery errors', async () => {
+    const { fetchImpl } = makeFetch(async () => {
+      throw new Error('boom')
+    })
+    const router = createAiProviderRouter({
+      env: { JARVIS_AI_PRIMARY_PROVIDER: 'gemini', GEMINI_API_KEY: 'sk-discovery-secret' },
+      fetchImpl,
+    })
+    const report = await router.getHealth()
+    expect(JSON.stringify(report)).not.toContain('sk-discovery-secret')
   })
 })
 

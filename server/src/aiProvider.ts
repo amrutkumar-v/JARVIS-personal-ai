@@ -49,14 +49,42 @@ export type AiConnectionStatus =
   | 'RATE_LIMITED'
   | 'DISCONNECTED'
 
-/** Per-provider health vocabulary (config + probe derived). */
+/**
+ * Per-provider health vocabulary (config + probe derived).
+ *
+ * Truthful by construction: `CONNECTED` is only ever reported after a REAL
+ * upstream call (chat ping or model discovery) succeeded in this process.
+ * `CONFIGURED` means "settings look complete but nothing has been verified" —
+ * never a claim of reachability. `KEY_REQUIRED` means the provider needs a
+ * credential that is not set, so the operator knows exactly what to add.
+ */
 export type AiProviderHealthStatus =
   | 'CONNECTED'
+  | 'CONFIGURED'
+  | 'KEY_REQUIRED'
+  | 'DISABLED'
   | 'MISCONFIGURED'
   | 'UNAVAILABLE'
   | 'DEGRADED'
   | 'NOT_CONFIGURED'
   | 'MODEL_UNAVAILABLE'
+
+/**
+ * Primary selection: a named provider, `auto` (health-aware routing across all
+ * usable providers) or `none` (nothing configured).
+ */
+export type AiPrimarySelection = AiTransportId | 'none' | 'auto'
+
+/** Resolved provider registry snapshot (internal + public `registry()`). */
+export interface AiRegistrySnapshot {
+  explicitMode: boolean
+  primary: AiPrimarySelection
+  fallbacks: AiTransportId[]
+  /** Providers explicitly disabled via `JARVIS_AI_DISABLED_PROVIDERS`. */
+  disabled: AiTransportId[]
+  pinned: AiTransportId | null
+  providers: AiProviderDefinition[]
+}
 
 export type AiRouteErrorCode =
   | 'ai_not_configured'
@@ -162,8 +190,16 @@ export interface AiProviderHealthEntry {
   capabilities: AiCapability[]
   model: string
   status: AiProviderHealthStatus
-  /** Discovered local models (ollama/lmstudio only, when discovery succeeded). */
+  /**
+   * Discovery-driven availability: a REAL endpoint probe (model listing or a
+   * chat ping) proved this provider reachable in this process. `false` means
+   * unverified, never "probably fine".
+   */
+  discovered?: boolean
+  /** Discovered local models (ollama/lmstudio/local, when discovery succeeded). */
   models?: string[]
+  /** When the provider was last probed (ms epoch, 0 = never). */
+  probedAt?: number
   lastError?: string
 }
 
@@ -175,22 +211,19 @@ export interface AiHealthReport {
   upstream?: string
   /** Active provider (the one that would serve a request). */
   provider: AiTransportId | 'none'
-  primary: AiTransportId | 'none' | 'auto'
+  primary: AiPrimarySelection
   pinned: AiTransportId | null
   configuredProviders: AiTransportId[]
+  /** Configured providers that ALSO advertise the required capability. */
   availableProviders: AiTransportId[]
+  /** Providers a real probe proved reachable (empty when nothing was probed). */
+  healthyProviders: AiTransportId[]
   capabilities: AiCapability[]
   providersProbed: boolean
   providers: AiProviderHealthEntry[]
 }
 
-export interface AiProviderRegistrySnapshot {
-  explicitMode: boolean
-  primary: AiTransportId | 'none' | 'auto'
-  fallbacks: AiTransportId[]
-  pinned: AiTransportId | null
-  providers: AiProviderDefinition[]
-}
+export type AiProviderRegistrySnapshot = AiRegistrySnapshot
 
 const PROVIDER_IDS: readonly ProviderId[] = ['gemini', 'openai', 'anthropic', 'openrouter', 'local', 'ollama', 'lmstudio']
 
@@ -198,10 +231,34 @@ const DEFAULT_GEMINI_BASE = 'https://generativelanguage.googleapis.com/v1beta/op
 const DEFAULT_OPENAI_BASE = 'https://api.openai.com/v1'
 const DEFAULT_ANTHROPIC_BASE = 'https://api.anthropic.com/v1'
 const DEFAULT_OPENROUTER_BASE = 'https://openrouter.ai/api/v1'
-const DEFAULT_OLLAMA_BASE = 'http://localhost:11434'
+/**
+ * Ollama's OpenAI-compatible API lives under `/v1` (its native API is `/api/*`).
+ * Pointing the OpenAI client at the bare host returns "404 page not found", so
+ * `/v1` is ensured here and stripped again for native discovery calls.
+ */
+const DEFAULT_OLLAMA_BASE = 'http://localhost:11434/v1'
+
+function normalizeOllamaBase(baseUrl: string): string {
+  const base = baseUrl.replace(/\/+$/, '')
+  if (!base) return base
+  return /\/v\d+$/.test(base) ? base : `${base}/v1`
+}
 const DEFAULT_LMSTUDIO_BASE = 'http://localhost:1234/v1'
 
+/** Max locally-discovered models kept in a health report (bounded payload). */
+const MAX_DISCOVERED_MODELS = 50
+/** Parallel provider probes per health report (keeps /api/ai/health snappy). */
+const PROBE_CONCURRENCY = 4
+
 const DEFAULT_CHAT_TIMEOUT_MS = 45_000
+/**
+ * Local engines load the model ON the request, so the first call to a cold
+ * Ollama/LM Studio can take minutes. A hosted-provider timeout would report a
+ * perfectly healthy local model as "timed out"; this budget is the honest one
+ * for that regime (and every local provider still accepts its own
+ * `<PROVIDER>_AI_TIMEOUT_MS` override).
+ */
+const LOCAL_CHAT_TIMEOUT_MS = 180_000
 const DEFAULT_EMBED_TIMEOUT_MS = 60_000
 const DEFAULT_HEALTH_TIMEOUT_MS = 15_000
 /**
@@ -279,14 +336,17 @@ function buildProvider(
     keylessChat?: string
   },
 ): AiProviderDefinition {
-  const baseUrl = envString(env, defaults.baseUrlEnv) || defaults.baseUrl
+  const rawBaseUrl = envString(env, defaults.baseUrlEnv) || defaults.baseUrl
+  const baseUrl = id === 'ollama' ? normalizeOllamaBase(rawBaseUrl) : rawBaseUrl
   const chatModel = envString(env, defaults.chatEnv) || defaults.chatModel
   const visionModel =
     envString(env, defaults.visionEnv ?? '') ||
     (defaults.visionModel ? defaults.visionModel : chatModel)
   const embeddingModel = envString(env, defaults.embeddingEnv ?? '') || defaults.embeddingModel
   const key = envString(env, defaults.keyEnv)
-  const timeoutMs = envInt(env, defaults.timeoutEnv, 0) || DEFAULT_CHAT_TIMEOUT_MS
+  const configuredTimeoutMs = envInt(env, defaults.timeoutEnv, 0)
+  const isLocalEngine = id === 'local' || id === 'ollama' || id === 'lmstudio'
+  const timeoutMs = configuredTimeoutMs || (isLocalEngine ? LOCAL_CHAT_TIMEOUT_MS : DEFAULT_CHAT_TIMEOUT_MS)
 
   let enabled = false
   if (id === 'local' || id === 'ollama' || id === 'lmstudio') {
@@ -467,14 +527,25 @@ function buildProviders(env: Record<string, string | undefined>, legacy?: AiProx
   })
 }
 
-function resolveRegistry(
-  env: Record<string, string | undefined>,
-  legacy?: AiProxyConfig,
-): { explicitMode: boolean; primary: AiTransportId | 'none'; fallbacks: AiTransportId[]; pinned: AiTransportId | null; providers: AiProviderDefinition[] } {
-  const providers = buildProviders(env, legacy)
+/**
+ * Parse `JARVIS_AI_DISABLED_PROVIDERS` (comma separated ids). A disabled
+ * provider is never routed to and is reported as DISABLED — the operator's
+ * intent stays visible instead of looking like a configuration mistake.
+ */
+function resolveDisabledProviders(env: Record<string, string | undefined>): AiTransportId[] {
+  const raw = envString(env, 'JARVIS_AI_DISABLED_PROVIDERS')
+  if (!raw) return []
+  return [...new Set(raw.split(',').map((s) => s.trim()).filter(isProviderId))]
+}
+
+function resolveRegistry(env: Record<string, string | undefined>, legacy?: AiProxyConfig): AiRegistrySnapshot {
+  const disabled = resolveDisabledProviders(env)
+  const providers = buildProviders(env, legacy).map((p) =>
+    disabled.includes(p.id) ? { ...p, enabled: false } : p,
+  )
   const explicitMode = envString(env, 'JARVIS_AI_PRIMARY_PROVIDER') !== ''
 
-  let primary: AiTransportId | 'none' = 'none'
+  let primary: AiPrimarySelection = 'none'
   let fallbacks: AiTransportId[] = []
   let pinned: AiTransportId | null = null
 
@@ -482,7 +553,10 @@ function resolveRegistry(
     primary = providers.some((p) => p.id === 'legacy' && p.enabled) ? 'legacy' : 'none'
   } else {
     const primaryRaw = envString(env, 'JARVIS_AI_PRIMARY_PROVIDER')
-    if (isProviderId(primaryRaw)) primary = primaryRaw
+    // `auto` is a first-class selection: route across every usable provider and
+    // order candidates by REAL observed health (see `routingCandidates`).
+    if (primaryRaw === 'auto') primary = 'auto'
+    else if (isProviderId(primaryRaw)) primary = primaryRaw
     fallbacks = envString(env, 'JARVIS_AI_FALLBACK_PROVIDERS')
       .split(',')
       .map((s) => s.trim())
@@ -493,16 +567,40 @@ function resolveRegistry(
   if (isProviderId(serverPin)) pinned = serverPin
   else if (serverPin === 'legacy') pinned = 'legacy'
 
-  return { explicitMode, primary, fallbacks, pinned, providers }
+  return { explicitMode, primary, fallbacks, disabled, pinned, providers }
 }
 
 function findProvider(providers: AiProviderDefinition[], id: AiTransportId): AiProviderDefinition | undefined {
   return providers.find((p) => p.id === id)
 }
 
-/** Ordered routing candidates honoring primary → fallbacks → remaining. */
+/**
+ * Per-provider observations from REAL traffic: model discovery, health probes
+ * and the outcome of every routed request. Health-aware `auto` routing reads
+ * these, so a provider that just failed is tried LAST on the next request
+ * instead of first — and a provider is never reported CONNECTED without a
+ * successful call in this process.
+ */
+interface ProbeRecord {
+  at: number
+  status: AiProviderHealthStatus
+  connection: AiConnectionStatus
+  /** A real probe proved this provider reachable. */
+  discovered: boolean
+  models?: string[]
+  lastError?: string
+}
+
+/**
+ * Ordered routing candidates honoring primary → fallbacks → remaining.
+ *
+ * `isUsable` decides candidacy: `enabled` (config-complete) by default, and in
+ * the router a provider whose models were really discovered counts too — a
+ * running Ollama is a usable provider even with no chat model pinned in env.
+ */
 function orderedCandidates(
-  registry: { explicitMode: boolean; primary: AiTransportId | 'none'; fallbacks: AiTransportId[]; providers: AiProviderDefinition[] },
+  registry: AiRegistrySnapshot,
+  isUsable: (provider: AiProviderDefinition) => boolean = (p) => p.enabled,
 ): AiProviderDefinition[] {
   if (!registry.explicitMode) {
     return registry.providers.filter((p) => p.id === 'legacy' && p.enabled)
@@ -511,10 +609,12 @@ function orderedCandidates(
   const push = (id: AiTransportId): void => {
     if (!order.includes(id)) order.push(id)
   }
-  if (registry.primary !== 'none') push(registry.primary)
+  // `auto` contributes no fixed head — fallbacks first, then every remaining
+  // usable provider (the health-aware ordering happens in `routingCandidates`).
+  if (registry.primary !== 'none' && registry.primary !== 'auto') push(registry.primary)
   for (const id of registry.fallbacks) push(id)
-  for (const p of registry.providers) if (p.enabled) push(p.id)
-  return order.map((id) => findProvider(registry.providers, id)).filter((p): p is AiProviderDefinition => p !== undefined && p.enabled)
+  for (const p of registry.providers) if (isUsable(p)) push(p.id)
+  return order.map((id) => findProvider(registry.providers, id)).filter((p): p is AiProviderDefinition => p !== undefined && isUsable(p))
 }
 
 function capabilityOfProvider(provider: AiProviderDefinition, capability: AiCapability): boolean {
@@ -864,7 +964,7 @@ function errorBody(code: AiRouteErrorCode, message: string): { status: number; b
 function buildRouter(
   options: AiRouterCreateOptions,
 ): {
-  registry: () => { explicitMode: boolean; primary: AiTransportId | 'none'; fallbacks: AiTransportId[]; pinned: AiTransportId | null; providers: AiProviderDefinition[] }
+  registry: () => AiRegistrySnapshot
   route: (req: AiRouteRequest) => Promise<AiRouteResult>
   getHealth: () => Promise<AiHealthReport>
 } {
@@ -899,11 +999,233 @@ function buildRouter(
     return outcome
   }
 
-  let probedAt = -1_000_000
-  let probedStatus: AiConnectionStatus = 'MISCONFIGURED'
-  let probedProvider: AiProviderDefinition | null = null
+  const observations = new Map<AiTransportId, ProbeRecord>()
 
-  const reg = (): ReturnType<typeof resolveRegistry> => resolveRegistry(env, options.legacy)
+  /** An observation inside the TTL window; never a stale health claim. */
+  const freshObservation = (id: AiTransportId): ProbeRecord | undefined => {
+    const record = observations.get(id)
+    if (!record) return undefined
+    return now() - record.at < probeTtlMs ? record : undefined
+  }
+
+  /**
+   * The LAST thing we really saw, regardless of TTL.
+   *
+   * Routing candidacy must not expire: a provider discovered a minute ago is
+   * still worth attempting (and will be re-probed by the next health report).
+   * Only health CLAIMS are TTL-gated, never routing availability — otherwise
+   * "Ollama is running" would stop being true 15 seconds after we learned it.
+   */
+  const lastObservation = (id: AiTransportId): ProbeRecord | undefined => observations.get(id)
+
+  const isLocalProvider = (id: AiTransportId): boolean => id === 'ollama' || id === 'lmstudio' || id === 'local'
+
+  /**
+   * A provider is usable when its config is complete, or when a real probe
+   * found local models it can serve.
+   */
+  const isRoutable = (provider: AiProviderDefinition): boolean =>
+    provider.enabled || (isLocalProvider(provider.id) && provider.baseUrl !== '' && lastObservation(provider.id)?.discovered === true)
+
+  /**
+   * Map a REAL connection outcome to the per-provider vocabulary. Auth failures
+   * collapse to UNAVAILABLE (the provider exists but cannot serve us), while a
+   * missing model stays MODEL_UNAVAILABLE because it is actionable.
+   */
+  const statusForConnection = (connection: AiConnectionStatus): AiProviderHealthStatus =>
+    connection === 'CONNECTED'
+      ? 'CONNECTED'
+      : connection === 'MODEL_UNAVAILABLE'
+        ? 'MODEL_UNAVAILABLE'
+        : connection === 'MISCONFIGURED'
+          ? 'MISCONFIGURED'
+          : 'UNAVAILABLE'
+
+  /** Record the outcome of ONE real routed request (never a guess). */
+  const observeAttempt = (provider: AiProviderDefinition, outcome: AttemptOutcome): void => {
+    const previous = observations.get(provider.id)
+    if (outcome.kind === 'ok') {
+      observations.set(provider.id, {
+        at: now(),
+        status: 'CONNECTED',
+        connection: 'CONNECTED',
+        discovered: true,
+        models: previous?.models,
+      })
+      return
+    }
+    let connection: AiConnectionStatus
+    let lastError: string
+    if (outcome.kind === 'business') {
+      // A 400 is a client payload problem: it says nothing about provider health
+      // and must never demote a healthy provider in auto routing.
+      if (outcome.status !== 401 && outcome.status !== 403 && outcome.status !== 404 && outcome.status !== 429) return
+      connection = mapProbeStatus(outcome)
+      lastError =
+        outcome.status === 404
+          ? 'The upstream rejected the configured model (HTTP 404).'
+          : outcome.status === 429
+            ? 'The upstream is rate limiting this key (HTTP 429).'
+            : `The upstream rejected the credential (HTTP ${outcome.status}).`
+    } else {
+      connection = mapProbeStatus(outcome)
+      lastError =
+        outcome.kind === 'rate_limit'
+          ? 'The upstream is rate limiting this key (HTTP 429).'
+          : outcome.kind === 'timeout'
+            ? 'The upstream did not answer before the timeout.'
+            : outcome.kind === 'server'
+              ? `The upstream returned HTTP ${outcome.status}.`
+              : 'The upstream was unreachable.'
+    }
+    observations.set(provider.id, {
+      at: now(),
+      status: statusForConnection(connection),
+      connection,
+      discovered: false,
+      models: previous?.models,
+      lastError,
+    })
+  }
+
+  const modelsEndpointFor = (provider: AiProviderDefinition): string => {
+    const base = provider.baseUrl.replace(/\/+$/, '')
+    // Ollama lists installed models on its NATIVE /api/tags route (not under the
+    // /v1 OpenAI prefix); LM Studio and generic OpenAI-compatible local servers
+    // expose the OpenAI /models route.
+    return provider.id === 'ollama' ? `${base.replace(/\/v\d+$/, '')}/api/tags` : `${base}/models`
+  }
+
+  /** Parse the REAL model list out of an Ollama/LM Studio/OpenAI payload. */
+  const parseModelIds = (payload: unknown): string[] => {
+    if (!payload || typeof payload !== 'object') return []
+    const record = payload as Record<string, unknown>
+    const list = Array.isArray(record.models) ? record.models : Array.isArray(record.data) ? record.data : []
+    const out: string[] = []
+    for (const item of list) {
+      if (typeof item === 'string') {
+        if (item.trim()) out.push(item.trim())
+        continue
+      }
+      if (!item || typeof item !== 'object') continue
+      const entry = item as Record<string, unknown>
+      const name = entry.name ?? entry.id ?? entry.model
+      if (typeof name === 'string' && name.trim()) out.push(name.trim())
+    }
+    return [...new Set(out)].slice(0, MAX_DISCOVERED_MODELS)
+  }
+
+  /**
+   * REAL model discovery for local providers. Returns the installed models or a
+   * truthful error — it never fabricates a model list.
+   */
+  const discoverModels = async (provider: AiProviderDefinition): Promise<{ models: string[]; error?: string }> => {
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), DEFAULT_HEALTH_TIMEOUT_MS)
+    try {
+      const headers: Record<string, string> = {}
+      if (provider.key) headers.authorization = `Bearer ${provider.key}`
+      const res = await fetchImpl(modelsEndpointFor(provider), { method: 'GET', headers, signal: controller.signal })
+      if (!res.ok) return { models: [], error: `HTTP ${res.status}` }
+      const payload = JSON.parse(toText(new Uint8Array(await res.arrayBuffer()))) as unknown
+      return { models: parseModelIds(payload) }
+    } catch (error) {
+      const aborted = error instanceof Error && error.name === 'AbortError'
+      return { models: [], error: aborted ? 'timeout' : 'unreachable' }
+    } finally {
+      clearTimeout(timer)
+    }
+  }
+
+  /**
+   * Probe ONE provider for real: local providers through model discovery (which
+   * also yields their installed models), hosted providers through a 1-token
+   * chat ping. TTL-cached so a health report cannot hammer an endpoint.
+   */
+  const probeProvider = async (provider: AiProviderDefinition): Promise<ProbeRecord> => {
+    const cached = freshObservation(provider.id)
+    if (cached) return cached
+
+    if (isLocalProvider(provider.id)) {
+      const discovery = await discoverModels(provider)
+      const models = discovery.models
+      const connection: AiConnectionStatus = discovery.error
+        ? discovery.error === 'timeout'
+          ? 'NETWORK_ERROR'
+          : 'DISCONNECTED'
+        : models.length > 0
+          ? 'CONNECTED'
+          : 'MODEL_UNAVAILABLE'
+      const record: ProbeRecord = {
+        at: now(),
+        status: statusForConnection(connection),
+        connection,
+        discovered: connection === 'CONNECTED',
+        models,
+        lastError: discovery.error
+          ? `Model discovery failed (${discovery.error}).`
+          : models.length === 0
+            ? 'The endpoint is reachable but has no models installed.'
+            : undefined,
+      }
+      observations.set(provider.id, record)
+      return record
+    }
+
+    const modelOverride = modelFor(provider, 'reasoning') || provider.chatModel || 'gemini-3.6-flash'
+    const probeBody = toBytes(
+      JSON.stringify({ model: modelOverride, messages: [{ role: 'user', content: 'ping' }], max_tokens: 1 }),
+    )
+    const outcome = await attemptProvider(provider, '/chat/completions', probeBody, modelOverride, DEFAULT_HEALTH_TIMEOUT_MS)
+    observeAttempt(provider, outcome)
+    return (
+      observations.get(provider.id) ?? {
+        at: now(),
+        status: 'UNAVAILABLE',
+        connection: 'DISCONNECTED',
+        discovered: false,
+      }
+    )
+  }
+
+  /** Probe every target with bounded parallelism (cache-aware). */
+  const probeAll = async (targets: AiProviderDefinition[]): Promise<void> => {
+    const queue = [...targets]
+    const workers = Array.from({ length: Math.min(PROBE_CONCURRENCY, queue.length) }, async () => {
+      for (;;) {
+        const next = queue.shift()
+        if (!next) return
+        await probeProvider(next)
+      }
+    })
+    await Promise.all(workers)
+  }
+
+  /**
+   * The ONE routing order, shared by `route()` and `getHealth()` so the reported
+   * active provider is always the provider that would actually serve a request.
+   */
+  const routingCandidates = (registry: AiRegistrySnapshot, pinned: AiTransportId | null): AiProviderDefinition[] => {
+    if (pinned) {
+      const pinnedProvider = findProvider(registry.providers, pinned)
+      return pinnedProvider && isRoutable(pinnedProvider) ? [pinnedProvider] : []
+    }
+    const base = orderedCandidates(registry, isRoutable)
+    if (registry.primary !== 'auto') return base
+    // AUTO — order by the LAST REAL observation. Unknown providers keep their
+    // declared position; known-bad ones are attempted last but still attempted,
+    // so "every provider is down" is still reported honestly.
+    return base
+      .map((provider, index) => ({ provider, index, rank: (observations.get(provider.id)?.connection ?? 'CONNECTED') === 'CONNECTED' ? 0 : 2 }))
+      .sort((a, b) => a.rank - b.rank || a.index - b.index)
+      .map((entry) => entry.provider)
+  }
+
+  /** A discovered model is a real default when no chat model is configured. */
+  const discoveredDefaultModel = (provider: AiProviderDefinition): string =>
+    freshObservation(provider.id)?.models?.[0] ?? ''
+
+  const reg = (): AiRegistrySnapshot => resolveRegistry(env, options.legacy)
 
   const effectivePinned = (reqPinned: string | null | undefined): AiTransportId | null => {
     const header = typeof reqPinned === 'string' && reqPinned.trim() ? reqPinned.trim() : ''
@@ -926,12 +1248,21 @@ function buildRouter(
     let candidates: AiProviderDefinition[]
     if (pinned) {
       const pinnedProvider = findProvider(registry.providers, pinned)
-      if (!pinnedProvider || !pinnedProvider.enabled) {
+      if (!pinnedProvider || !isRoutable(pinnedProvider)) {
         return { status: 503, contentType: 'application/json; charset=utf-8', body: jsonBytes({ error: { message: `Pinned provider "${pinned}" is not configured on the server.`, code: 'PROVIDER_NOT_CONFIGURED' } }), provider: 'none', model: '', capability, usedFallback: false, errorCode: 'provider_not_configured', errorMessage: `Pinned provider "${pinned}" is not configured on the server.` }
       }
       candidates = [pinnedProvider]
     } else {
-      candidates = orderedCandidates(registry)
+      // Health-aware: for `auto` a provider that just failed is tried last.
+      candidates = routingCandidates(registry, null)
+    }
+
+    if (candidates.length === 0 && !pinned && registry.primary === 'auto') {
+      // Cold start: nothing has been observed yet. Discover the local engines for
+      // real (bounded + TTL-cached) so `auto` can use a running Ollama/LM Studio
+      // without waiting for a separate health call.
+      await probeAll(registry.providers.filter((p) => isLocalProvider(p.id) && p.baseUrl !== ''))
+      candidates = routingCandidates(registry, null)
     }
 
     if (candidates.length === 0) {
@@ -949,8 +1280,19 @@ function buildRouter(
     let sawUpstreamError = false
     for (let i = 0; i < candidates.length; i += 1) {
       const provider = candidates[i]!
-      const modelOverride = modelFor(provider, capability)
+      // A really-discovered local model is the honest default when the operator
+      // pinned none; otherwise the configured model is used.
+      let modelOverride = modelFor(provider, capability) || discoveredDefaultModel(provider)
+      if (!modelOverride && isLocalProvider(provider.id) && capability !== 'embeddings') {
+        // Local engines are routinely run with no pinned chat model. Discover
+        // the installed models for real (bounded + TTL-cached) instead of
+        // forwarding another provider's model id to a server that has none.
+        await probeProvider(provider)
+        modelOverride = discoveredDefaultModel(provider)
+      }
       const outcome = await attemptProvider(provider, req.subpath, req.body, modelOverride)
+      // Feed the REAL result back into health/auto routing.
+      observeAttempt(provider, outcome)
       switch (outcome.kind) {
         case 'ok':
           return {
@@ -1022,82 +1364,100 @@ function buildRouter(
     return { status: err.status, contentType: 'application/json; charset=utf-8', body: err.body, provider: 'none', model: '', capability, usedFallback: false, errorCode: 'ai_upstream_unreachable', errorMessage: 'All configured providers were unreachable.' }
   }
 
-  const probeActive = async (): Promise<AiConnectionStatus> => {
-    const registry = reg()
-    const candidates = orderedCandidates(registry)
-    const pinned = effectivePinned(null)
-    const target: AiProviderDefinition | undefined = pinned ? findProvider(registry.providers, pinned) : candidates[0]
-    if (!target || !target.enabled) return 'MISCONFIGURED'
-
-    const nowMs = now()
-    if (nowMs - probedAt < probeTtlMs && probedProvider?.id === target.id) return probedStatus
-
-    // Legacy cannot know its models, so its probe mirrors the previous
-    // behavior (a neutral 1-token chat with the historical default model).
-    const modelOverride = modelFor(target, 'reasoning') || target.chatModel || 'gemini-3.6-flash'
-    const probeBody = toBytes(JSON.stringify({ model: modelOverride, messages: [{ role: 'user', content: 'ping' }], max_tokens: 1 }))
-    const outcome = await attemptProvider(target, '/chat/completions', probeBody, modelOverride, DEFAULT_HEALTH_TIMEOUT_MS)
-    probedAt = nowMs
-    probedProvider = target
-    probedStatus = mapProbeStatus(outcome)
-    return probedStatus
-  }
-
   const getHealth = async (): Promise<AiHealthReport> => {
     const registry = reg()
     const definitions = registry.providers
     const pinned = effectivePinned(null)
-    const candidates = orderedCandidates(registry)
-    const active = pinned ? (findProvider(definitions, pinned) ?? undefined) : candidates[0]
-
     const configured = definitions.filter((p) => p.enabled)
     const configuredIds = configured.map((p) => p.id)
-    const available = configured.filter((p) => p.capabilities.includes('reasoning'))
-    const availableIds = available.map((p) => p.id)
+
+    // Probe EVERY configured provider (bounded + TTL-cached) so no provider is
+    // ever reported CONNECTED without a real observation in this process. Local
+    // providers are probed through model discovery even when they are not
+    // `enabled` — that is how a running Ollama/LM Studio becomes visible at all.
+    const probeTargets = definitions.filter((p) => p.enabled || (isLocalProvider(p.id) && p.baseUrl !== ''))
+    let providersProbed = false
+    if (probeHealth && probeTargets.length > 0) {
+      await probeAll(probeTargets)
+      providersProbed = true
+    }
+
+    // The active provider is whatever the router would ACTUALLY use right now —
+    // the same health-aware order `route()` uses, so the report cannot lie about
+    // which provider would answer a request.
+    const candidates = routingCandidates(registry, pinned)
+    const active = candidates[0]
+    const usable = definitions.filter(isRoutable)
+    const availableIds = usable.filter((p) => p.capabilities.includes('reasoning')).map((p) => p.id)
+    const healthyIds = definitions.filter((p) => freshObservation(p.id)?.connection === 'CONNECTED').map((p) => p.id)
 
     let status: AiConnectionStatus = 'MISCONFIGURED'
     let message: string | undefined
     let model: string | undefined
     let upstream: string | undefined
-    let providersProbed = false
 
-    if (configured.length === 0) {
-      message = 'No AI provider is configured. Set JARVIS_AI_PRIMARY_PROVIDER (e.g. gemini/openai/anthropic/openrouter/local) plus its API key, or set JARVIS_AI_BASE_URL + JARVIS_API_KEY (or GEMINI_API_KEY) for the legacy single provider, then restart.'
-    } else if (active) {
-      if (probeHealth) {
-        status = await probeActive()
-        providersProbed = true
-      } else {
-        providersProbed = false
-        status = 'CONNECTED'
+    /** Describe a provider that answered but cannot serve requests. */
+    const unusableMessage = (provider: AiProviderDefinition, observation: ProbeRecord): string => {
+      let text = `${provider.name} is not usable: ${observation.lastError ?? observation.status}`
+      if (observation.connection === 'MODEL_UNAVAILABLE') {
+        text +=
+          provider.id === 'ollama'
+            ? ' Pull a model first (for example `ollama pull llama3.2`).'
+            : ' Install or load a model in the local engine.'
       }
-      model = (modelFor(active, 'reasoning') || active.chatModel || undefined)
+      return text
+    }
+
+    if (configured.length === 0 && candidates.length === 0) {
+      // Nothing is routable. If a real probe still reached something, report
+      // THAT (actionable) instead of the blanket "nothing is configured" — a
+      // reachable local engine with no models is a different problem.
+      const observed = definitions
+        .map((p) => ({ p, observation: freshObservation(p.id) }))
+        .filter((entry): entry is { p: AiProviderDefinition; observation: ProbeRecord } => entry.observation !== undefined)
+        .sort((a, b) => observationWeight(a.observation.connection) - observationWeight(b.observation.connection))
+      const best = observed[0]
+      if (best) {
+        status = best.observation.connection
+        message = unusableMessage(best.p, best.observation)
+      } else {
+        message = 'No AI provider is configured. Set JARVIS_AI_PRIMARY_PROVIDER (e.g. auto/gemini/openai/anthropic/openrouter/local) plus its API key, or set JARVIS_AI_BASE_URL + JARVIS_API_KEY (or GEMINI_API_KEY) for the legacy single provider, then restart.'
+      }
+    } else if (active) {
+      const observation = freshObservation(active.id)
+      status = observation ? observation.connection : probeHealth ? 'MISCONFIGURED' : 'CONNECTED'
+      model = modelFor(active, 'reasoning') || discoveredDefaultModel(active) || active.chatModel || undefined
       upstream = active.baseUrl || undefined
+      if (observation && observation.connection !== 'CONNECTED') {
+        message = unusableMessage(active, observation)
+      }
     }
 
     const providers: AiProviderHealthEntry[] = definitions.map((p): AiProviderHealthEntry => {
-      const enabled = p.enabled
-      const configuredEntry = Boolean(p.baseUrl && p.key)
-      const reasoningCapable = p.capabilities.includes('reasoning')
-      let pStatus: AiProviderHealthStatus = 'NOT_CONFIGURED'
-      if (!enabled) {
-        pStatus = p.id === 'local' ? (configuredEntry ? 'MISCONFIGURED' : 'NOT_CONFIGURED') : 'NOT_CONFIGURED'
-      } else if (!configuredEntry) {
-        pStatus = 'MISCONFIGURED'
-      } else if (active && p.id === active.id && providersProbed) {
-        pStatus = status === 'CONNECTED' ? 'CONNECTED' : status === 'MISCONFIGURED' ? 'MISCONFIGURED' : 'UNAVAILABLE'
-      } else {
-        pStatus = reasoningCapable ? 'CONNECTED' : 'MISCONFIGURED'
-      }
+      const observation = freshObservation(p.id)
+      const disabled = registry.disabled.includes(p.id)
+      // A credential this provider REQUIRES and that is not set — actionable.
+      const keyRequired = p.apiKeyEnv !== '' && !p.key && p.baseUrl !== ''
+      let pStatus: AiProviderHealthStatus
+      if (disabled) pStatus = 'DISABLED'
+      else if (observation) pStatus = observation.status
+      else if (keyRequired) pStatus = 'KEY_REQUIRED'
+      else if (!p.baseUrl) pStatus = 'NOT_CONFIGURED'
+      else if (p.enabled) pStatus = probeHealth ? 'UNAVAILABLE' : 'CONFIGURED'
+      else pStatus = 'NOT_CONFIGURED'
       return {
         id: p.id,
         name: p.name,
-        enabled,
-        configured: enabled,
-        available: enabled && reasoningCapable,
+        enabled: p.enabled,
+        configured: p.enabled,
+        available: isRoutable(p) && p.capabilities.includes('reasoning'),
         capabilities: p.capabilities,
-        model: modelFor(p, 'reasoning') || p.chatModel || '',
+        model: modelFor(p, 'reasoning') || discoveredDefaultModel(p) || p.chatModel || '',
         status: pStatus,
+        discovered: observation?.discovered === true,
+        models: observation?.models?.length ? observation.models : undefined,
+        probedAt: observation?.at ?? 0,
+        lastError: observation?.lastError,
       }
     })
 
@@ -1112,20 +1472,30 @@ function buildRouter(
       pinned,
       configuredProviders: configuredIds,
       availableProviders: availableIds,
-      capabilities: [...new Set(available.flatMap((p) => p.capabilities))],
+      healthyProviders: healthyIds,
+      capabilities: [...new Set(usable.flatMap((p) => p.capabilities))],
       providersProbed,
       providers,
     }
   }
 
   return {
-    registry: () => {
-      const r = reg()
-      return { explicitMode: r.explicitMode, primary: r.primary, fallbacks: r.fallbacks, pinned: r.pinned, providers: r.providers }
-    },
+    registry: () => reg(),
     route,
     getHealth,
   }
+}
+
+/**
+ * Order unreachable-but-observed providers by how actionable they are: a
+ * reachable endpoint missing a model beats a transport failure, which beats a
+ * bad credential (nothing can be done without a new key).
+ */
+function observationWeight(connection: AiConnectionStatus): number {
+  if (connection === 'MODEL_UNAVAILABLE') return 0
+  if (connection === 'DISCONNECTED' || connection === 'NETWORK_ERROR') return 1
+  if (connection === 'RATE_LIMITED') return 2
+  return 3
 }
 
 function mapProbeStatus(outcome: AttemptOutcome): AiConnectionStatus {

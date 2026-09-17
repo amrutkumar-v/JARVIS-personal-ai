@@ -328,6 +328,26 @@ const engine = useMemo(
       s.pushNotice('info', `Message from ${message.deviceName || message.deviceId}`)
       void engine.process(message.text, { channel: 'device' })
     })
+    // Notifications / file hand-offs / URL hand-offs the devices really pushed
+    // are surfaced instead of being parsed and dropped. Every value comes from
+    // the frame payload — nothing is inferred.
+    const offNotify = client.on('onNotify', (event) => {
+      const from = event.deviceId ? ` (${event.deviceId})` : ''
+      useJarvisStore.getState().pushNotice('info', `Notification${from}: ${event.title}${event.message ? ` — ${event.message}` : ''}`)
+    })
+    const offFile = client.on('onFile', (file) => {
+      const from = file.deviceId ? ` from ${file.deviceId}` : ''
+      useJarvisStore.getState().pushNotice('info', `File${from}: ${file.name}`)
+    })
+    const offOpenUrl = client.on('onOpenUrl', (event) => {
+      const from = event.deviceName || event.deviceId
+      useJarvisStore.getState().pushNotice('info', `${from} sent a link: ${event.url}`)
+    })
+    // The wake registry is mirrored, never assumed: the backend only publishes
+    // this frame when the arm/disarm/wake actually happened.
+    const offWake = client.on('onWake', (event) => {
+      useJarvisStore.getState().setBackend({ lastWake: { event: event.event, at: event.at } })
+    })
     const offLost = client.on('onDisconnected', () => {
       // The device bridge is detached the moment the stream drops: no device.*
       // or call.* tool may exist against a dead backend.
@@ -344,6 +364,10 @@ const engine = useMemo(
     })
     client.start()
     return () => {
+      offNotify()
+      offFile()
+      offOpenUrl()
+      offWake()
       offReady()
       offDevice()
       offInbound()
