@@ -12,6 +12,7 @@ import { FileSystemError } from '../filesystem'
 import type { ObservationProvider, ScreenshotResult } from './provider'
 import { normalizeWindowId } from './provider'
 import { verifyPngEnvelope } from './pngVerify'
+import { deriveRunningApps, renderRunningApps } from './runningApps'
 
 /**
  * Observation tools (Phase 1.4) — EYES, NOT HANDS.
@@ -82,13 +83,20 @@ export class WindowListTool extends ObservationTool {
   readonly description =
     'Lists the open top-level windows on this Windows desktop, deterministically ordered (visible windows first, ' +
     'then by title). Each entry reports the window id, title, owning process name, and visibility/minimized/maximized ' +
-    'state. This is a plain read of the desktop — it never moves, focuses or changes any window.'
+    'state. The result also derives the REAL user-facing application inventory from those windows (visible, titled, ' +
+    'shell surfaces excluded), so "what applications are open?" is answered from this observation — never from an ' +
+    'installed-app catalog. This is a plain read of the desktop — it never moves, focuses or changes any window.'
   readonly permission: ToolPermission = 'read_only'
   readonly inputSchema: ToolInputSchema = { type: 'object', properties: {}, required: [] }
 
   canRun(query: string): boolean {
-    return /\b(list|show|find|what.*(open|running)|enumerate)\b/i.test(query) &&
-      /\b(window|windows|desktop|app(lication)?s?)\b/i.test(query)
+    // A read of live desktop state, however it is phrased: an explicit list verb
+    // ("list the open windows") or a state question ("what/which apps are
+    // running"). Both must name the thing being read.
+    const asksForState =
+      /\b(list|show|find|enumerate)\b/i.test(query) || /\b(what|which)\b[\s\S]*\b(open|running|up)\b/i.test(query)
+    const target = /\b(window|windows|desktop|app(lication)?s?|programs?)\b/i.test(query)
+    return asksForState && target
   }
 
   async execute(): Promise<ToolResult> {
@@ -100,10 +108,19 @@ export class WindowListTool extends ObservationTool {
         return { ok: true, message: 'No top-level windows are currently observable.', data: { windows: [] } }
       }
       const visible = windows.filter((w) => w.visible).length
+      // The REAL user-facing application inventory, derived from the same real
+      // enumeration. Reported separately from the raw window list so an
+      // information request ("what applications are open?") can be answered
+      // with one observation, while the raw windows stay available for ids.
+      const report = deriveRunningApps(windows)
+      const inventory = renderRunningApps(report)
+      const appNote = inventory
+        ? ` ${report.apps.length} user-facing application${report.apps.length === 1 ? '' : 's'} observed: ${inventory}.`
+        : ' No visible, titled window could be attributed to a user-facing application.'
       return {
         ok: true,
-        message: `${windows.length} window${windows.length === 1 ? '' : 's'} observed (${visible} visible).`,
-        data: { windows, count: windows.length, visible },
+        message: `${windows.length} window${windows.length === 1 ? '' : 's'} observed (${visible} visible).${appNote}`,
+        data: { windows, count: windows.length, visible, apps: report.apps, appCount: report.apps.length, appsExcludedShell: report.excludedShell, appsNotAttributable: report.notAttributable },
       }
     } catch (error) {
       return obsFailure(error)
@@ -216,13 +233,20 @@ export class DesktopScreenshotTool extends ObservationTool {
 
   verify(input: ToolInput, result: ToolResult): Promise<ToolVerification> {
     void input
-    const shot = result.data as ScreenshotResult | undefined
-    if (!shot || typeof shot.width !== 'number' || typeof shot.height !== 'number' || typeof shot.bytes !== 'string') {
+    // `execute()` deliberately returns the image as a `dataUrl` (raw bytes are
+    // NOT duplicated into the result data), so verification decodes the payload
+    // from that URL. A hand-supplied `bytes` field still wins.
+    const shot = result.data as (ScreenshotResult & { dataUrl?: string }) | undefined
+    const bytes =
+      typeof shot?.bytes === 'string' && shot.bytes.length > 0
+        ? shot.bytes
+        : (shot?.dataUrl?.split(',')?.[1] ?? undefined)
+    if (!shot || typeof shot.width !== 'number' || typeof shot.height !== 'number' || typeof bytes !== 'string' || bytes.length === 0) {
       return Promise.resolve({ ok: false, message: 'The screenshot produced no verifiable payload.' })
     }
     // TRANSPORT-LEVEL verification: prove the payload is a structurally valid
     // PNG with the claimed geometry. It never claims to depict the screen.
-    return verifyPngEnvelope(shot.width, shot.height, shot.bytes).then((outcome) =>
+    return verifyPngEnvelope(shot.width, shot.height, bytes).then((outcome) =>
       outcome.ok
         ? {
             ok: true,

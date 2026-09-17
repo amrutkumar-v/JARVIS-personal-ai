@@ -22,6 +22,7 @@ import type { OrchestrationRequest } from './types'
 import type { RequestClass } from './goalUnderstanding'
 import type { Phase6PlanMeta, Phase6StepMeta } from './phase6/planTypes'
 import { buildPhase6PlanMeta, buildPhase6StepMeta } from './phase6/enrich'
+import { cleanSearchQuery } from './searchQuery'
 
 export interface OrchestrationPlanStep {
   /** Stable within-plan id (`step-1`, `step-2`, …). */
@@ -81,6 +82,16 @@ const CLOSE_VERBS = /\b(close|quit|exit|terminate|kill)\b/i
 const VERIFY_VERBS = /\b(verify|check|confirm|validate|ensure)\b/i
 const INTRO_INTENT = /\bintroduce (?:yourself|me to yourself)\b/i
 const INTRO_WRITTEN = /\b(written|typed|in\s+text|as\s+text|in\s+writing)\b/i
+
+/**
+ * "what applications are open?" / "tell me what apps are running" / "list the
+ * open windows" — a READ of live desktop state.
+ *
+ * Anchored to a question/list lead-in on purpose: a bare noun scan would also
+ * match actionable requests that merely mention windows.
+ */
+const READ_OPEN_APPS =
+  /^(?:please\s+|hey\s+|ok\s+)?(?:jarvis[,\s]+)?(?:tell me\s+|can you\s+|could you\s+|would you\s+|show me\s+|list\b|what|which)(?=[\s\S]*\b(?:apps?|applications?|programs?|windows?|desktop)\b)(?=[\s\S]*\b(?:open|running|up)\b)/i
 
 /** "is chrome running?" / "are notepad and calc open?" — read-only app-status questions. */
 const STATUS_IS_APP = /\b(?:is|are)\s+(?:the\s+)?([a-z0-9][\w .-]{0,48}?)\s+(?:running|open|started|launched|active)$/i
@@ -180,13 +191,19 @@ export function toAppId(phrase: string): string {
   return slug.length > 0 ? slug : trimmed.toLowerCase().slice(0, APP_ID_SLUG_MAX_CHARS) || ''
 }
 
-/** Extract a bounded, schema-valid search query from free text. */
+/** Extract a bounded, schema-valid search query from free text.
+ *
+ * The extracted terms are ALWAYS passed through `cleanSearchQuery`, which strips
+ * politeness and any trailing ANSWER-REQUIREMENT clause, so a sentence like
+ * "open Chrome and search for the latest NVIDIA driver version, then tell me the
+ * version" searches for "the latest NVIDIA driver version" — the conversational
+ * instruction never reaches the search engine. */
 export function extractSearchQuery(text: string): string {
   const clean = (text ?? '').replace(/[.!?]+$/g, '').trim()
 
   // Quoted query wins first: "search for \"X\"" / "open browser and search for 'X'"
   const quoted = clean.match(/\b(?:search|look up|find|google|bing|duckduckgo)(?:\s+for)?\s+["']([^"']+)["']/i)
-  if (quoted?.[1]) return quoted[1].trim()
+  if (quoted?.[1]) return cleanSearchQuery(quoted[1])
 
   // Any 'search for X' / 'look up X' / 'find X' phrase: capture what follows
   // the verb and stop the query at a scheduling conjunction (and/but/so/then).
@@ -199,14 +216,14 @@ export function extractSearchQuery(text: string): string {
       .replace(/\s+in\s+the\s+(?:browser|web|internet)$/i, '')
       .replace(/\s+on\s+the\s+(?:browser|web|internet)$/i, '')
       .trim()
-    if (query.length > 0) return query
+    if (query.length > 0) return cleanSearchQuery(query)
   }
 
   // Single-verb phrase: "search for X"
   const simple = clean.match(
     /^(?:please\s+)?(?:search|look up|find|google|bing|duckduckgo)(?:\s+the\s+(?:web|internet|browser))?(?:\s+for)?\s+(.+)$/i,
   )
-  if (simple?.[1]) return simple[1].trim()
+  if (simple?.[1]) return cleanSearchQuery(simple[1])
 
   // Last resort: strip orchestration prefixes/suffixes and keep what remains.
   const stripped = clean
@@ -215,7 +232,7 @@ export function extractSearchQuery(text: string): string {
     .split(/\s+(?:then|while|after that)\s+/)[0]
     .replace(/"+/g, '')
     .trim()
-  return stripped.length > 0 ? stripped : clean
+  return cleanSearchQuery(stripped.length > 0 ? stripped : clean)
 }
 
 /** Extract a bounded application name after an open/launch/start/run verb. */
@@ -443,6 +460,29 @@ function planRequestCore(
     }
     if (app) {
       return block(`application_status is not available on any online device right now.`)
+    }
+  }
+
+  // "What applications are open?" / "list the open windows" — an INFORMATION
+  // request about live desktop state, answered by the real window enumeration
+  // (`list_windows` → `window.list`), never from JARVIS's internal state and
+  // never from a catalogue of INSTALLED apps. Handled before the question
+  // passthrough because the read IS the answer.
+  //
+  // The pattern is anchored to a question/list lead-in, so an actionable
+  // request that merely mentions windows ("open Notepad and list the windows")
+  // keeps flowing into the action branches below.
+  if (READ_OPEN_APPS.test(text) && can('list_windows')) {
+    return {
+      goal,
+      verdict: 'ok',
+      steps: [
+        {
+          id: 'step-1',
+          capability: 'list_windows',
+          description: 'Read the live desktop: open windows and the applications that own them.',
+        },
+      ],
     }
   }
 

@@ -52,6 +52,10 @@ export interface OrchestrationExecutionResult {
   unverifiedSteps: number
   observations: Array<{ toolId: string; kind: string; summary: string }>
   verification: Array<{ toolId: string; status: OrchestrationVerificationStatus }>
+  /** True when the run stopped because the USER declined a confirmation the
+   * engine asked for. Nothing ran: the verdict is a refusal, and the reply must
+   * never claim the action was executed or merely unverified. */
+  declinedByUser?: boolean
   /** Explicit device targets preserved from the request. */
   targetDevices: string[]
   implicitTargetDevice?: string

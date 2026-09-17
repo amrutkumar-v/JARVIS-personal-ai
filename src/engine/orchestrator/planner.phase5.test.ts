@@ -268,6 +268,34 @@ describe('Phase 5 — planner extensions', () => {
       expect(plan.steps[0].payload).toEqual({ application_id: 'chrome' })
     })
 
+    it('"what applications are open?" → a single real window-enumeration read', () => {
+      for (const text of [
+        'What applications are open?',
+        'Tell me what applications are open',
+        'which apps are running?',
+        'list the open windows',
+      ]) {
+        const plan = planRequest(makeRequest(text, ['list_windows', 'open_application'], 'question'))
+        expect(plan.verdict, text).toBe('ok')
+        expect(plan.steps, text).toHaveLength(1)
+        expect(plan.steps[0].capability, text).toBe('list_windows')
+      }
+    })
+
+    it('the open-app read never hijacks an actionable request that mentions windows', () => {
+      const plan = planRequest(
+        makeRequest('open notepad and list the windows', ['open_application', 'list_windows'], 'multi_step_goal'),
+      )
+      // The read route is anchored to a question/list lead-in, so an action
+      // request keeps flowing through the action branches.
+      expect(plan.steps.map((s) => s.capability)).not.toContain('list_windows')
+    })
+
+    it('falls through when window observation is not available', () => {
+      const plan = planRequest(makeRequest('What applications are open?', ['open_application'], 'question'))
+      expect(plan.verdict).toBe('empty')
+    })
+
     it('status question must not hijack a device battery request', () => {
       const plan = planRequest(makeRequest('check the battery of my S26 Ultra', ['list_devices', 'application_status', 'open_application'], 'device_operation'))
       expect(plan.verdict).toBe('ok')

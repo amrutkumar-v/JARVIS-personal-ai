@@ -131,6 +131,28 @@ describe('uiControl — panel commands', () => {
     expect(detectUiControlIntent('start the engine')).toBeUndefined()
     expect(detectUiControlIntent('rice')).toBeUndefined()
   })
+
+  it('does not claim INFORMATION requests about a panel (verb as predicate)', () => {
+    // "open" here is a state predicate about the panel, not a command to open
+    // it: answering by opening the panel would be a wrong ACTION for a question.
+    expect(detectUiControlIntent('tell me what applications are open')).toBeUndefined()
+    expect(detectUiControlIntent('what applications are open')).toBeUndefined()
+    expect(detectUiControlIntent('what applications are open?')).toBeUndefined()
+    expect(detectUiControlIntent('which panels are open')).toBeUndefined()
+    expect(detectUiControlIntent('is the session panel open')).toBeUndefined()
+    expect(detectUiControlIntent('are the devices open')).toBeUndefined()
+    expect(detectUiControlIntent('what windows are open')).toBeUndefined()
+    // ...while the imperative forms of the same panel still work.
+    expect(detectUiControlIntent('open the applications panel')?.panelId).toBe('applications')
+    expect(detectUiControlIntent('can you open the applications panel')?.panelId).toBe('applications')
+    expect(detectUiControlIntent('please show me the devices')?.panelId).toBe('devices')
+  })
+
+  it('does not claim a compound when the information half is not a command', () => {
+    // The whole compound must parse; an informational fragment aborts it so the
+    // request flows to the agent instead of half-executing a panel change.
+    expect(detectUiControlCommands('open the core panel and tell me what windows are open')).toEqual([])
+  })
 })
 
 describe('uiControl — compound commands', () => {

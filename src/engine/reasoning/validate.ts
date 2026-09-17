@@ -44,7 +44,7 @@ const NON_EXECUTING_INTENTS = new Set<string>(['unsupported', 'clarification', '
 
 /** Anything a folder/path argument must NEVER contain. */
 const UNSAFE_PATH =
-  /([a-zA-Z]:[\\/]|^\s*[\\/][\\/]|\.\.|[\u0000-\u001f]|(^|[/\\])etc([/\\]|$)|[/\\]system32([/\\]|$)|%[a-zA-Z][a-zA-Z0-9_]*%)/i
+  /([a-zA-Z]:[\\/]|^\s*[\\/][\\/]|\.\.|[\u0001-\u001f]|(^|[/\\])etc([/\\]|$)|[/\\]system32([/\\]|$)|%[a-zA-Z][a-zA-Z0-9_]*%)/i
 /** Application targets must not look like paths, executables or commands. */
 const PATH_LIKE_APP_TARGET = /[\\/:[\]|]/
 /** Characters that would turn a name into a compound command. */

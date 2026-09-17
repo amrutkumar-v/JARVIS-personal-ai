@@ -1,5 +1,6 @@
 import type { Tool, ToolCategory, ToolContext, ToolContextId, ToolInput, ToolPermission, ToolResult } from '../tools/Tool'
 import type { ToolInputSchema } from '../engine/provider'
+import { cleanSearchQuery } from '../engine/orchestrator/searchQuery'
 import type { WebProvider } from './provider'
 
 const WEB_REASON = 'The native Windows agent is not connected, so web access is unavailable right now.'
@@ -101,7 +102,11 @@ export class WebSearchTool extends WebTool {
   async execute(input: ToolInput): Promise<ToolResult> {
     const blocker = availabilityBlocker(this.provider)
     if (blocker) return blocker
-    const query = validateQuery(paramStr(input, 'query') ?? '')
+    // The query may come from the MODEL (inside a structured plan) or from the
+    // deterministic planner: normalize it here so conversational instructions
+    // ("…, then tell me the version") never reach the search engine, no matter
+    // which layer produced it.
+    const query = validateQuery(cleanSearchQuery(paramStr(input, 'query') ?? ''))
     if (!query) {
       return { ok: false, message: 'A search query is required (max 200 chars).', data: { kind: 'invalid_input' } }
     }

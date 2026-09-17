@@ -55,6 +55,8 @@ export class FakeObservationProvider implements ObservationProvider {
   private available = true
   /** Observation counters so tests can prove a malformed call never ran. */
   statusCalls = 0
+  /** Count of real window enumerations (proves a claim was actually observed). */
+  listCalls = 0
   screenshotCalls = 0
   /** Queue of screenshots handed out in order (tests only; empty → default). */
   private readonly screenshotQueue: ScreenshotResult[] = []
@@ -139,6 +141,7 @@ export class FakeObservationProvider implements ObservationProvider {
 
   async listWindows(): Promise<WindowSummary[]> {
     this.throwIfConfigured('*', 'list')
+    this.listCalls += 1
     const summaries = [...this.store.entries()].map(([windowId, state]) => this.toSummary(windowId, state))
     return summaries.sort((a, b) => Number(b.visible) - Number(a.visible) || a.title.localeCompare(b.title))
   }

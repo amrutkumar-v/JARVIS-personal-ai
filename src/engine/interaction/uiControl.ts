@@ -249,11 +249,20 @@ function findPhrase<Id extends string>(
   return undefined
 }
 
-function kindFromVerbs(text: string): PanelControlKind | undefined {
-  if (TOGGLE_VERBS.test(text)) return 'toggle_panel'
-  if (OPEN_VERBS.test(text)) return 'open_panel'
-  if (CLOSE_VERBS.test(text)) return 'close_panel'
-  if (FOCUS_VERBS.test(text)) return 'focus_panel'
+/**
+ * The control verb for `text`, WITH the index it appears at.
+ *
+ * A panel command is an IMPERATIVE: the verb must precede the panel it targets.
+ * "open the applications panel" asks JARVIS to open it; "what applications are
+ * open" merely uses "open" as a predicate about the noun and is an information
+ * request — answering it by opening a panel would be a wrong action, so the
+ * ordering below is what keeps the two apart.
+ */
+function verbWithIndex(text: string): { kind: PanelControlKind; index: number } | undefined {
+  if (TOGGLE_VERBS.test(text)) return { kind: 'toggle_panel', index: text.search(TOGGLE_VERBS) }
+  if (OPEN_VERBS.test(text)) return { kind: 'open_panel', index: text.search(OPEN_VERBS) }
+  if (CLOSE_VERBS.test(text)) return { kind: 'close_panel', index: text.search(CLOSE_VERBS) }
+  if (FOCUS_VERBS.test(text)) return { kind: 'focus_panel', index: text.search(FOCUS_VERBS) }
   return undefined
 }
 
@@ -343,11 +352,18 @@ function detectThemeIntent(text: string): UiControlIntent | undefined {
 
 function detectPanelIntent(text: string): UiControlIntent | undefined {
   const normalized = normalizeRequest(text)
-  const kind = kindFromVerbs(normalized)
-  if (!kind) return undefined
+  const verb = verbWithIndex(normalized)
+  if (!verb) return undefined
+  const kind = verb.kind
 
   const hit = findPhrase(normalized, PANEL_PHRASES, PANEL_ALIASES)
   if (hit) {
+    // Imperative ordering: the verb must come BEFORE the panel it targets. When
+    // the phrase comes first ("tell me what applications are open", "is the
+    // session panel open") the verb is a predicate about it, not a command — so
+    // this is NOT a UI-control request and flows to the normal agent path.
+    const phraseIndex = normalized.indexOf(hit.phrase)
+    if (phraseIndex < 0 || verb.index > phraseIndex) return undefined
     // Camera stays with the Phase 2.7 direct-intent surface unless the request
     // explicitly names a modal suffix ("camera panel", "camera view").
     if (hit.id === CAMERA_ID && !MODAL_SUFFIX.test(hit.phrase)) return undefined

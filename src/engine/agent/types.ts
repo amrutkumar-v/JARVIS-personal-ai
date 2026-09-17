@@ -128,6 +128,11 @@ export type AgentTraceEvent =
   | { type: 'reasoning_plan_validated'; intent: string; steps: number; at: number }
   | { type: 'reasoning_rejected'; code: string; reason: string; at: number }
   | { type: 'reasoning_unavailable'; reason: string; at: number }
+  // Grounded answer synthesis (orchestrator/answerSynthesis). Carries ONLY
+  // operational facts — never the model's prose, which is the reply itself.
+  | { type: 'synthesis_completed'; chars: number; at: number }
+  | { type: 'synthesis_rejected'; reason: string; at: number }
+  | { type: 'synthesis_unavailable'; reason: string; at: number }
 
 export interface AgentVerification {
   status: VerificationStatus

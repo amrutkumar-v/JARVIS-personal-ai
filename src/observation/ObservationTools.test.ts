@@ -74,6 +74,29 @@ describe('window.list', () => {
     expect(result.message).toMatch(/3 windows.*\(2 visible\)/)
   })
 
+  it('reports the REAL user-facing application inventory alongside the raw windows', async () => {
+    const result = await call(tools.get('window.list')!, {})
+    const data = result.data as {
+      count: number
+      apps: Array<{ label: string; processName?: string; labelInferred: boolean }>
+      appCount: number
+      appsNotAttributable: number
+    }
+    // The MODE's only input is the tool message, so the real inventory must be
+    // part of it — the raw window list alone cannot answer "what is open?".
+    expect(result.message).toMatch(/user-facing application/)
+    // Application identity is the REAL process name (verbatim, not prettified).
+    expect(result.message).toContain('notepad')
+    expect(result.message).toContain('explorer')
+    expect(data.appCount).toBe(2)
+    expect(data.apps.map((a) => a.label).sort()).toEqual(['explorer', 'notepad'])
+    expect(data.apps.find((a) => a.label === 'notepad')?.labelInferred).toBe(false)
+    // The hidden window is reported as not attributable, never as an app.
+    expect(data.appsNotAttributable).toBe(1)
+    // ...and the raw window list is unchanged.
+    expect(data.count).toBe(3)
+  })
+
   it('reports an empty desktop honestly', async () => {
     const none = new FakeObservationProvider([])
     const list = createObservationTools(none).find((t) => t.id === 'window.list')!
@@ -166,6 +189,21 @@ describe('desktop.screenshot', () => {
     )
     expect(verification.ok).toBe(true)
     expect(verification.checks).toEqual(['png signature', 'ihdr geometry', 'chunk crc', 'inflate size'])
+  })
+
+  it('verifies the REAL engine result shape, whose payload lives in the dataUrl (live regression)', async () => {
+    // The executor sees what execute() returned — data with a dataUrl and NO
+    // raw `bytes` field. That shape used to fail verification with "no
+    // verifiable payload", so a real capture was reported as unverifiable.
+    const result = await call(tools.get('desktop.screenshot')!, {})
+    expect(result.ok).toBe(true)
+    const verification = await tools.get('desktop.screenshot')!.verify!(
+      { query: '', params: {} as Record<string, unknown> },
+      result,
+      { requestId: 'unit' },
+    )
+    expect(verification.ok).toBe(true)
+    expect(verification.message).toMatch(/2x2 PNG/)
   })
 
   it('refutes a tampered payload as verification failed', async () => {

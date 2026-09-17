@@ -1,4 +1,4 @@
-import type { AIProvider, AIMessage, ToolCallRecord, ToolResultRecord } from './provider'
+import type { AIProvider, AIResponse, AIMessage, ToolCallRecord, ToolResultRecord } from './provider'
 import { createProviders } from './providers'
 import { ProviderError, userFacing } from './providers/ProviderError'
 import {
@@ -80,7 +80,7 @@ import { understandRequest, type RequestClass } from './orchestrator/goalUnderst
 import { extractEntitiesFromResult, TaskContextStore } from './orchestrator/taskContext'
 import { PersonalAICore } from './orchestrator/orchestrator'
 import { planRequest } from './orchestrator/planner'
-import { checkAiHealth } from '../config/ai'
+import { MOCK_PROVIDER_ID, checkAiHealth } from '../config/ai'
 import { planPostActionObservation } from './orchestrator/postActionVerify'
 import { applyResolutionToStepMeta } from './orchestrator/phase6/enrich'
 import type { Phase6StepMeta } from './orchestrator/phase6/planTypes'
@@ -95,6 +95,15 @@ import type { OrchestrationPlanStep, OrchestrationPlannedRequest, OrchestrationP
 import type { OrchestrationExecutionResult, OrchestrationExecutionStatus, OrchestrationStepOutcome, OrchestrationVerificationStatus } from './orchestrator/execution'
 import type { OrchestrationRequest, PersonalAICoreView } from './orchestrator/types'
 import { isStructuredPlanProvider, reasoningFailureKind } from './reasoning/provider'
+import {
+  SYNTHESIS_LIMITS,
+  buildSynthesisFacts,
+  buildSynthesisMessages,
+  composeFinalAnswer,
+  hasSynthesizableFacts,
+  normalizeSynthesisText,
+  synthesisUpgradesVerdict,
+} from './orchestrator/answerSynthesis'
 import type { StructuredPlanProvider } from './reasoning/provider'
 import type { ReasoningRequest } from './reasoning/contract'
 import { REASONING_PLAN_LIMITS } from './reasoning/contract'
@@ -1121,12 +1130,15 @@ export class AssistantEngine {
       })),
     }
     const outcome = await this.runValidatedCapabilityPlan(request, planned)
-    if (outcome.result.status === 'blocked') {
+    if (outcome.result.status === 'blocked' && outcome.result.declinedByUser !== true) {
       this.replyWithStructuredStop(request, 'blocked', outcome.result.reason)
       return true
     }
+    // A USER-DECLINED confirmation is NOT a generic block: it must keep its
+    // declined identity through to the reply ("you declined, so nothing ran",
+    // cancelled run state) instead of being re-wrapped as a plan block.
     this.recordTaskLogFor(request, outcome.result, outcome.failures, outcome.resolutions)
-    this.replyWithOrchestratedResult(outcome.result, text)
+    await this.replyWithOrchestratedResult(outcome.result, text)
     return true
   }
 
@@ -1146,13 +1158,19 @@ export class AssistantEngine {
     }
   }
 
-  /** Phase 13 — reply to a validated orchestrated result with the standard
-   * deterministic inline phrasing (incl. the read-only "answered from a live
-   * reading" state), so AI-planned and deterministic-planned answers read the
-   * same and the chip mapping never claims what did not happen. */
-  private replyWithOrchestratedResult(orchResult: OrchestrationExecutionResult, text: string): void {
+  /** Phase 13 — reply to a validated orchestrated result.
+   *
+   * The ENGINE's deterministic phrasing is the authoritative statement about
+   * what happened and is ALWAYS part of the reply. When a real AI provider is
+   * active and the run produced real observations, the model additionally
+   * writes a grounded 1-3 sentence answer from that observed record (see
+   * `synthesizeOrchestratedAnswer`), and its prose is placed BEFORE the
+   * evidence line. The model can therefore enrich the answer, never upgrade
+   * it: verification counts, failures and refusals stay exactly as observed. */
+  private async replyWithOrchestratedResult(orchResult: OrchestrationExecutionResult, text: string): Promise<void> {
     const finalState = orchResult.status === 'completed' ? 'completed' :
-      orchResult.status === 'cancelled' ? 'cancelled' :
+      // A declined confirmation is a user cancellation, not a failure of JARVIS.
+      orchResult.status === 'cancelled' || orchResult.declinedByUser === true ? 'cancelled' :
       orchResult.status === 'partial' &&
       orchResult.failedSteps === 0 &&
       orchResult.steps.length > 0 &&
@@ -1161,13 +1179,93 @@ export class AssistantEngine {
         : 'failed'
     this.runState.finish(finalState)
     this.tracer.end(finalState)
-    const finalText = this.formatOrchestrationResult(orchResult, text)
+    // Authoritative, engine-owned evidence line (never model-authored).
+    const evidence = this.formatOrchestrationResult(orchResult, text)
+    const prose = await this.synthesizeOrchestratedAnswer(orchResult)
+    const finalText = composeFinalAnswer(prose, evidence)
     const finalAnswer = this.withGoalVeracityNote(finalText, text)
     addAssistantMessage(finalAnswer)
     this.emit({ type: 'transcript', speaker: 'assistant', text: finalAnswer })
     this.fireActivity({ step: 'Replied', kind: 'output', detail: finalAnswer })
     this.applyResponse(finalAnswer)
     this.recordActionRunOutcome(orchResult)
+  }
+
+  /**
+   * Grounded answer synthesis (see `orchestrator/answerSynthesis`).
+   *
+   * Asks the ACTIVE provider to write the final answer from the OBSERVED
+   * execution record only. Returns null (and the caller keeps the deterministic
+   * evidence text alone) when:
+   *
+   *  - no real AI provider is configured (mock/local-dev mode) — the synthesis
+   *    step must never be faked by a canned reply;
+   *  - the run produced nothing to talk about (no observation, no failure);
+   *  - the provider fails, times out, or returns nothing usable;
+   *  - the prose claims more than the record holds (`synthesisUpgradesVerdict`).
+   *
+   * The call is bounded and TOOL-FREE: no tool definitions are offered, so a
+   * response can only ever be text. Whatever it says is appended AFTER the
+   * engine's own evidence line and can never replace it.
+   */
+  private async synthesizeOrchestratedAnswer(orchResult: OrchestrationExecutionResult): Promise<string | null> {
+    if (this.provider.id === MOCK_PROVIDER_ID) return null
+    const facts = buildSynthesisFacts(orchResult, this.tracer.snapshot())
+    if (!hasSynthesizableFacts(facts)) return null
+    // Cancellation wins: a cancelled run is never re-narrated as work done.
+    if (orchResult.status === 'cancelled' || orchResult.status === 'blocked') return null
+
+    let raw: string | undefined
+    try {
+      const response = await this.generateWithDeadline(buildSynthesisMessages(facts))
+      // A synthesis response is text only: any tool request is ignored outright.
+      raw = response?.text
+    } catch (error) {
+      this.tracer.recordEvent({
+        type: 'synthesis_unavailable',
+        reason: reasoningFailureKind(error),
+        at: Date.now(),
+      })
+      return null
+    }
+
+    const prose = normalizeSynthesisText(raw)
+    if (!prose) return null
+    if (synthesisUpgradesVerdict(facts, prose)) {
+      // The model tried to claim more than was observed — drop it and let the
+      // deterministic evidence line stand alone.
+      this.tracer.recordEvent({ type: 'synthesis_rejected', reason: 'verdict_upgrade', at: Date.now() })
+      return null
+    }
+    this.tracer.recordEvent({ type: 'synthesis_completed', chars: prose.length, at: Date.now() })
+    return prose
+  }
+
+  /** One tool-free provider call with a hard deadline. Never streams to the
+   * transcript (the prose is part of the single final reply) and never throws:
+   * a late rejection is absorbed so it cannot surface as an unhandled error. */
+  private async generateWithDeadline(messages: AIMessage[]): Promise<AIResponse | undefined> {
+    const call = this.provider.generate(
+      {
+        prompt: '',
+        messages,
+        context: [],
+        availableTools: [],
+        toolDefinitions: [],
+        isNewSession: false,
+      },
+      () => {},
+    )
+    call.catch(() => {})
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const timeout = new Promise<undefined>((resolve) => {
+      timer = setTimeout(() => resolve(undefined), SYNTHESIS_LIMITS.deadlineMs)
+    })
+    try {
+      return await Promise.race([call, timeout])
+    } finally {
+      if (timer) clearTimeout(timer)
+    }
   }
 
   /** Phase 13 — honest stop for a request that never executed: refused
@@ -1297,7 +1395,12 @@ export class AssistantEngine {
     // A stop that never reached the executor (e.g. plan rejected upfront) keeps
     // the passed verdict; a stop that ran steps is judged by the observed trace.
     let effective = status
-    if (traceSteps.length > 0 || (failures?.length ?? 0) > 0) {
+    // The USER declining a confirmation is a refusal: nothing ran, so no branch
+    // below may upgrade it to a completed/partial verdict.
+    const declinedByUser = (failures ?? []).some((f) => f.errorKind === 'user_cancelled')
+    if (declinedByUser) {
+      effective = 'blocked'
+    } else if (traceSteps.length > 0 || (failures?.length ?? 0) > 0) {
       if (this.cancelRequested || this.planTracker.current?.status === 'CANCELLED') {
         effective = 'cancelled'
       } else if (outcomes.failed > 0 && outcomes.success === 0) {
@@ -1349,6 +1452,7 @@ export class AssistantEngine {
       targetDevices: request.targetDevices,
       implicitTargetDevice: request.implicitTargetDevice,
       reason: effectiveReason,
+      declinedByUser: declinedByUser ? true : undefined,
       requiresUserAction:
         effective === 'requires_confirmation' ||
         effective === 'requires_clarification' ||
@@ -2185,7 +2289,7 @@ export class AssistantEngine {
             } finally {
               this.orchestratingInline = false
             }
-            this.replyWithOrchestratedResult(orchResult, clean)
+            await this.replyWithOrchestratedResult(orchResult, clean)
             return
           }
           if (this.provider.id === 'mock') {
@@ -2344,6 +2448,11 @@ export class AssistantEngine {
   private formatOrchestrationResult(result: OrchestrationExecutionResult, goal: string): string {
     const verifiedNow = result.steps.filter((s) => s.verified === true).length
     const totalSteps = result.steps.length
+    // The user declined the confirmation: NOTHING ran, and the answer must say
+    // exactly that (never "executed", never "could not verify").
+    if (result.declinedByUser === true) {
+      return `Stopped before doing anything: you declined the confirmation, so I did not ${goal.replace(/[.!?\s]+$/, '')}.`
+    }
     // A read-only run whose answer IS the deliverable (e.g. an
     // application_status read answered from live state). Nothing failed and
     // nothing was refuted — the read returned its result directly, so there is
@@ -3052,12 +3161,29 @@ export class AssistantEngine {
           payload: input,
         })
         if (!allowed) {
-          const failResult = this.makeFailure(callId, toolId, 'User declined.', 'user_cancelled')
+          // A declined confirmation is a REFUSAL, not a silent no-op: it must be
+          // recorded on the trace and as a failure so the run's verdict is an
+          // honest refusal. Without this the run finished "completed" with no
+          // observation, and the reply claimed the action had been EXECUTED but
+          // merely could not be verified — a false statement about what ran.
+          const reason = `You declined the confirmation for "${tool.name}", so nothing ran.`
+          const failResult = this.makeFailure(callId, toolId, reason, 'user_cancelled')
           toolResults.push(failResult)
-          this.finishToolActivity(runId, toolId, 'rejected', 'Confirmation declined.')
+          this.finishToolActivity(runId, toolId, 'rejected', reason)
           const step = this.findOrAddStep(toolId, input, callId, true)
           roundStepIds.push(step.id)
           this.planTracker.skipStep(step.id)
+          this.planTracker.setNote(step.id, reason)
+          this.recordRejectedTraceStep(toolId, tool.name, input, reason, 'user_cancelled')
+          this.tracer.recordEvent({ type: 'step_failed', stepId: step.id, toolId: toolId, reason, at: Date.now() })
+          failures.push({
+            toolId: toolId,
+            stepId: step.id,
+            summary: reason,
+            errorKind: 'user_cancelled',
+            observationKind: 'failure',
+            payload: input,
+          })
           continue
         }
         // Confirmation granted → proceed to execution
