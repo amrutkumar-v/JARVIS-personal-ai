@@ -35,7 +35,7 @@
 
 export type AiCapability = 'reasoning' | 'vision' | 'embeddings'
 
-export type ProviderId = 'gemini' | 'openai' | 'anthropic' | 'openrouter' | 'local'
+export type ProviderId = 'gemini' | 'openai' | 'anthropic' | 'openrouter' | 'local' | 'ollama' | 'lmstudio'
 
 export type AiTransportId = ProviderId | 'legacy'
 
@@ -56,6 +56,7 @@ export type AiProviderHealthStatus =
   | 'UNAVAILABLE'
   | 'DEGRADED'
   | 'NOT_CONFIGURED'
+  | 'MODEL_UNAVAILABLE'
 
 export type AiRouteErrorCode =
   | 'ai_not_configured'
@@ -65,6 +66,7 @@ export type AiRouteErrorCode =
   | 'ai_upstream_timeout'
   | 'ai_upstream_rate_limited'
   | 'ai_upstream_error'
+  | 'model_unavailable'
   | 'invalid_body'
 
 export interface AiProviderDefinition {
@@ -160,6 +162,8 @@ export interface AiProviderHealthEntry {
   capabilities: AiCapability[]
   model: string
   status: AiProviderHealthStatus
+  /** Discovered local models (ollama/lmstudio only, when discovery succeeded). */
+  models?: string[]
   lastError?: string
 }
 
@@ -171,7 +175,7 @@ export interface AiHealthReport {
   upstream?: string
   /** Active provider (the one that would serve a request). */
   provider: AiTransportId | 'none'
-  primary: AiTransportId | 'none'
+  primary: AiTransportId | 'none' | 'auto'
   pinned: AiTransportId | null
   configuredProviders: AiTransportId[]
   availableProviders: AiTransportId[]
@@ -182,18 +186,20 @@ export interface AiHealthReport {
 
 export interface AiProviderRegistrySnapshot {
   explicitMode: boolean
-  primary: AiTransportId | 'none'
+  primary: AiTransportId | 'none' | 'auto'
   fallbacks: AiTransportId[]
   pinned: AiTransportId | null
   providers: AiProviderDefinition[]
 }
 
-const PROVIDER_IDS: readonly ProviderId[] = ['gemini', 'openai', 'anthropic', 'openrouter', 'local']
+const PROVIDER_IDS: readonly ProviderId[] = ['gemini', 'openai', 'anthropic', 'openrouter', 'local', 'ollama', 'lmstudio']
 
 const DEFAULT_GEMINI_BASE = 'https://generativelanguage.googleapis.com/v1beta/openai'
 const DEFAULT_OPENAI_BASE = 'https://api.openai.com/v1'
 const DEFAULT_ANTHROPIC_BASE = 'https://api.anthropic.com/v1'
 const DEFAULT_OPENROUTER_BASE = 'https://openrouter.ai/api/v1'
+const DEFAULT_OLLAMA_BASE = 'http://localhost:11434'
+const DEFAULT_LMSTUDIO_BASE = 'http://localhost:1234/v1'
 
 const DEFAULT_CHAT_TIMEOUT_MS = 45_000
 const DEFAULT_EMBED_TIMEOUT_MS = 60_000
@@ -283,10 +289,12 @@ function buildProvider(
   const timeoutMs = envInt(env, defaults.timeoutEnv, 0) || DEFAULT_CHAT_TIMEOUT_MS
 
   let enabled = false
-  if (id === 'local') {
-    // Keyless local endpoint: enabled only when a base URL AND a chat model are
-    // explicitly configured (never guessed).
-    enabled = Boolean(baseUrl && chatModel && envString(env, 'JARVIS_LOCAL_AI_BASE_URL') && envString(env, 'JARVIS_LOCAL_AI_MODEL'))
+  if (id === 'local' || id === 'ollama' || id === 'lmstudio') {
+    // Keyless local endpoints: enabled only when a base URL AND a chat model are
+    // explicitly configured (never guessed — a defaulted localhost base URL on
+    // its own is not evidence that the local engine is installed or running,
+    // so it must never flip the provider to CONNECTED without a real probe).
+    enabled = Boolean(baseUrl && chatModel && envString(env, defaults.baseUrlEnv) && envString(env, defaults.chatEnv))
     void defaults.requiresKey
   } else {
     enabled = Boolean(baseUrl && key)
@@ -294,8 +302,8 @@ function buildProvider(
 
   const capabilities: AiCapability[] = ['reasoning']
   if (id !== 'anthropic') capabilities.push('vision')
-  if (id === 'gemini' || id === 'openai' || id === 'local') {
-    if (id === 'local' ? Boolean(embeddingModel) : true) capabilities.push('embeddings')
+  if (id === 'gemini' || id === 'openai' || id === 'local' || id === 'ollama' || id === 'lmstudio') {
+    if (id === 'gemini' || id === 'openai' ? true : Boolean(embeddingModel)) capabilities.push('embeddings')
   }
 
   return {
@@ -319,6 +327,8 @@ const names: Record<ProviderId, string> = {
   anthropic: 'Anthropic Claude',
   openrouter: 'OpenRouter',
   local: 'Local (Ollama / LM Studio)',
+  ollama: 'Ollama (local)',
+  lmstudio: 'LM Studio (local)',
 }
 
 function buildProviders(env: Record<string, string | undefined>, legacy?: AiProxyConfig): AiProviderDefinition[] {
@@ -423,6 +433,34 @@ function buildProviders(env: Record<string, string | undefined>, legacy?: AiProx
           visionEnv: 'JARVIS_LOCAL_AI_VISION_MODEL',
           embeddingEnv: 'JARVIS_LOCAL_AI_EMBEDDING_MODEL',
           timeoutEnv: 'JARVIS_LOCAL_AI_TIMEOUT_MS',
+          requiresKey: false,
+        })
+      case 'ollama':
+        return buildProvider('ollama', env, {
+          baseUrl: DEFAULT_OLLAMA_BASE,
+          chatModel: '',
+          visionModel: '',
+          embeddingModel: '',
+          keyEnv: '',
+          baseUrlEnv: 'OLLAMA_BASE_URL',
+          chatEnv: 'OLLAMA_AI_MODEL',
+          visionEnv: 'OLLAMA_VISION_MODEL',
+          embeddingEnv: 'OLLAMA_EMBEDDING_MODEL',
+          timeoutEnv: 'OLLAMA_AI_TIMEOUT_MS',
+          requiresKey: false,
+        })
+      case 'lmstudio':
+        return buildProvider('lmstudio', env, {
+          baseUrl: DEFAULT_LMSTUDIO_BASE,
+          chatModel: '',
+          visionModel: '',
+          embeddingModel: '',
+          keyEnv: '',
+          baseUrlEnv: 'LMSTUDIO_BASE_URL',
+          chatEnv: 'LMSTUDIO_AI_MODEL',
+          visionEnv: 'LMSTUDIO_VISION_MODEL',
+          embeddingEnv: 'LMSTUDIO_EMBEDDING_MODEL',
+          timeoutEnv: 'LMSTUDIO_AI_TIMEOUT_MS',
           requiresKey: false,
         })
     }

@@ -601,7 +601,15 @@ describe('aiProvider router — health and security', () => {
     expect(snapshot.primary).toBe('gemini')
     expect(snapshot.fallbacks).toEqual(['openai', 'anthropic'])
     expect(snapshot.pinned).toBeNull()
-    expect(snapshot.providers.map((p) => p.id)).toEqual(['gemini', 'openai', 'anthropic', 'openrouter', 'local'])
+    expect(snapshot.providers.map((p) => p.id)).toEqual([
+      'gemini',
+      'openai',
+      'anthropic',
+      'openrouter',
+      'local',
+      'ollama',
+      'lmstudio',
+    ])
     expect(snapshot.providers.filter((p) => p.enabled).map((p) => p.id)).toEqual(['gemini', 'openai'])
     expect(snapshot.providers.find((p) => p.id === 'anthropic')?.capabilities).toEqual(['reasoning'])
     expect(snapshot.providers.find((p) => p.id === 'openrouter')?.capabilities).toEqual(['reasoning', 'vision'])

@@ -46,3 +46,6 @@ android/.kotlin
 .vercel
 .env*
 !.env.example
+
+# TypeScript incremental build metadata (never commit)
+*.tsbuildinfo
