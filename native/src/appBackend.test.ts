@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { RealAppBackend } from './appBackend.js'
+import { RealAppBackend, confirmRunning, observeRunningStable, type RunningProbe } from './appBackend.js'
 import { AppRegistry } from './appRegistry.js'
 import { isNativeError } from './errors.js'
 import type { NativeError } from './errors.js'
@@ -109,6 +109,68 @@ describe('RealAppBackend — pre-spawn validation (Phase 1.3)', () => {
     expect(calc).toMatchObject({ running: false, runningVerified: false, launchMechanism: 'aumid' })
     const settings = await b.status('settings')
     expect(settings).toMatchObject({ running: false, runningVerified: false, launchMechanism: 'uri' })
+  })
+
+  // A process that STARTS and EXITS immediately (a broken Store package, a
+  // one-shot launcher stub) must never be reported as a running application.
+  // This is the regression guard for a real false "verified" launch.
+  it('a flashing process is NOT reported as running (positive must survive the settle window)', async () => {
+    let probes = 0
+    const flash: RunningProbe = async () => {
+      probes += 1
+      return { running: probes === 1, observed: true }
+    }
+    const settled = await confirmRunning(flash, 'CalculatorApp.exe', 5)
+    expect(settled.running).toBe(false)
+    expect(settled.observed).toBe(true)
+
+    const window = await observeRunningStable(flash, 'CalculatorApp.exe', 120, 5)
+    expect(window.running).toBe(false)
+    expect(window.observed).toBe(true)
+  })
+
+  it('a process that stays up IS reported as running', async () => {
+    const stable: RunningProbe = async () => ({ running: true, observed: true })
+    expect(await confirmRunning(stable, 'notepad.exe', 5)).toEqual({ running: true, observed: true })
+    expect(await observeRunningStable(stable, 'notepad.exe', 120, 5)).toEqual({ running: true, observed: true })
+  })
+
+  it('an unobservable process is never claimed as running or refused', async () => {
+    const blind: RunningProbe = async () => ({ running: false, observed: false })
+    expect(await observeRunningStable(blind, 'ghost.exe', 120, 5)).toEqual({ running: false, observed: false })
+    // A positive first probe that cannot be re-confirmed keeps the honest
+    // "observed" answer instead of inventing a failure.
+    let first = true
+    const halfBlind: RunningProbe = async () => {
+      if (first) {
+        first = false
+        return { running: true, observed: true }
+      }
+      return { running: false, observed: false }
+    }
+    expect(await confirmRunning(halfBlind, 'half.exe', 5)).toEqual({ running: true, observed: true })
+  })
+
+  it('status(): a Store app is reported running only from a probe that really says so', async () => {
+    const reg = new AppRegistry({
+      configured: {
+        calculator: {
+          name: 'Calculator',
+          mechanism: 'aumid',
+          aumid: 'Microsoft.WindowsCalculator_8wekyb3d8bbwe!App',
+          processImage: 'CalculatorApp',
+        },
+      },
+      discover: false,
+    })
+    const running = new RealAppBackend(reg, async () => ({ running: true, observed: true }))
+    expect(await running.status('calculator')).toMatchObject({ running: true, runningVerified: true })
+
+    const stopped = new RealAppBackend(reg, async () => ({ running: false, observed: true }))
+    expect(await stopped.status('calculator')).toMatchObject({ running: false, runningVerified: true })
+
+    const unknown = new RealAppBackend(reg, async () => ({ running: false, observed: false }))
+    expect(await unknown.status('calculator')).toMatchObject({ running: false, runningVerified: false })
   })
 
   it('is a production backend, never testsOnly', async () => {

@@ -41,9 +41,11 @@ import { AppRegistry, type AppRecord } from './appRegistry.js'
 export class RealAppBackend implements ApplicationBackend {
   readonly id = 'real-app'
   private readonly registry: AppRegistry
+  private readonly probe: RunningProbe
 
-  constructor(registry?: AppRegistry) {
+  constructor(registry?: AppRegistry, probe?: RunningProbe) {
     this.registry = registry ?? new AppRegistry()
+    this.probe = probe ?? observeRunning
   }
 
   async list(): Promise<NativeAppSpec[]> {
@@ -91,7 +93,7 @@ export class RealAppBackend implements ApplicationBackend {
     if (image === '') {
       return { ...spec, running: false, runningVerified: false }
     }
-    const observed = await observeRunning(image)
+    const observed = await this.probe(image)
     return { ...spec, running: observed.running, runningVerified: observed.observed }
   }
 
@@ -203,10 +205,12 @@ export class RealAppBackend implements ApplicationBackend {
         }
       case 'refuted': {
         // The spawned process may have handed off to an already-running
-        // single-instance app. Fall back to an honest image-level check.
+        // single-instance app. Fall back to an honest image-level check that
+        // must survive the settle window (a stub that exits instantly is not a
+        // running app).
         const image = imageName(record)
         if (image !== '') {
-          const observed = await observeRunning(image)
+          const observed = await confirmRunning(this.probe, image)
           if (observed.running && observed.observed) {
             return {
               applicationId: record.applicationId,
@@ -231,7 +235,7 @@ export class RealAppBackend implements ApplicationBackend {
   private async reportShellLaunch(record: AppRecord, applicationId: string, pid: number | undefined): Promise<NativeAppLaunchResult> {
     const image = imageName(record)
     if (image !== '') {
-      const observed = await observeRunningUntil(image)
+      const observed = await observeRunningStable(this.probe, image)
       if (observed.running && observed.observed) {
         return {
           applicationId,
@@ -247,7 +251,7 @@ export class RealAppBackend implements ApplicationBackend {
           started: true,
           pid: undefined,
           verified: false,
-          detail: `Launched via shell route, but it was not observed running in the verification window.`,
+          detail: `Launched via shell route, but it was not observed running in the verification window (it exited, or never started).`,
         }
       }
     }
@@ -343,6 +347,32 @@ function parseCsvLine(line: string): string[] {
 }
 
 /** `tasklist /FO CSV /NH /FI "IMAGENAME eq <image>"` — is any such process up? */
+/**
+ * Probe one process image name. Injectable so the settle/verify rules below can
+ * be tested deterministically without a real flashing process.
+ */
+export type RunningProbe = (image: string) => Promise<RunningObservation>
+
+/**
+ * A positive observation must still hold after the settle window before it
+ * counts. A shell/Store activation can start a process that exits immediately
+ * (broken package state, one-shot hand-off); a single positive probe would then
+ * report "verified running" for an app that is already gone.
+ */
+export async function confirmRunning(
+  probe: RunningProbe,
+  image: string,
+  settleMs: number = APP_LIMITS.PROCESS_VERIFY_SETTLE_MS,
+): Promise<RunningObservation> {
+  const first = await probe(image)
+  if (!first.observed || !first.running) return first
+  await new Promise((r) => setTimeout(r, settleMs))
+  const settled = await probe(image)
+  // The second probe is the honest answer; if it could not run at all, keep the
+  // earlier positive rather than inventing a failure.
+  return settled.observed ? settled : first
+}
+
 async function observeRunning(image: string): Promise<RunningObservation> {
   if (process.platform !== 'win32') {
     return { running: false, observed: false }
@@ -370,20 +400,31 @@ async function observeRunning(image: string): Promise<RunningObservation> {
  * a single immediate probe would report a false negative for a window that is
  * already opening.
  */
-async function observeRunningUntil(image: string): Promise<RunningObservation> {
+export async function observeRunningStable(
+  probe: RunningProbe,
+  image: string,
+  windowMs: number = APP_LIMITS.PROCESS_VERIFY_TOTAL_MS,
+  settleMs: number = APP_LIMITS.PROCESS_VERIFY_SETTLE_MS,
+): Promise<RunningObservation> {
   if (process.platform !== 'win32') {
     return { running: false, observed: false }
   }
-  const deadline = Date.now() + APP_LIMITS.PROCESS_VERIFY_TOTAL_MS
+  const deadline = Date.now() + windowMs
   let sawObservation = false
   while (Date.now() < deadline) {
-    const observed = await observeRunning(image)
+    const observed = await probe(image)
     if (observed.observed) {
       sawObservation = true
       if (observed.running) {
-        return { running: true, observed: true }
+        // Only a positive that SURVIVES the settle window is a running app.
+        const confirmed = await confirmRunning(probe, image, settleMs)
+        if (confirmed.running && confirmed.observed) {
+          return { running: true, observed: true }
+        }
+        sawObservation = sawObservation || confirmed.observed
       }
     }
+    if (Date.now() >= deadline) break
     await new Promise((r) => setTimeout(r, APP_LIMITS.PROCESS_VERIFY_POLL_DELAY_MS))
   }
   return { running: false, observed: sawObservation }
@@ -499,8 +540,27 @@ async function verifyProcess(target: string, pid: number | undefined): Promise<V
         const row = parseCsvLine(line)
         return row[0]?.toLowerCase() === image
       })
-      if (found) return 'verified'
+      if (found) {
+        // The pid was observed — but only a pid that is still there after the
+        // settle window counts as a running app (a launcher stub exits at once).
+        await new Promise((r) => setTimeout(r, APP_LIMITS.PROCESS_VERIFY_SETTLE_MS))
+        const settled = await runTasklist(
+          ['/FO', 'CSV', '/NH', '/FI', `PID eq ${pid}`],
+          APP_LIMITS.PROCESS_VERIFY_PROBE_TIMEOUT_MS,
+        )
+        if (settled === null) {
+          observationFailed = true
+        } else {
+          const settledLower = settled.toLowerCase()
+          const stillRunning = settledLower.split('\r\n').some((line) => {
+            const row = parseCsvLine(line)
+            return row[0]?.toLowerCase() === image
+          })
+          if (stillRunning) return 'verified'
+        }
+      }
     }
+    if (Date.now() >= deadline) break
     await new Promise((r) => setTimeout(r, APP_LIMITS.PROCESS_VERIFY_POLL_DELAY_MS))
   }
 

@@ -68,6 +68,14 @@ export const APP_LIMITS = {
   PROCESS_VERIFY_POLL_DELAY_MS: 400,
   /** Per-probe timeout for the tasklist observation (ms). */
   PROCESS_VERIFY_PROBE_TIMEOUT_MS: 2000,
+  /**
+   * A positive process observation must still hold after this settle window
+   * before it may be reported as a VERIFIED launch. A shell/Store activation
+   * can flash a process that exits immediately (broken package state, one-shot
+   * hand-off); without the settle check that flash was reported as "confirmed
+   * running" for an app that was already gone.
+   */
+  PROCESS_VERIFY_SETTLE_MS: 1200,
 } as const
 
 /** Clamp into `1..cap`; anything absent/invalid resolves to cap (never unlimited). */
