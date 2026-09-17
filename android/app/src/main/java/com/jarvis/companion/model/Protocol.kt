@@ -1,18 +1,25 @@
 package com.jarvis.companion.model
 
 /**
- * Wire models for the JARVIS phone LAN protocol (Phase 1).
+ * Wire models for the JARVIS phone LAN protocol.
  *
  * This is a thin mirror of the backend's `/phone/` JSON contract
  * (server/src/phoneServer.ts). Everything here is REAL: fields the backend
  * actually sends and accepts. There is deliberately no call/SMS/contact/
- * notification fake in this phase — those capabilities do not exist yet.
+ * notification fake — telephony is added only where this build genuinely
+ * implements it through Android OS APIs (see `telephony/`), and the capability
+ * list is composed from the REAL device + permission state at heartbeat time.
  */
 
 /** Device identity this app reports when it checks in. */
 object CompanionIdentity {
     const val DEVICE_ID = "s26-ultra"
-    /** The exact set of capabilities this build genuinely implements. */
+
+    /**
+     * Capabilities this build implements on EVERY device (no hardware needed).
+     * Telephony is appended separately and only when the hardware really exists
+     * — see `TelephonyCapability.callCapabilities`.
+     */
     val CAPABILITIES = listOf("status", "battery", "network", "ping", "heartbeat", "connection")
 }
 
@@ -81,7 +88,14 @@ data class PingResponse(
     val error: String? = null,
 )
 
-/** Command the core queued for this phone to pick up via /phone/poll. */
+/**
+ * Command the core queued for this phone to pick up via /phone/poll.
+ *
+ * `kind` is one of the backend's closed allow-list: `ping`, `call.dial`,
+ * `call.hangup`, `call.answer`, `call.reject`. `payload` carries only the
+ * fields that kind declares (e.g. `number`/`contactName` for `call.dial`) and
+ * is absent for payload-free kinds.
+ */
 data class PollCommand(
     val commandId: String,
     val kind: String,
@@ -89,6 +103,7 @@ data class PollCommand(
     val requestId: String,
     val enqueuedAt: Long = 0,
     val expiresAt: Long = 0,
+    val payload: Map<String, String>? = null,
 )
 
 data class PollResponse(
@@ -110,6 +125,31 @@ data class AckResponse(
     val ok: Boolean,
     val acknowledged: Boolean = false,
     val commandId: String? = null,
+    val error: String? = null,
+)
+
+/**
+ * Outbound: a REAL device event the phone observed (today: telephony call
+ * state straight from the OS call-state callback). The backend validates the
+ * state against its closed vocabulary and fans it out over SSE.
+ */
+data class PhoneEventRequest(
+    val id: String,
+    val kind: String,
+    val state: String,
+    val direction: String? = null,
+    val commandId: String? = null,
+    val contactName: String? = null,
+    val number: String? = null,
+    val reason: String? = null,
+)
+
+data class PhoneEventResponse(
+    val ok: Boolean,
+    val accepted: Boolean = false,
+    val deviceId: String? = null,
+    val callState: String? = null,
+    val deviceOnline: Boolean = false,
     val error: String? = null,
 )
 

@@ -79,6 +79,46 @@ export interface InboundMessage {
   at: number
 }
 
+/**
+ * Real telephony state vocabulary (Android companion calling).
+ *
+ * Every value describes what the PHONE's OS actually reported; the backend and
+ * the assistant never synthesize a state. `PERMISSION_REQUIRED`,
+ * `NOT_SUPPORTED` and `DEVICE_OFFLINE` exist so an impossible call is refused
+ * honestly instead of being faked.
+ */
+export type CallState =
+  | 'CALL_REQUESTED'
+  | 'CALLING'
+  | 'RINGING'
+  | 'CONNECTED'
+  | 'ENDED'
+  | 'FAILED'
+  | 'REJECTED'
+  | 'CANCELLED'
+  | 'PERMISSION_REQUIRED'
+  | 'NOT_SUPPORTED'
+  | 'DEVICE_OFFLINE'
+
+/** Which side opened the call — reported by the phone when it knows. */
+export type CallDirection = 'incoming' | 'outgoing'
+
+/** A real call-state observation pushed by the phone (`POST /phone/event`). */
+export interface CallEventData {
+  deviceId: string
+  state: CallState
+  direction?: CallDirection
+  /** Command this event belongs to, when the phone can attribute it. */
+  commandId?: string
+  /** Resolved contact name, when the OS/contacts gave one. */
+  contactName?: string
+  /** Dialled / calling number as the phone reported it. */
+  number?: string
+  /** Free-text OS reason for FAILED / REJECTED / CANCELLED. */
+  reason?: string
+  at: number
+}
+
 export interface OutboundFile {
   id: string
   name: string
@@ -115,6 +155,7 @@ export type BackendEventType =
   | 'inbound'
   | 'assistant'
   | 'wake'
+  | 'call'
 
 export interface BackendEvent {
   type: BackendEventType

@@ -11,6 +11,8 @@
  *   POST /api/device/pair/begin     — start a phone pairing session (code shown on the laptop)
  *   POST /api/device/ping           — queue a verifiable ping for a trusted phone
  *   POST /api/device/ping/result    — read the result of a queued ping (loopback only)
+ *   POST /api/device/call           — queue a real telephony action (dial/hangup/answer/reject)
+ *   POST /api/device/call/result    — read the concrete result/ack of a queued call command
  *   POST /api/device/notify         — notify 'all' or one trusted device
  *   POST /api/device/open-url       — ask an online trusted device to open a URL
  *   POST /api/device/file           — upload a bounded, optionally targeted file
@@ -45,11 +47,12 @@ import type { EventBus, SseClient } from './events.js'
 import type { DeviceRegistry } from './registry.js'
 import type { FileStore } from './files.js'
 import type { NativeStatus } from './native.js'
-import type { BackendHealth, InboundMessage, WakeState } from './types.js'
+import type { BackendHealth, CallState, InboundMessage, WakeState } from './types.js'
 import { AI_PROXY_SUBPATHS, type AiProxyOptions, type AiProxySubpath } from './ai.js'
 import { createAiProviderRouter, type AiRouter, type AiRouteResult } from './aiProvider.js'
 import { PhoneTrust } from './phoneTrust.js'
 import { PhoneCommandQueue } from './phoneCommands.js'
+import { trustedDeviceByRole } from './trusted.js'
 
 const CORS_HEADERS: Record<string, string> = {
   'Access-Control-Allow-Origin': '*',
@@ -178,6 +181,39 @@ function stringArray(value: unknown, itemLimit = 64): string[] {
     .filter((v): v is string => typeof v === 'string' && v.trim().length > 0)
     .slice(0, MAX_LIST_ITEMS)
     .map((v) => v.trim().slice(0, itemLimit))
+}
+
+/* --------------------------------------------------- telephony helpers */
+
+/**
+ * The closed set of call actions the backend can queue for a phone, and the
+ * exact Android permission each one needs the phone to report. Nothing here
+ * executes anything — the phone does, on its next poll, through OS APIs only.
+ */
+export interface CallActionSpec {
+  kind: 'call.dial' | 'call.hangup' | 'call.answer' | 'call.reject'
+  /** Runtime permission the companion app MUST report for this action. */
+  permission: string
+}
+
+export const CALL_ACTIONS: Record<string, CallActionSpec> = {
+  dial: { kind: 'call.dial', permission: 'CALL_PHONE' },
+  hangup: { kind: 'call.hangup', permission: 'ANSWER_PHONE_CALLS' },
+  answer: { kind: 'call.answer', permission: 'ANSWER_PHONE_CALLS' },
+  reject: { kind: 'call.reject', permission: 'ANSWER_PHONE_CALLS' },
+}
+
+/** Capability the phone MUST report (via heartbeat) before a call is queued. */
+export const CALL_CAPABILITY = 'call'
+
+/** Normalize a dialled number: keep an optional leading +, digits only. */
+export function normalizePhoneNumber(raw: string): string | undefined {
+  const trimmed = raw.trim().slice(0, 40)
+  if (!trimmed) return undefined
+  const plus = trimmed.startsWith('+')
+  const digits = trimmed.replace(/[^\d]/g, '')
+  if (digits.length < 3 || digits.length > 20) return undefined
+  return plus ? `+${digits}` : digits
 }
 
 const MIME: Record<string, string> = {
@@ -553,6 +589,166 @@ export async function startHttpServer(options: HttpServerOptions): Promise<Runni
           result: result.ok ?? null,
           detail: result.detail ?? null,
           deviceOnline: deviceRecord?.online === true,
+        })
+        return
+      }
+
+      /* ------------------------------- calling --------------- */
+      // Queue a real telephony action for a paired phone. Nothing is executed
+      // here: the phone runs it on its next poll through OS telephony APIs and
+      // acks the concrete result. The backend refuses honestly (offline / no
+      // capability / permission missing) instead of pretending a call started.
+      if (req.method === 'POST' && pathname === '/api/device/call') {
+        const body = asRecord(await readJsonBody(req))
+        const action = typeof body.action === 'string' ? body.action.trim().toLowerCase() : ''
+        const spec = CALL_ACTIONS[action]
+        if (!spec) {
+          json(res, 400, {
+            ok: false,
+            error: 'invalid_action',
+            reason: `action must be one of: ${Object.keys(CALL_ACTIONS).join(', ')}`,
+          })
+          return
+        }
+        const rawDevice = typeof body.device === 'string' && body.device.trim() ? body.device.trim().toLowerCase() : ''
+        const primaryPhone = trustedDeviceByRole('primary_phone')?.id
+        const deviceId = rawDevice || primaryPhone || ''
+        if (!deviceId) {
+          json(res, 400, { ok: false, error: 'device is required' })
+          return
+        }
+        if (!ctx.registry.isTrusted(deviceId)) {
+          json(res, 400, { ok: false, error: 'invalid_target', reason: `"${deviceId}" is not a trusted device id.` })
+          return
+        }
+        const device = ctx.registry.get(deviceId)
+        if (!device || device.platform !== 'android') {
+          json(res, 400, {
+            ok: false,
+            error: 'not_a_phone',
+            reason: `"${deviceId}" is not a trusted Android companion; calls can only be placed through a phone.`,
+          })
+          return
+        }
+        if (!device.online) {
+          ctx.bus.publish({
+            type: 'call',
+            at: ctx.now(),
+            data: { deviceId, state: 'DEVICE_OFFLINE', at: ctx.now(), reason: 'device is offline' },
+          })
+          json(res, 200, {
+            ok: false,
+            error: 'device_offline',
+            state: 'DEVICE_OFFLINE',
+            device: deviceId,
+            reason: `${device.name} is offline right now, so no call was placed.`,
+          })
+          return
+        }
+        if (!device.capabilities.includes(CALL_CAPABILITY) || !device.permissions.includes(spec.permission)) {
+          const permissionMissing = !device.permissions.includes(spec.permission)
+          const state: CallState = permissionMissing ? 'PERMISSION_REQUIRED' : 'NOT_SUPPORTED'
+          ctx.bus.publish({ type: 'call', at: ctx.now(), data: { deviceId, state, at: ctx.now() } })
+          json(res, 200, {
+            ok: false,
+            error: permissionMissing ? 'permission_required' : 'not_supported',
+            state,
+            device: deviceId,
+            reason: permissionMissing
+              ? `${device.name} has not granted the ${spec.permission} permission, so JARVIS cannot perform this action.`
+              : `${device.name} reports no telephony capability, so JARVIS cannot perform this action.`,
+          })
+          return
+        }
+
+        let payload: Record<string, unknown> | undefined
+        if (action === 'dial') {
+          const contactName = typeof body.contact === 'string' ? body.contact.trim().slice(0, 80) : ''
+          const rawNumber = typeof body.number === 'string' ? body.number : ''
+          const number = rawNumber ? normalizePhoneNumber(rawNumber) : undefined
+          if (!contactName && !number) {
+            json(res, 400, {
+              ok: false,
+              error: 'invalid_argument',
+              reason: 'A dial action needs a contact name or a valid phone number.',
+            })
+            return
+          }
+          if (rawNumber && !number) {
+            json(res, 400, { ok: false, error: 'invalid_argument', reason: `"${rawNumber}" is not a valid phone number.` })
+            return
+          }
+          payload = { ...(number ? { number } : {}), ...(contactName ? { contactName } : {}) }
+        } else if (action === 'reject') {
+          const reason = typeof body.reason === 'string' && body.reason.trim() ? body.reason.trim().slice(0, 120) : undefined
+          if (reason) payload = { reason }
+        }
+
+        const dispatch = deviceCommands.enqueue({ deviceId, kind: spec.kind, payload, online: device.online })
+        if (!dispatch.command) {
+          json(res, 429, { ok: false, error: 'call_queue_full', reason: dispatch.reason })
+          return
+        }
+        ctx.bus.publish({
+          type: 'call',
+          at: ctx.now(),
+          data: {
+            deviceId,
+            state: 'CALL_REQUESTED',
+            commandId: dispatch.command.commandId,
+            contactName: payload?.contactName,
+            number: payload?.number,
+            at: ctx.now(),
+          },
+        })
+        json(res, 200, {
+          ok: true,
+          state: 'CALL_REQUESTED',
+          action,
+          commandId: dispatch.command.commandId,
+          requestId: dispatch.command.requestId,
+          device: deviceId,
+          delivered: dispatch.delivered,
+          reason: dispatch.reason,
+        })
+        return
+      }
+
+      if (req.method === 'POST' && pathname === '/api/device/call/result') {
+        const body = asRecord(await readJsonBody(req))
+        const deviceId = typeof body.device === 'string' && body.device.trim() ? body.device.trim().toLowerCase() : ''
+        if (!deviceId) {
+          json(res, 400, { ok: false, error: 'device is required' })
+          return
+        }
+        if (!ctx.registry.isTrusted(deviceId)) {
+          json(res, 400, { ok: false, error: 'invalid_target', reason: `"${deviceId}" is not a trusted device id.` })
+          return
+        }
+        const commandId = typeof body.commandId === 'string' && body.commandId.trim() ? body.commandId.trim().slice(0, 100) : undefined
+        const requestId = typeof body.requestId === 'string' && body.requestId.trim() ? body.requestId.trim().slice(0, 120) : undefined
+        const result = deviceCommands.result(
+          { commandId, requestId, kind: commandId || requestId ? undefined : 'call.dial' },
+          deviceId,
+        )
+        if (!result) {
+          json(res, 404, { ok: false, error: 'no_call_found', reason: 'No call command was found for that device/id.' })
+          return
+        }
+        const device = ctx.registry.get(deviceId)
+        json(res, 200, {
+          ok: true,
+          device: deviceId,
+          commandId: result.commandId,
+          kind: result.kind,
+          requestId: result.requestId,
+          pending: result.pending,
+          acknowledged: result.ackedAt !== undefined,
+          ackedAt: result.ackedAt,
+          // The phone's concrete result — only ever true when /phone/ack said so.
+          result: result.ok ?? null,
+          detail: result.detail ?? null,
+          deviceOnline: device?.online === true,
         })
         return
       }

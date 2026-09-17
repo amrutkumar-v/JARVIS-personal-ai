@@ -932,7 +932,12 @@ export const DEFAULT_CAPABILITIES: CapabilityDefinition[] = [
     riskLevel: 'sensitive_action',
     risk: 'high',
     destructive: false,
-    maximumPermission: 'write',
+    // Placing a real call is a `device_control` action: the ceiling must allow
+    // the implementation's own `user_confirmation` tier (which is the real,
+    // single confirmation gate — it applies whether the model names the
+    // capability or the tool id directly). No separate `requiresConfirmation`
+    // flag is set here so the operator is asked exactly ONCE.
+    maximumPermission: 'device_control',
     readOnly: false,
     requiredPermissions: ['phone-call'],
     verification: 'strong',

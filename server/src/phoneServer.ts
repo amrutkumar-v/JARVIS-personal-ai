@@ -16,6 +16,9 @@
  *   POST /phone/poll        — drain queued outbound commands (credential auth)
  *   POST /phone/ack         — report a concrete result for a command
  *                            (credential auth)
+ *   POST /phone/event       — push a REAL device event (currently telephony
+ *                            call state the phone observed from the OS) into
+ *                            the JARVIS Core event bus (credential auth)
  *
  * Every non-pair endpoint requires a per-device credential issued at pairing.
  * The credential only ever works for the device it was issued to (the body id
@@ -32,10 +35,30 @@ import { nullLogger } from './log.js'
 import type { DeviceRegistry } from './registry.js'
 import type { PhoneTrust, ClaimedPairing } from './phoneTrust.js'
 import type { PhoneCommandQueue, OutboundCommand, PingAck } from './phoneCommands.js'
-import type { ClaimMeta } from './types.js'
+import type { EventBus } from './events.js'
+import type { CallDirection, CallEventData, CallState, ClaimMeta } from './types.js'
 
 const MAX_PHONE_BODY_BYTES = 64 * 1024
 const FIELD_LIMIT = 60
+
+/** The complete telephony-state vocabulary a phone may report. */
+const CALL_STATES: readonly CallState[] = [
+  'CALL_REQUESTED',
+  'CALLING',
+  'RINGING',
+  'CONNECTED',
+  'ENDED',
+  'FAILED',
+  'REJECTED',
+  'CANCELLED',
+  'PERMISSION_REQUIRED',
+  'NOT_SUPPORTED',
+  'DEVICE_OFFLINE',
+]
+
+/** The only event kinds the phone listener accepts from a device. */
+const PHONE_EVENT_KINDS = ['call.state'] as const
+const CALL_DIRECTIONS: readonly CallDirection[] = ['incoming', 'outgoing']
 
 export interface PhoneServerOptions {
   host: string
@@ -45,6 +68,8 @@ export interface PhoneServerOptions {
   commands: PhoneCommandQueue
   now: () => number
   log?: Logger
+  /** Event bus: real device events pushed by the phone are fanned out here. */
+  bus?: EventBus
 }
 
 export interface RunningPhoneServer {
@@ -120,7 +145,7 @@ export async function startPhoneServer(options: PhoneServerOptions): Promise<Run
     const pathname = url.pathname
 
     try {
-      if (pathname !== '/phone/pair' && pathname !== '/phone/heartbeat' && pathname !== '/phone/ping' && pathname !== '/phone/status' && pathname !== '/phone/poll' && pathname !== '/phone/ack') {
+      if (pathname !== '/phone/pair' && pathname !== '/phone/heartbeat' && pathname !== '/phone/ping' && pathname !== '/phone/status' && pathname !== '/phone/poll' && pathname !== '/phone/ack' && pathname !== '/phone/event') {
         json(res, 404, { ok: false, error: 'not_found' })
         return
       }
@@ -217,6 +242,41 @@ export async function startPhoneServer(options: PhoneServerOptions): Promise<Run
         json(res, 200, accepted ? { ok: true, acknowledged: true, commandId } : { ok: false, error: 'unknown_command' })
         return
       }
+
+      if (pathname === '/phone/event') {
+        // A phone may only push a small, closed set of REAL observations. The
+        // state vocabulary is validated here, so a device can never inject an
+        // arbitrary event shape into the JARVIS Core bus.
+        const kind = str(body.kind, 40)
+        if (!kind || !(PHONE_EVENT_KINDS as readonly string[]).includes(kind)) {
+          json(res, 400, { ok: false, error: 'unsupported_event_kind' })
+          return
+        }
+        const state = str(body.state, 40) as CallState | undefined
+        if (!state || !CALL_STATES.includes(state)) {
+          json(res, 400, { ok: false, error: 'invalid_call_state' })
+          return
+        }
+        const directionRaw = str(body.direction, 20)
+        const direction = directionRaw && (CALL_DIRECTIONS as readonly string[]).includes(directionRaw)
+          ? (directionRaw as CallDirection)
+          : undefined
+        const record = registry.get(deviceId)
+        const event: CallEventData = {
+          deviceId,
+          state,
+          direction,
+          commandId: str(body.commandId, 100),
+          contactName: str(body.contactName, 80),
+          number: str(body.number, 40),
+          reason: str(body.reason, 200),
+          at: now(),
+        }
+        log.info('phone', 'call state reported', { device: deviceId, state, direction: direction ?? 'unknown' })
+        options.bus?.publish({ type: 'call', at: event.at, data: event })
+        json(res, 200, { ok: true, accepted: true, deviceId, callState: state, deviceOnline: record?.online === true })
+        return
+      }
     } catch (error) {
       log.error('phone', 'request failed', { pathname, error: error instanceof Error ? error.message : String(error) })
       json(res, 500, { ok: false, error: 'internal_error' })
@@ -232,7 +292,7 @@ export async function startPhoneServer(options: PhoneServerOptions): Promise<Run
   const port = typeof address === 'object' && address ? address.port : options.port
   log.info('phone', 'phone listener listening', {
     url: `http://${options.host}:${port}`,
-    endpoints: ['/phone/pair', '/phone/heartbeat', '/phone/ping', '/phone/status', '/phone/poll', '/phone/ack'],
+    endpoints: ['/phone/pair', '/phone/heartbeat', '/phone/ping', '/phone/status', '/phone/poll', '/phone/ack', '/phone/event'],
   })
 
   return {

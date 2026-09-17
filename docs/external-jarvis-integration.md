@@ -66,7 +66,7 @@ as active code.
 | --- | --- |
 | MCP as a controlled capability source | External bridge surfaced MCP tools into the model directly. Here the requirement is a **controlled capability source**: `McpCapabilitySource` behind the same fog that every tool goes through — strict capability registration/validation, permissions, confirmation, budgets, SSRF/URL gates, verification, default-deny. **No unrestricted backdoor.** Not wired to any server; no MCP servers configured on this machine. |
 | Android companion | `src/config/android/AndroidProvider` seam + backend device registry (`/api/device/list`) with honest per-device states (`live`, `lan-bridge`, `stale`). Android device agent = **controlled execution node**, never a second brain; no unauthenticated control. Companion app itself is out of scope of this repo. |
-| Calling states | Call state machine (idle/ringing/connecting/active) documented as data model only. Voice channels here are browser Web Speech; no telephony provider is implemented, so no call path is claimed. |
+| Calling states | Call state machine (idle/ringing/connecting/active) documented as data model only. Voice channels here are browser Web Speech; no telephony provider is implemented, so no call path is claimed. **Update:** real Android calling has since shipped through the paired companion phone — see [`android-calling.md`](./android-calling.md). |
 
 ## 3. Live verification (REAL-DEVICE evidence)
 

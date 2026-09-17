@@ -17,6 +17,7 @@ import com.jarvis.companion.device.DeviceInfo
 import com.jarvis.companion.model.CompanionIdentity
 import com.jarvis.companion.net.JarvisPhoneClient
 import com.jarvis.companion.service.JarvisSyncService
+import com.jarvis.companion.telephony.TelephonyCapability
 import com.jarvis.companion.service.JarvisSyncService.SyncState
 import com.jarvis.companion.service.SyncWatchdog
 import com.jarvis.companion.trust.PairingStore
@@ -47,6 +48,7 @@ class MainActivity : AppCompatActivity() {
 
         store = PairingStore(this)
         requestNotificationPermission()
+        requestTelephonyPermissions()
 
         binding.etHost.setText(store.lastHost ?: DEFAULT_HOST)
         renderPairedState()
@@ -189,6 +191,8 @@ class MainActivity : AppCompatActivity() {
             if (state.lastHeartbeatMs > 0) append(" · last heartbeat ${formatTime(state.lastHeartbeatMs)}")
             if (state.lastBattery >= 0) append(" · ${state.lastBattery}%")
             if (state.lastPingRttMs >= 0) append(" · last ping ${state.lastPingRttMs}ms")
+            append(" · call-state observation: ${if (state.callObservation) "active" else "unavailable"}")
+            state.lastCallState?.let { append(" · last call state: $it") }
             state.lastError?.let { append("\nerror: $it") }
         }
     }
@@ -196,9 +200,16 @@ class MainActivity : AppCompatActivity() {
     private fun renderDevice() {
         val percent = DeviceInfo.batteryPercent(this)
         val charging = DeviceInfo.isCharging(this)
+        val telephony = if (TelephonyCapability.hasTelephonyHardware(this)) {
+            val granted = TelephonyCapability.grantedPermissions(this).joinToString(", ").ifEmpty { "none" }
+            "\nTelephony: supported · permissions granted: $granted"
+        } else {
+            "\nTelephony: not supported on this device"
+        }
         binding.tvDevice.text =
             "This device: ${DeviceInfo.modelName()} · Android ${Build.VERSION.RELEASE} · app ${DeviceInfo.appVersion()}" +
-                "\nBattery: ${if (percent >= 0) "$percent%" else "unknown"}${if (charging) " · charging" else ""} · network: ${DeviceInfo.networkLabel(this)}"
+                "\nBattery: ${if (percent >= 0) "$percent%" else "unknown"}${if (charging) " · charging" else ""} · network: ${DeviceInfo.networkLabel(this)}" +
+                telephony
     }
 
     private fun requestNotificationPermission() {
@@ -210,10 +221,38 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    /**
+     * Ask for the telephony/contacts runtime permissions this build actually
+     * implements. Granting them is what makes real calling work; refusing them
+     * is equally honest — JARVIS Core then sees no granted permission and
+     * reports PERMISSION_REQUIRED instead of pretending it can call.
+     */
+    private fun requestTelephonyPermissions() {
+        if (!TelephonyCapability.hasTelephonyHardware(this)) return
+        val missing = TelephonyCapability.REPORTED_PERMISSIONS.mapNotNull { label ->
+            if (TelephonyCapability.isGranted(this, label)) null else androidPermissionFor(label)
+        }
+        if (missing.isNotEmpty()) {
+            ActivityCompat.requestPermissions(this, missing.toTypedArray(), PERMISSION_TELEPHONY)
+        }
+    }
+
+    private fun androidPermissionFor(label: String): String? = when (label) {
+        TelephonyCapability.CALL_PHONE -> android.Manifest.permission.CALL_PHONE
+        TelephonyCapability.ANSWER_PHONE_CALLS -> android.Manifest.permission.ANSWER_PHONE_CALLS
+        TelephonyCapability.CALL_STATE -> android.Manifest.permission.READ_PHONE_STATE
+        TelephonyCapability.CONTACTS -> android.Manifest.permission.READ_CONTACTS
+        else -> null
+    }
+
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         if (requestCode == PERMISSION_NOTIFICATIONS) {
             toast("Notifications are only used for the ongoing \u201cJARVIS Companion active\u201d service channel")
+        }
+        if (requestCode == PERMISSION_TELEPHONY) {
+            renderDevice()
+            toast("Calling permissions updated — JARVIS reports only what is actually granted")
         }
     }
 
@@ -225,5 +264,6 @@ class MainActivity : AppCompatActivity() {
     companion object {
         private const val DEFAULT_HOST = "192.168.1.3:8788"
         private const val PERMISSION_NOTIFICATIONS = 3001
+        private const val PERMISSION_TELEPHONY = 3002
     }
 }

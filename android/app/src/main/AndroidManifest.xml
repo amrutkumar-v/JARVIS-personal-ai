@@ -14,6 +14,23 @@
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
 
+    <!-- REAL telephony (Phase 10). The companion places/answers/ends genuine
+         calls through Android's own telephony APIs and observes the true call
+         state. Nothing here bypasses Android security: CALL_PHONE gates
+         outgoing calls, ANSWER_PHONE_CALLS gates the call-control APIs (which
+         the OS may still refuse for a non-default dialer), READ_PHONE_STATE
+         gates call-state observation, and READ_CONTACTS resolves a contact
+         NAME to a dialable number on the device. The backend refuses with
+         PERMISSION_REQUIRED / NOT_SUPPORTED whenever one of these is missing or
+         the platform does not permit the action. -->
+    <uses-permission android:name="android.permission.CALL_PHONE" />
+    <uses-permission android:name="android.permission.ANSWER_PHONE_CALLS" />
+    <uses-permission android:name="android.permission.READ_PHONE_STATE" />
+    <uses-permission android:name="android.permission.READ_CONTACTS" />
+    <!-- Telephony is optional: Wi-Fi-only tablets must still be able to run the
+         companion (they simply report no `call` capability). -->
+    <uses-feature android:name="android.hardware.telephony" android:required="false" />
+
     <application
         android:allowBackup="false"
         android:icon="@android:drawable/sym_def_app_icon"
@@ -25,8 +42,10 @@
 
         <!-- Home Wi-Fi: the backend phone listener is plain HTTP on the LAN
              (http://<laptop-ip>:8788). usesCleartextTraffic allows that. No
-             telephony, SMS, contacts, mic or camera permission is declared —
-             this phase has no such capability. -->
+             SMS, microphone or camera permission is declared — those
+             capabilities are genuinely not implemented. Calls, contacts and
+             call-state observation ARE implemented through Android telephony
+             APIs and are gated by the permissions above. -->
 
         <activity
             android:name=".MainActivity"

@@ -10,6 +10,7 @@ import android.os.Build
 import com.jarvis.companion.BuildConfig
 import com.jarvis.companion.model.CompanionIdentity
 import com.jarvis.companion.model.HeartbeatMeta
+import com.jarvis.companion.telephony.TelephonyCapability
 
 /**
  * Reads REAL battery + network + build state from the device.
@@ -52,7 +53,15 @@ object DeviceInfo {
 
     fun appVersion(): String = BuildConfig.VERSION_NAME
 
-    /** Build the exact heartbeat meta this build declares. */
+    /**
+     * Build the exact heartbeat meta this build declares.
+     *
+     * Capabilities and permissions are computed from the REAL device and
+     * runtime-permission state every heartbeat: `call` only appears when the
+     * hardware exists, and the permission list contains only granted
+     * permissions. JARVIS Core therefore refuses a call with
+     * PERMISSION_REQUIRED / NOT_SUPPORTED instead of pretending.
+     */
     fun heartbeatMeta(context: Context): HeartbeatMeta = HeartbeatMeta(
         name = modelName(),
         version = appVersion(),
@@ -60,7 +69,8 @@ object DeviceInfo {
         charging = isCharging(context),
         network = networkLabel(context),
         connection = "lan",
-        capabilities = CompanionIdentity.CAPABILITIES,
+        capabilities = CompanionIdentity.CAPABILITIES + TelephonyCapability.callCapabilities(context),
+        permissions = TelephonyCapability.grantedPermissions(context),
     )
 
     private fun batteryIntent(context: Context): Intent? {

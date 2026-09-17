@@ -18,6 +18,10 @@ import { ReconnectController, type ReconnectPhase } from './reconnect'
 import type {
   BackendEventType,
   BackendHealth,
+  CallAction,
+  CallDispatchResult,
+  CallEventData,
+  CallResultLookup,
   ClaimMeta,
   DeviceRecord,
   InboundMessage,
@@ -38,6 +42,8 @@ export interface BackendEventHandlers {
   onInbound?: BackendListener<InboundMessage>
   onDevice?: BackendListener<{ event: string; device: DeviceRecord }>
   onWake?: BackendListener<{ event: string; at: number }>
+  /** Real telephony call-state observations pushed by the phone. */
+  onCall?: BackendListener<CallEventData>
 }
 
 export interface BackendClientDeps {
@@ -54,7 +60,7 @@ export interface EventSourceLike {
   onerror: (() => void) | null
 }
 
-const EVENT_NAMES: BackendEventType[] = ['device', 'notify', 'open-url', 'file', 'inbound', 'assistant', 'wake']
+const EVENT_NAMES: BackendEventType[] = ['device', 'notify', 'open-url', 'file', 'inbound', 'assistant', 'wake', 'call']
 
 export class BackendClient {
   private readonly config: BackendConfig
@@ -206,6 +212,9 @@ export class BackendClient {
         case 'wake':
           this.handlers.onWake?.(envelope.data as { event: string; at: number })
           break
+        case 'call':
+          this.handlers.onCall?.(envelope.data as CallEventData)
+          break
         case 'assistant':
           break
       }
@@ -307,5 +316,50 @@ export class BackendClient {
 
   wakeEvent(event: 'arm' | 'disarm' | 'wake'): Promise<{ ok: boolean }> {
     return this.postJson('/api/wake', { event }).then((res) => ({ ok: res.ok }))
+  }
+
+  /**
+   * Queue a real telephony action for a paired phone. The backend refuses
+   * honestly (device_offline / permission_required / not_supported) instead of
+   * claiming a call started; `state` always carries the truthful outcome.
+   */
+  requestCall(input: {
+    action: CallAction
+    device?: string
+    contact?: string
+    number?: string
+    reason?: string
+  }): Promise<CallDispatchResult> {
+    return this.postJson('/api/device/call', input).then((res) => {
+      const state = typeof res.body.state === 'string' ? (res.body.state as CallDispatchResult['state']) : 'FAILED'
+      return {
+        ok: res.ok === true && res.body.ok !== false,
+        state,
+        action: input.action,
+        commandId: typeof res.body.commandId === 'string' ? res.body.commandId : undefined,
+        requestId: typeof res.body.requestId === 'string' ? res.body.requestId : undefined,
+        device: typeof res.body.device === 'string' ? res.body.device : input.device,
+        delivered: res.body.delivered === true,
+        reason: typeof res.body.reason === 'string' ? res.body.reason : undefined,
+        error: res.error,
+      }
+    })
+  }
+
+  /** Read the concrete result/ack of a previously queued call command. */
+  callResult(input: { device: string; commandId?: string; requestId?: string }): Promise<CallResultLookup> {
+    return this.postJson('/api/device/call/result', input).then((res) => ({
+      ok: res.ok === true && res.body.ok !== false,
+      device: typeof res.body.device === 'string' ? res.body.device : input.device,
+      commandId: typeof res.body.commandId === 'string' ? res.body.commandId : input.commandId,
+      kind: typeof res.body.kind === 'string' ? res.body.kind : undefined,
+      pending: res.body.pending === true,
+      acknowledged: res.body.acknowledged === true,
+      ackedAt: typeof res.body.ackedAt === 'number' ? res.body.ackedAt : undefined,
+      result: typeof res.body.result === 'boolean' ? res.body.result : null,
+      detail: typeof res.body.detail === 'string' ? res.body.detail : null,
+      deviceOnline: res.body.deviceOnline === true,
+      error: res.error,
+    }))
   }
 }

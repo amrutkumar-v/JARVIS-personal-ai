@@ -7,6 +7,8 @@ import com.jarvis.companion.model.AckResponse
 import com.jarvis.companion.model.HeartbeatRequest
 import com.jarvis.companion.model.PairRequest
 import com.jarvis.companion.model.PairResponse
+import com.jarvis.companion.model.PhoneEventRequest
+import com.jarvis.companion.model.PhoneEventResponse
 import com.jarvis.companion.model.PingRequest
 import com.jarvis.companion.model.PingResponse
 import com.jarvis.companion.model.PollResponse
@@ -122,6 +124,21 @@ class JarvisPhoneClient(private val timeoutMillis: Long = 10_000L) {
                 .header("authorization", "Bearer $token")
                 .build()
             call(req) { gson.fromJson(it, AckResponse::class.java) }
+        }
+
+    /**
+     * /phone/event — push a REAL device observation (telephony call state the OS
+     * reported) into the JARVIS Core event bus. The backend validates the state
+     * against its closed vocabulary and fans it out over SSE.
+     */
+    suspend fun event(host: String, token: String, deviceId: String, event: PhoneEventRequest): PhoneEventResponse =
+        withContext(Dispatchers.IO) {
+            val req = Request.Builder()
+                .url("${baseUrl(host)}/phone/event")
+                .post(gson.toJson(event.copy(id = deviceId)).toRequestBody(JSON))
+                .header("authorization", "Bearer $token")
+                .build()
+            call(req) { gson.fromJson(it, PhoneEventResponse::class.java) }
         }
 
     /** Heartbeat liveness: true only for a 2xx response; never throws. */

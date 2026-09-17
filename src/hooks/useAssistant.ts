@@ -15,7 +15,8 @@ import { createDefaultAppFileSystemProvider, createDefaultAppApplicationProvider
 import { BackendClient } from '../backend/BackendClient'
 import { getBackendConfig } from '../backend/config'
 import type { BackendHealth } from '../backend/types'
-import { BackendDeviceProvider } from '../device'
+import { BackendDeviceProvider, useDeviceStore } from '../device'
+import { BackendAndroidProvider } from '../android'
 import { WebCameraController } from '../camera'
 import { GestureController, createMediaPipeTracker, GESTURE_ACTION_MAP } from '../gesture'
 import { LocalScheduler } from '../scheduling/scheduler'
@@ -58,6 +59,14 @@ const engine = useMemo(
    */
   const deviceProviderRef = useRef<BackendDeviceProvider | null>(null)
 
+  /* ---- Phase 10 — one REAL Android telephony provider per session ----
+   * Created alongside the device bridge and attached to the engine so the
+   * call.* tools exist only while the persistent JARVIS Core backend is
+   * reachable. Real call-state events the phone pushes are fed straight into
+   * it, so verification can only ever succeed from a genuine OS observation.
+   */
+  const androidProviderRef = useRef<BackendAndroidProvider | null>(null)
+
   /* ---- Phase 11 reminders: one REAL LocalScheduler per session ----
    * Attached to the engine so scheduling.* tools exist; due reminders fire
    * through the SAME single engine entry point as text/voice/device. Missed
@@ -88,9 +97,14 @@ const engine = useMemo(
     const client = new BackendClient()
     backendClientRef.current = client
     deviceProviderRef.current = new BackendDeviceProvider(client)
+    androidProviderRef.current = new BackendAndroidProvider(client, {
+      records: () => [...useDeviceStore.getState().devices.values()],
+    })
     return () => {
       engine.attachDevice(undefined)
+      engine.attachAndroid(undefined)
       deviceProviderRef.current = null
+      androidProviderRef.current = null
       backendClientRef.current = null
     }
   }, [engine])
@@ -287,9 +301,27 @@ const engine = useMemo(
         engine.attachDevice(provider)
         useJarvisStore.getState().setCapabilities({ deviceBridgeAvailable: provider.capabilities().available === true })
       }
+      // Phase 10 — the calling surface is attached on the SAME real connection.
+      const androidProvider = androidProviderRef.current
+      if (androidProvider) {
+        engine.attachAndroid(androidProvider)
+      }
       refreshDevices()
     })
     const offDevice = client.on('onDevice', () => refreshDevices())
+    // Phase 10 — REAL call-state observations the phone pushes are fed into the
+    // provider (verification) and surfaced honestly in the UI.
+    const offCall = client.on('onCall', (event) => {
+      const androidProvider = androidProviderRef.current
+      if (!androidProvider) return
+      androidProvider.ingestCallEvent(event)
+      if (event.state === 'RINGING' && event.direction === 'incoming') {
+        const who = event.contactName || event.number || 'an unknown number'
+        useJarvisStore.getState().pushNotice('info', `Incoming call from ${who}`)
+      } else if (event.state === 'FAILED') {
+        useJarvisStore.getState().pushNotice('warning', `Call failed${event.reason ? `: ${event.reason}` : '.'}`)
+      }
+    })
     const offInbound = client.on('onInbound', (message) => {
       const s = useJarvisStore.getState()
       s.setBackend({ lastInboundAt: message.at })
@@ -298,13 +330,15 @@ const engine = useMemo(
     })
     const offLost = client.on('onDisconnected', () => {
       // The device bridge is detached the moment the stream drops: no device.*
-      // tool may exist against a dead backend.
+      // or call.* tool may exist against a dead backend.
       engine.attachDevice(undefined)
+      engine.attachAndroid(undefined)
       useJarvisStore.getState().setBackend({ phase: 'waiting' })
       useJarvisStore.getState().setCapabilities({ deviceBridgeAvailable: false })
     })
     const offGaveUp = client.on('onGaveUp', () => {
       engine.attachDevice(undefined)
+      engine.attachAndroid(undefined)
       useJarvisStore.getState().setBackend({ phase: 'giving_up' })
       useJarvisStore.getState().setCapabilities({ deviceBridgeAvailable: false })
     })
@@ -313,11 +347,12 @@ const engine = useMemo(
       offReady()
       offDevice()
       offInbound()
+      offCall()
       offLost()
       offGaveUp()
       client.stop()
       useJarvisStore.getState().setBackend({ phase: 'idle', health: null, lastInboundAt: null })
-      useJarvisStore.getState().setCapabilities({ deviceBridgeAvailable: false })
+      useJarvisStore.getState().setCapabilities({ deviceBridgeAvailable: false, callingEnabled: false })
     }
   }, [engine])
 

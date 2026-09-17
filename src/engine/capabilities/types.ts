@@ -18,8 +18,10 @@ import type { ToolContextId, ToolPermission } from '../../tools/Tool'
  */
 
 /** Reuse the tool vocabulary: a capability is real only where a registered
- * context backs it. `android` / `network` are architectural seams — no Android
- * or network tools are implemented yet. */
+ * context backs it. `android` is backed by the real companion telephony seam
+ * (call.* tools register only while a phone is reachable), `network` is backed
+ * by the native web seam, and a context with no registered tool simply never
+ * resolves. */
 export type CapabilityContextId = ToolContextId
 
 /** Advisory tier used ONLY for catalog readability. The tool permission system

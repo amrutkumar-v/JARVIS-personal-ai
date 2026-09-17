@@ -61,6 +61,8 @@ import { createVisualComputerTools, sanitizeVisionPayload, visualBudgetBucket, v
 import type { VisionProvider } from '../vision'
 import { createDeviceTools } from '../device'
 import type { DeviceProvider } from '../device'
+import { createAndroidCallTools } from '../android'
+import type { AndroidProvider } from '../android'
 import { setDeviceProvider as setStoreDeviceProvider } from '../device'
 import type { DeviceErrorKind } from '../backend/types'
 import { createWebTools } from '../web'
@@ -336,6 +338,12 @@ export class AssistantEngine {
   // ever registered.
   private browser: BrowserProvider | undefined
   private scheduling: SchedulerAdapter | undefined
+  // Phase 10 — the Android companion TELEPHONY seam. OPTIONAL in exactly the
+  // same way as the other seams: without a paired phone (or without the
+  // backend) no call.* tool is ever registered, so the model can never claim
+  // call reach it does not have. Every call still flows through the existing
+  // permission, confirmation, budget, cancellation and verification rails.
+  private android: AndroidProvider | undefined
   // Phase 3.0 — task context store for follow-up resolution and deictic references.
   private taskContextStore: TaskContextStore
   // Phase 3.0A — one stateless central orchestration core shared across runs.
@@ -416,7 +424,7 @@ export class AssistantEngine {
   // Phase 3.0 — structured task-execution log (injectable for tests/future sync).
   private taskLog: TaskLog
 
-  constructor(options?: { providers?: AIProvider[]; fileSystem?: FileSystemProvider; applications?: ApplicationProvider; observation?: ObservationProvider; desktop?: DesktopProvider; vision?: VisionProvider; camera?: CameraController | null; device?: DeviceProvider; web?: WebProvider; clipboard?: ClipboardProvider; browser?: BrowserProvider; scheduling?: SchedulerAdapter; goalLimits?: Partial<GoalLimits>; capabilities?: CapabilityDefinition[]; autonomyLevel?: AutonomyLevel; taskLog?: TaskLog }) {
+  constructor(options?: { providers?: AIProvider[]; fileSystem?: FileSystemProvider; applications?: ApplicationProvider; observation?: ObservationProvider; desktop?: DesktopProvider; vision?: VisionProvider; camera?: CameraController | null; device?: DeviceProvider; web?: WebProvider; clipboard?: ClipboardProvider; browser?: BrowserProvider; scheduling?: SchedulerAdapter; android?: AndroidProvider; goalLimits?: Partial<GoalLimits>; capabilities?: CapabilityDefinition[]; autonomyLevel?: AutonomyLevel; taskLog?: TaskLog }) {
     // Phase 1.0 — provider injection seam: tests inject a scripted provider;
     // production defaults to the configured provider stack unchanged.
     const providers = options?.providers && options.providers.length ? [...options.providers] : createProviders()
@@ -484,6 +492,10 @@ export class AssistantEngine {
     // Core backend is unreachable, no device.* tools exist and the model can
     // never claim phone reach it does not have.
     this.syncDevice(options?.device)
+    // Phase 10 — the Android companion telephony seam (never fabricated). When
+    // no paired phone is reachable, no call.* tools exist and the model can
+    // never claim it can place a call.
+    this.syncAndroid(options?.android)
     // Phase 2.9 — the web capability seam (never fabricated). When the native
     // Windows agent is unreachable, no web.* tools exist and the model can
     // never claim internet access it does not have.
@@ -554,6 +566,38 @@ export class AssistantEngine {
       for (const tool of createDeviceTools(device)) this.registry.register(tool)
       for (const def of DEFAULT_CAPABILITIES) {
         if (def.category === 'device' && def.tools.some((id) => this.registry.get(id) !== undefined) && !this.capabilities.has(def.id)) {
+          this.capabilities.register(def)
+        }
+      }
+    }
+  }
+
+  /** Phase 10 — (mid-session) bind or unbind the REAL Android telephony provider.
+   * Safe to call at any time: it (re)registers call.* tools and the calling
+   * capability cluster only while a real provider is bound, and never
+   * duplicates a capability already registered. Without a live provider the
+   * call.* tools simply do not exist, so the model can never claim calling
+   * reach it does not have. */
+  attachAndroid(android: AndroidProvider | undefined): void {
+    this.syncAndroid(android)
+    // Reflect the REAL calling surface in the capability snapshot the HUD reads.
+    useJarvisStore.getState().setCapabilities({ callingEnabled: android?.capabilities().available === true })
+  }
+
+  private syncAndroid(android: AndroidProvider | undefined): void {
+    // The calling cluster is identified by its declared implementation tool ids
+    // (call.*), so detaching truly removes exactly the call surface.
+    const callCapIds = DEFAULT_CAPABILITIES.filter((d) => d.tools.some((id) => id.startsWith('call.'))).map((d) => d.id)
+    const callToolIds = new Set(createAndroidCallTools(android).map((tool) => tool.id))
+    if (this.android) {
+      for (const tool of createAndroidCallTools(this.android)) this.registry.unregister(tool.id)
+      for (const id of callCapIds) this.capabilities.unregister(id)
+    }
+    this.android = android
+    if (android) {
+      for (const tool of createAndroidCallTools(android)) this.registry.register(tool)
+      for (const def of DEFAULT_CAPABILITIES) {
+        if (def.tools.some((id) => callToolIds.has(id)) && !this.capabilities.has(def.id)) {
           this.capabilities.register(def)
         }
       }
@@ -1390,6 +1434,11 @@ export class AssistantEngine {
     return this.device
   }
 
+  /** The Android telephony seam (undefined while no phone is reachable). */
+  get androidProvider(): AndroidProvider | undefined {
+    return this.android
+  }
+
   /** The web capability seam (undefined while the native agent is down). */
   get webProvider(): WebProvider | undefined {
     return this.web
@@ -1527,7 +1576,7 @@ export class AssistantEngine {
   private capabilityContext(): CapabilityContext {
     const devices: string[] = []
     if (this.desktop || this.applications) devices.push('desktop')
-    if (this.device) devices.push('phone')
+    if (this.device || this.android) devices.push('phone')
     return {
       availableDevices: devices.length > 0 ? devices : undefined,
       interactionMode: channelInteractionMode(this.activeInputChannel),
@@ -1645,7 +1694,7 @@ export class AssistantEngine {
       aiConfigured: this.provider.isConfigured() && this.provider.id !== 'mock',
       memoryEnabled: true,
       toolsEnabled: this.registry.size > 0,
-      callingEnabled: false,
+      callingEnabled: this.android?.capabilities().available === true,
       fileSystemAvailable: fsCaps.available || fsCaps.hasApi,
       nativeAgentAvailable: this.fileSystem.nativeStatus?.()?.connected === true,
       nativeApplicationAvailable: this.applications?.capabilities().available === true,

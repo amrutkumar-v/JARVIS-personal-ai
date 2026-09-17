@@ -290,6 +290,9 @@ class Backend {
           commands: deviceCommands,
           now: this.now,
           log: this.logger,
+          // Real device events (telephony call state) the phone pushes are
+          // fanned out to every SSE client through the same bus as notify/file.
+          bus,
         })
         this.logger.info('phone', 'phone listener ready (Android companion over LAN)', {
           url: phoneRunning.url,

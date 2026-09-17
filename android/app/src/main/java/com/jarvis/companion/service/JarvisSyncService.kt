@@ -12,8 +12,13 @@ import androidx.core.app.NotificationCompat
 import com.jarvis.companion.R
 import com.jarvis.companion.device.DeviceInfo
 import com.jarvis.companion.model.CompanionIdentity
+import com.jarvis.companion.model.PhoneEventRequest
 import com.jarvis.companion.model.PollCommand
 import com.jarvis.companion.net.JarvisPhoneClient
+import com.jarvis.companion.telephony.CallStateObserver
+import com.jarvis.companion.telephony.ContactsResolver
+import com.jarvis.companion.telephony.TelephonyCapability
+import com.jarvis.companion.telephony.TelephonyController
 import com.jarvis.companion.trust.PairingStore
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -30,17 +35,30 @@ import java.io.IOException
 import kotlin.coroutines.coroutineContext
 
 /**
- * Foreground sync service: keeps the phone honestly present to JARVIS Core.
+ * Foreground sync service: keeps the phone honestly present to JARVIS Core and
+ * executes the commands the core queues for it.
  *
  * Loop (runs every SyncBackoff.HEARTBEAT_MS while running):
- *   1. send a real heartbeat (battery/network/build + declared capabilities);
- *   2. on success: reset backoff, poll for queued commands, execute `ping`
- *      commands by actually measuring the round-trip to the core and ack the
- *      concrete result;
+ *   1. send a real heartbeat (battery/network/build + the REAL capability and
+ *      permission state computed at that moment);
+ *   2. on success: reset backoff, poll for queued commands, execute them, and
+ *      ack the concrete result;
  *   3. on connection failure: backoff (1s → 2s → … → 60s, SyncBackoff) until a
  *      heartbeat succeeds again. Reconnect is exactly this retry.
  *
- * The UI reads [state] — it never fabricates "connected" claims.
+ * Commands executed here (the backend's closed allow-list):
+ *   `ping`        — measure the real round-trip echo;
+ *   `call.dial`   — resolve a contact (if a name was given) and place a REAL
+ *                   call through `TelecomManager`;
+ *   `call.answer` — answer the ringing call where the OS permits it;
+ *   `call.reject` — reject the ringing call where the OS permits it;
+ *   `call.hangup` — end the active call where the OS permits it.
+ *
+ * Every telephony action is answered with the phone's honest state (including
+ * PERMISSION_REQUIRED / NOT_SUPPORTED when the OS refuses) and additionally
+ * pushed to the core as a real `call.state` event. The real OS call-state
+ * callback runs for the whole service lifetime, so genuine transitions —
+ * including INCOMING calls — are reported without being asked for.
  */
 class JarvisSyncService : Service() {
 
@@ -48,10 +66,25 @@ class JarvisSyncService : Service() {
     private var loopJob: Job? = null
     private val client = JarvisPhoneClient()
     private lateinit var store: PairingStore
+    private lateinit var telephony: TelephonyController
+    private var observer: CallStateObserver? = null
 
     /** Set while the service is allowed to run; cleared in [onDestroy]. */
     @Volatile
     private var active = false
+
+    /** Outgoing-call context, so observed states can be attributed honestly. */
+    @Volatile
+    private var outgoingCommandId: String? = null
+
+    @Volatile
+    private var outgoingNumber: String? = null
+
+    @Volatile
+    private var outgoingContact: String? = null
+
+    @Volatile
+    private var callActive = false
 
     /** Shared, observable sync state for the activity UI. */
     companion object {
@@ -66,6 +99,7 @@ class JarvisSyncService : Service() {
     override fun onCreate() {
         super.onCreate()
         store = PairingStore(this)
+        telephony = TelephonyController(this)
         createChannel()
         startAsForeground(buildNotification("Waiting for the first heartbeat…"))
     }
@@ -78,6 +112,7 @@ class JarvisSyncService : Service() {
             return START_NOT_STICKY
         }
         active = true
+        startCallObservation()
         if (loopJob == null) {
             loopJob = scope.launch { runSyncLoop(force) }
         } else if (force) {
@@ -90,9 +125,48 @@ class JarvisSyncService : Service() {
 
     override fun onDestroy() {
         active = false
+        observer?.stop()
+        observer = null
         loopJob?.cancel()
         scope.cancel()
         super.onDestroy()
+    }
+
+    /**
+     * Register the REAL OS call-state callback. When `READ_PHONE_STATE` is not
+     * granted Android refuses registration; that is reported honestly in the UI
+     * instead of being hidden.
+     */
+    private fun startCallObservation() {
+        if (observer?.observing == true) return
+        val created = CallStateObserver(
+            context = this,
+            directionProvider = { if (callActive) "outgoing" else "incoming" },
+            onState = { state, direction -> onObservedCallState(state, direction) },
+        )
+        val observing = created.start()
+        observer = created
+        _state.value = _state.value.copy(callObservation = observing)
+        if (!observing) {
+            _state.value = _state.value.copy(
+                lastError = "Call-state observation is unavailable (READ_PHONE_STATE not granted).",
+            )
+        }
+    }
+
+    private fun onObservedCallState(state: String, direction: String?) {
+        if (state == "ENDED") callActive = false
+        if (state == "CONNECTED") callActive = true
+        _state.value = _state.value.copy(lastCallState = state)
+        val commandId = outgoingCommandId
+        val contact = outgoingContact
+        val number = outgoingNumber
+        if (state == "ENDED") {
+            outgoingCommandId = null
+            outgoingContact = null
+            outgoingNumber = null
+        }
+        scope.launch { pushCallEvent(state, direction, commandId, contact, number, null) }
     }
 
     private suspend fun runSyncLoop(probeImmediately: Boolean) {
@@ -146,7 +220,147 @@ class JarvisSyncService : Service() {
                     client.ack(host, token, deviceId, command.commandId, ok, "pong ${rttMs}ms")
                     _state.value = _state.value.copy(lastPingRttMs = rttMs, lastPingAtMs = System.currentTimeMillis())
                 }
+                "call.dial" -> executeDial(host, token, deviceId, command)
+                "call.answer" -> executeCallControl(host, token, deviceId, command, "answer")
+                "call.reject" -> executeCallControl(host, token, deviceId, command, "reject")
+                "call.hangup" -> executeCallControl(host, token, deviceId, command, "hangup")
+                else -> {
+                    // Unknown kinds are refused, never guessed at.
+                    client.ack(host, token, deviceId, command.commandId, false, "unsupported command kind: ${command.kind}")
+                }
             }
+        }
+    }
+
+    /** Resolve the target on the phone and place a REAL call. */
+    private suspend fun executeDial(host: String, token: String, deviceId: String, command: PollCommand) {
+        val payloadNumber = command.payload?.get("number")?.takeIf { it.isNotBlank() }
+        val requestedName = command.payload?.get("contactName")?.takeIf { it.isNotBlank() }
+        var resolvedName = requestedName
+        var dialNumber = payloadNumber
+
+        if (dialNumber == null && requestedName != null) {
+            when (val lookup = ContactsResolver.findNumber(this, requestedName)) {
+                is ContactsResolver.ContactLookup.Found -> {
+                    dialNumber = lookup.number
+                    resolvedName = lookup.name
+                }
+                is ContactsResolver.ContactLookup.PermissionRequired -> {
+                    ackAndReport(host, token, deviceId, command, false, "PERMISSION_REQUIRED: READ_CONTACTS is not granted, so \"$requestedName\" could not be resolved to a number.")
+                    return
+                }
+                is ContactsResolver.ContactLookup.NotFound -> {
+                    ackAndReport(host, token, deviceId, command, false, "FAILED: no contact matched \"$requestedName\".")
+                    return
+                }
+                is ContactsResolver.ContactLookup.Unavailable -> {
+                    ackAndReport(host, token, deviceId, command, false, "FAILED: the contacts provider could not be read.")
+                    return
+                }
+            }
+        }
+
+        if (dialNumber == null) {
+            ackAndReport(host, token, deviceId, command, false, "FAILED: the command carried neither a number nor a resolvable contact.")
+            return
+        }
+
+        // Remember the outgoing context BEFORE dialling so the first observed
+        // state is attributed to this call.
+        outgoingCommandId = command.commandId
+        outgoingContact = resolvedName
+        outgoingNumber = dialNumber
+        callActive = true
+
+        val result = telephony.placeCall(dialNumber)
+        if (!result.ok) callActive = false
+        client.ack(host, token, deviceId, command.commandId, result.ok, "${result.state}: ${result.detail}")
+        _state.value = _state.value.copy(lastCallState = result.state)
+        pushCallEvent(
+            state = result.state,
+            direction = "outgoing",
+            commandId = command.commandId,
+            contactName = resolvedName,
+            number = dialNumber,
+            reason = if (result.ok) null else result.detail,
+        )
+    }
+
+    /** Answer / reject / hang up through the OS, reporting the real outcome. */
+    private suspend fun executeCallControl(
+        host: String,
+        token: String,
+        deviceId: String,
+        command: PollCommand,
+        action: String,
+    ) {
+        val result = when (action) {
+            "answer" -> telephony.acceptCall()
+            "reject" -> telephony.rejectCall()
+            else -> telephony.endCall()
+        }
+        if (action == "hangup" && result.ok) callActive = false
+        client.ack(host, token, deviceId, command.commandId, result.ok, "${result.state}: ${result.detail}")
+        _state.value = _state.value.copy(lastCallState = result.state)
+        pushCallEvent(
+            state = result.state,
+            direction = if (callActive) "outgoing" else null,
+            commandId = command.commandId,
+            contactName = outgoingContact,
+            number = outgoingNumber,
+            reason = if (result.ok) null else result.detail,
+        )
+    }
+
+    /** Ack a command that failed before any OS action was attempted. */
+    private suspend fun ackAndReport(
+        host: String,
+        token: String,
+        deviceId: String,
+        command: PollCommand,
+        ok: Boolean,
+        detail: String,
+    ) {
+        client.ack(host, token, deviceId, command.commandId, ok, detail)
+        val state = detail.substringBefore(':')
+        _state.value = _state.value.copy(lastCallState = state)
+        val number = command.payload?.get("number")
+        pushCallEvent(state, "outgoing", command.commandId, command.payload?.get("contactName"), number, detail)
+    }
+
+    /** Push one REAL call-state observation to the core (best effort, bounded). */
+    private suspend fun pushCallEvent(
+        state: String,
+        direction: String?,
+        commandId: String?,
+        contactName: String?,
+        number: String?,
+        reason: String?,
+    ) {
+        val host = store.lastHost ?: return
+        val token = store.token ?: return
+        val deviceId = store.deviceId ?: CompanionIdentity.DEVICE_ID
+        try {
+            client.event(
+                host,
+                token,
+                deviceId,
+                PhoneEventRequest(
+                    id = deviceId,
+                    kind = "call.state",
+                    state = state,
+                    direction = direction,
+                    commandId = commandId,
+                    contactName = contactName,
+                    number = number,
+                    reason = reason?.take(200),
+                ),
+            )
+        } catch (t: Throwable) {
+            // The observation channel is best-effort; the ack above is the
+            // authoritative result. A dropped event shows up as an unverified
+            // call on the PC — never as a fabricated success.
+            _state.value = _state.value.copy(lastError = "call event not delivered: ${t.message ?: t.javaClass.simpleName}")
         }
     }
 
@@ -211,5 +425,9 @@ class JarvisSyncService : Service() {
         val lastPingRttMs: Long = -1,
         val lastPingAtMs: Long = 0,
         val lastError: String? = null,
+        /** True while the REAL OS call-state callback is registered. */
+        val callObservation: Boolean = false,
+        /** Newest call state the phone itself observed or produced. */
+        val lastCallState: String? = null,
     )
 }

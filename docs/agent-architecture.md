@@ -213,11 +213,16 @@ Behavioral tests live beside the code plus one end-to-end suite:
 ## 13. Explicitly deferred (future devices)
 
 The core is device-agnostic by design. The following are **not** implemented
-and must not be faked: WhatsApp/SMS/calling, notification delivery, unrestricted
+and must not be faked: WhatsApp/SMS, notification delivery, unrestricted
 native file system access, Android/Windows/browser scripting, and wake-word-
 driven execution. When a real capability ships, its tool implements the
 contracts above (permission tier + schema + optional verifier) and
 `registerTool` exposes it — no engine changes required.
+
+> **Calling shipped** (Phase 10, §24): real Android telephony is implemented
+> through the companion app's `call.*` tools. It is the *only* calling surface;
+> there is still no SMS, no fake contact book and no simulated call state.
+> See [`android-calling.md`](./android-calling.md).
 
 > Phase 1.1 shipped the first such capability — browser filesystem access over
 > a user-granted directory (see [`filesystem-agent.md`](./filesystem-agent.md)).
@@ -1333,3 +1338,61 @@ The web tools compose with existing primitives:
 
 - `docs/agent-architecture.md` §23 (this section)
 - `docs/phase2.9-report.md` (verification matrix)
+
+## 24. Real Android calling (Phase 10)
+
+JARVIS can place, answer, reject and end **real** phone calls on the paired
+Android companion, and reports only the call state Android actually observed.
+
+### 24.1 One seam, one path
+
+A new OPTIONAL `AndroidProvider` seam (`src/android/`) is bound exactly like the
+device/web seams: the app attaches it on a live backend `ready` and detaches it
+the moment the stream drops. `attachAndroid` (re)registers the `call.*` tools
+and the `phone_call_*` capability cluster **only** while a provider is bound, so
+without a phone the model cannot see, name or claim any call capability.
+
+```
+tool call.dial (user_confirmation)
+  → AndroidProvider.requestCall('dial', …)   src/android/BackendAndroidProvider.ts
+  → POST /api/device/call                    server/src/http.ts
+  → PhoneCommandQueue.enqueue(call.dial)     server/src/phoneCommands.ts
+  → phone /phone/poll → TelephonyController (TelecomManager)
+  → phone /phone/ack + /phone/event
+  → SSE `call` → BackendAndroidProvider.ingestCallEvent
+  → tool verify() → step VERIFIED
+```
+
+### 24.2 Honesty rules added
+
+- The backend refuses **before queueing** when the phone is offline
+  (`DEVICE_OFFLINE`), reports no `call` capability (`NOT_SUPPORTED`), or has not
+  granted the required runtime permission (`PERMISSION_REQUIRED`). Each refusal
+  is also published as a real `call` event and maps to an existing bounded
+  recovery code (`device_disconnected` / `device_unavailable` /
+  `device_permission_required`).
+- `/phone/event` accepts one event kind with a closed state vocabulary; a device
+  can never inject an arbitrary event into the core bus.
+- `call.dial` is `user_confirmation` — the single confirmation gate, and the
+  capability's `maximumPermission: 'device_control'` lets that implementation
+  represent it. Cancelling queues nothing.
+- Verification resolves only from a REAL call-state event; a missing event is a
+  verification failure, never a quiet success.
+- The previously simulated `AndroidBridge`/`AndroidTools` (hardcoded contacts,
+  a fake "Pixel 8 Pro", `setTimeout` call transitions, claimed PC audio
+  bridging, POSTs to endpoints that never existed) were **deleted**.
+
+### 24.3 Versioning
+
+`APP.version` `0.9.0 → 0.10.0`; `BACKEND_VERSION` `0.9.0 → 0.10.0`; Android app
+`1.0.0 → 1.1.0` (versionCode 2). Still additive over the wire
+(`/api/device/call`, `/api/device/call/result`, `/phone/event`, `call` SSE), so
+`BACKEND_PROTOCOL` and the native agent are unchanged.
+
+### 24.4 Platform limits (documented, not glossed over)
+
+`TelecomManager` exposes no public `rejectCall()` to a non-default-dialer app
+(verified against android-34), answering/rejecting may be refused by Android
+10+ background restrictions, and incoming caller ID needs the sensitive
+`READ_CALL_LOG` permission this build does not request. All three are reported
+as real limitations. Full detail: [`android-calling.md`](./android-calling.md).

@@ -3,6 +3,7 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { DeviceRegistry } from './registry.js'
+import { EventBus } from './events.js'
 import { PhoneTrust } from './phoneTrust.js'
 import { PhoneCommandQueue } from './phoneCommands.js'
 import { startPhoneServer, type RunningPhoneServer } from './phoneServer.js'
@@ -30,6 +31,7 @@ describe('JARVIS phone LAN listener', () => {
   let registry: DeviceRegistry
   let pairing: PhoneTrust
   let commands: PhoneCommandQueue
+  let bus: EventBus
   let running: RunningPhoneServer
 
   beforeEach(async () => {
@@ -38,6 +40,7 @@ describe('JARVIS phone LAN listener', () => {
     registry = new DeviceRegistry({ now: () => nowValue })
     pairing = new PhoneTrust({ now: () => nowValue })
     commands = new PhoneCommandQueue({ now: () => nowValue })
+    bus = new EventBus()
     running = await startPhoneServer({
       host: '127.0.0.1',
       port: 0,
@@ -45,6 +48,7 @@ describe('JARVIS phone LAN listener', () => {
       pairing,
       commands,
       now: () => nowValue,
+      bus,
     })
   })
 
@@ -53,12 +57,16 @@ describe('JARVIS phone LAN listener', () => {
     await rm(dir, { recursive: true, force: true })
   })
 
-  it('only exposes the six allow-listed endpoints to POST', async () => {
+  it('only exposes the seven allow-listed endpoints to POST', async () => {
     const get = await fetch(`http://127.0.0.1:${running.port}/phone/status`)
     expect(get.status).toBe(405)
     const unknown = await jsonPost(running.port, '/phone/steal-files', {})
     expect(unknown.status).toBe(404)
     expect(unknown.body).toMatchObject({ ok: false, error: 'not_found' })
+
+    // The event channel is allow-listed, but requires the device credential.
+    const event = await jsonPost(running.port, '/phone/event', { id: 's26-ultra', kind: 'call.state', state: 'RINGING' })
+    expect(event.status).toBe(401)
   })
 
   it('refuses malformed and oversized bodies', async () => {
@@ -196,6 +204,38 @@ describe('JARVIS phone LAN listener', () => {
     await jsonPost(running.port, '/phone/ack', { id: 's26-ultra', commandId: dispatched.command!.commandId, ok: true }, pair.token)
     const again = await jsonPost(running.port, '/phone/ack', { id: 's26-ultra', commandId: dispatched.command!.commandId, ok: true }, pair.token)
     expect(again.body).toMatchObject({ ok: false, error: 'unknown_command' })
+  })
+
+  it('executes a queued call command and publishes the REAL call state on the bus', async () => {
+    pairing.begin('s26-ultra')
+    const code = pairing['sessions'].get('s26-ultra')!.code
+    const pair = (await jsonPost(running.port, '/phone/pair', { device: 's26-ultra', code })).body as { token: string }
+    const token = pair.token
+
+    const published: Array<Record<string, unknown>> = []
+    bus.subscribe({
+      id: 'sub-call',
+      send(event, data) {
+        if (event === 'call') published.push(data as Record<string, unknown>)
+      },
+    })
+
+    const dispatched = commands.enqueue({ deviceId: 's26-ultra', kind: 'call.dial', payload: { contactName: 'Dad' }, online: true })
+    expect(dispatched.command).not.toBeNull()
+
+    const poll = (await jsonPost(running.port, '/phone/poll', { id: 's26-ultra' }, token)).body as { commands: Array<{ commandId: string; kind: string; payload?: Record<string, string> }> }
+    expect(poll.commands).toHaveLength(1)
+    expect(poll.commands[0]!.kind).toBe('call.dial')
+    expect(poll.commands[0]!.payload).toEqual({ contactName: 'Dad' })
+
+    // The phone reports the OS-observed state; the core fans it out verbatim.
+    const event = await jsonPost(running.port, '/phone/event', {
+      id: 's26-ultra', kind: 'call.state', state: 'RINGING', direction: 'outgoing', commandId: poll.commands[0]!.commandId, contactName: 'Dad',
+    }, token)
+    expect(event.status).toBe(200)
+    expect(event.body).toMatchObject({ ok: true, accepted: true, callState: 'RINGING' })
+    expect(published).toHaveLength(1)
+    expect(published[0]).toMatchObject({ deviceId: 's26-ultra', state: 'RINGING', direction: 'outgoing', contactName: 'Dad' })
   })
 
   it('fails cleanly when the LAN listener is unreachable', async () => {

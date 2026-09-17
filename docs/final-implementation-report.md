@@ -97,8 +97,11 @@ bridge protocol, orchestrator logic, AI providers, or panel layout code.
   bounds wedge/failure, it does not add engines.
 - CSP applies to production builds only; dev runs keep Vite's relaxed profile.
 - Theme choices are the five real themes (`classic | cyber | stealth | holographic | minimal`); unknown theme names are answered honestly with the real choice list.
-- Android + calling exist as design seams with honest states, not as full
-  implementations.
+- Android + calling: the companion device bridge and real calling have since
+  shipped (see [`android-calling.md`](./android-calling.md)). Calling is real
+  Android telephony through the paired phone; it still depends on the phone's
+  Android version, granted permissions and the OS allowing a non-default
+  dialer to control a call — all reported honestly rather than assumed.
 
 ## 8. How to run
 

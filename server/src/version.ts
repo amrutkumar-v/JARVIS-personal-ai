@@ -12,8 +12,10 @@
  */
 
 export const BACKEND_NAME = 'JARVIS Core'
-export const BACKEND_VERSION = '0.9.0'
+export const BACKEND_VERSION = '0.10.0'
 /** Wire protocol id for the persistent backend HTTP/SSE API. Bumped for the
  * four-device trusted-ecosystem model (claim pairing, trusted ids, targeted
- * notify/file). */
+ * notify/file). Real Android calling is ADDITIVE (new `/api/device/call`,
+ * `/api/device/call/result` and `/phone/event` endpoints plus the `call` SSE
+ * event), so the protocol id is unchanged. */
 export const BACKEND_PROTOCOL = 'jarvis-backend-2'
