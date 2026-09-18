@@ -67,6 +67,10 @@ describe('"what applications are open?" — real desktop read', () => {
     expect(observation.listCalls).toBe(1)
     // ...and the run is honest about what was read.
     expect(reply).toMatch(/answered from a live reading|Done\./)
+    // The user-facing reply DETERMINISTICALLY names the real observed
+    // inventory (the splice renders the on-record reading; it never invents).
+    expect(reply).toContain('chrome')
+    expect(reply).toContain('notepad')
     expect(engine.taskResult().status).toBe('completed')
   })
 

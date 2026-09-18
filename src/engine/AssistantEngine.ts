@@ -2444,6 +2444,35 @@ export class AssistantEngine {
     return finalText
   }
 
+  /**
+   * Deterministically extract the REAL user-facing application inventory that a
+   * read-only open-apps run actually recorded, if any.
+   *
+   * Grounded ONLY in the on-record observation of a `window.list` step — never
+   * in the model, the plan, the raw user sentence, or an installed-app catalog.
+   * The inventory text is already deterministically rendered and bounded by
+   * `renderRunningApps` (MAX_INVENTORY_CHARS=900 < TOOL_SUMMARY_LIMIT), so
+   * splicing the on-record "N user-facing applications observed: …" summary
+   * names the real windows without ever inventing one. Returns '' when the run
+   * did not actually enumerate an application inventory (single-window status
+   * reads, an observation with no countable inventory, or a bounded empty
+   * reading) — in which case the caller falls back to its templated text and
+   * never pretends to have named anything.
+   */
+  private openAppsInventoryFromRecord(result: OrchestrationExecutionResult): string {
+    for (const step of result.steps) {
+      if (step.observation?.kind !== 'informational') continue
+      const summary = step.observation.summary ?? ''
+      const match = /\b(\d+)\s+user-facing application[s]? observed:\s+([^.!?]+)/i.exec(summary)
+      if (match) {
+        const count = match[1]
+        const inventory = match[2].trim().replace(/[.!?\s]+$/, '')
+        return `${count} user-facing application${count === '1' ? '' : 's'} observed: ${inventory}.`
+      }
+    }
+    return ''
+  }
+
   /** Format the orchestration execution result into a user-facing answer. */
   private formatOrchestrationResult(result: OrchestrationExecutionResult, goal: string): string {
     const verifiedNow = result.steps.filter((s) => s.verified === true).length
@@ -2469,6 +2498,10 @@ export class AssistantEngine {
         return `Done. ${goal} — all ${totalSteps} step${totalSteps === 1 ? '' : 's'} completed and verified.`
       }
       if (isReadOnlyAnswer) {
+        const observedApps = this.openAppsInventoryFromRecord(result)
+        if (observedApps) {
+          return `Done. ${goal} — ${observedApps}`
+        }
         return `Done. ${goal} — answered from a live reading (the result was read directly, so there was nothing left to re-verify).`
       }
       if (verifiedNow > 0) {
