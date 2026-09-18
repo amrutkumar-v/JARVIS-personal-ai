@@ -85,6 +85,27 @@ export class ExecutionTracer {
     return false
   }
 
+  /**
+   * Attach the REAL post-action verification message to the last completed
+   * step for `toolId` WITHOUT changing its verification status. Used when an
+   * observation ran and refuted the effect: the user-facing result should
+   * carry the actual observed cause, never a speculative one. Read-only on
+   * `status` — this can never upgrade or downgrade a step.
+   */
+  noteStepVerification(toolId: string, message: string): boolean {
+    if (!this.run) return false
+    for (let i = this.run.steps.length - 1; i >= 0; i -= 1) {
+      const step = this.run.steps[i]
+      if (step.toolId !== toolId || !step.observation) continue
+      step.observation = {
+        ...step.observation,
+        summary: message,
+      }
+      return true
+    }
+    return false
+  }
+
   /** Close the trace with a terminal agent state. */
   end(finalState: AgentState): AgentTrace {
     if (this.run) {

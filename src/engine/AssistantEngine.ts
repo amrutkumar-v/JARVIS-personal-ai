@@ -2505,22 +2505,28 @@ export class AssistantEngine {
         return `Done. ${goal} — answered from a live reading (the result was read directly, so there was nothing left to re-verify).`
       }
       if (verifiedNow > 0) {
-        const unverifiedTyping = result.steps.some(
+        const unverifiedTyping = result.steps.find(
           (s) => s.capability === 'type_text' && s.verified !== true,
         )
+        // Cause-neutral: report the REAL verifier message when present. Never
+        // speculate a cause (e.g. UIPI) the verification layer did not observe.
         const note = unverifiedTyping
-          ? ' Typing was executed, but Windows restricts programmatic window focus (UIPI), so the typed text could not be independently verified.'
+          ? unverifiedTyping.observation?.summary
+            ? ` Typing was executed but could not be independently verified — ${unverifiedTyping.observation.summary.replace(/[.!\s]+$/, '')}.`
+            : ' Typing was executed but could not be independently verified.'
           : ''
         return `Partially done. ${goal} — ${verifiedNow} of ${totalSteps} step${totalSteps === 1 ? '' : 's'} verified.${note}`
       }
       return `Executed ${goal}, but could not verify the result.`
     }
     if (result.status === 'partial') {
-      const unverifiedTyping = result.steps.some(
+      const unverifiedTyping = result.steps.find(
         (s) => s.capability === 'type_text' && s.verified !== true,
       )
       const note = unverifiedTyping
-        ? ' Typing was executed, but Windows restricts programmatic window focus (UIPI), so the typed text could not be independently verified.'
+        ? unverifiedTyping.observation?.summary
+          ? ` Typing was executed but could not be independently verified — ${unverifiedTyping.observation.summary.replace(/[.!\s]+$/, '')}.`
+          : ' Typing was executed but could not be independently verified.'
         : ''
       return `Partially done. ${goal} — ${verifiedNow} of ${totalSteps} step${totalSteps === 1 ? '' : 's'} verified.${note}`
     }
@@ -3955,6 +3961,20 @@ export class AssistantEngine {
     if (!observation) return false
     const observeTool = this.registry.get(observation.observeToolId)
     if (!observeTool) return false
+    // Pre-observe actions: run any real registered tools the observation plan
+    // needs BEFORE reading the evidence (e.g. select-all + copy before reading
+    // the clipboard as typing evidence). A failed pre-observe action leaves the
+    // observation to run and honestly fail — never fabricated as verified.
+    for (const pre of observation.preObserve ?? []) {
+      const preTool = this.registry.get(pre.toolId)
+      if (!preTool) return false
+      // NOTE: only `toolId` is set — these are REGISTERED TOOLS, not
+      // capabilities, so the validator must resolve them as plain tools.
+      const preRound = await this.executeToolSteps(pre.reason, [
+        { toolId: pre.toolId, payload: pre.params },
+      ])
+      if (preRound.toolResults[0]?.ok !== true) return false
+    }
     if (observation.settleMs && observation.settleMs > 0) {
       await new Promise((resolve) => setTimeout(resolve, observation.settleMs))
     }
@@ -3963,7 +3983,10 @@ export class AssistantEngine {
     let lastFailed: string | null = null
     for (let attempt = 0; attempt <= retries; attempt += 1) {
       const obsRound = await this.executeToolSteps(planned.description, [
-        { toolId: observation.observeToolId, capability: observation.observeToolId, payload: observation.observeParams },
+        // NOTE: only `toolId` — the observation tool is a REGISTERED TOOL, not
+        // a capability id; sending it as `capability` made the validator reject
+        // EVERY cross-tool observation as an unregistered capability.
+        { toolId: observation.observeToolId, payload: observation.observeParams },
       ])
       const obsResult = obsRound.toolResults[0]
       if (!obsResult?.ok) {
@@ -3979,6 +4002,10 @@ export class AssistantEngine {
         return true
       }
       lastFailed = null
+      // Honest note on the trace step: the observation RAN and REFUTED the
+      // effect. Never an upgrade; the real verifier message is kept so the
+      // user-facing result can state the actual observed cause.
+      this.tracer.noteStepVerification(resolvedToolId, verification.message)
       if (observation.retryDelayMs && observation.retryDelayMs > 0) {
         await new Promise((resolve) => setTimeout(resolve, observation.retryDelayMs))
       }

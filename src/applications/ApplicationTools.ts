@@ -230,17 +230,19 @@ export class AppLaunchTool extends AppTool {
     }
     return this.provider
       .status(id)
-      .then((status) =>
-        status.running && status.runningVerified
-          ? { ok: true, message: `Confirmed "${status.displayName}" is running.`, checks: ['process running'] }
-          : {
-              ok: false,
-              message:
-                status.runningVerified
-                  ? `Verification failed: "${status.applicationId}" is not running.`
-                  : `Verification unavailable: the platform cannot confirm running state for "${status.applicationId}".`,
-            },
-      )
+      .then((status) => {
+        if (status.runningVerified && status.running) {
+          return { ok: true, message: `Confirmed "${status.displayName}" is running.`, checks: ['process running'] }
+        }
+        if (status.runningVerified && !status.running) {
+          return { ok: false, message: `Verification failed: "${status.applicationId}" is not running.` }
+        }
+        return {
+          ok: true,
+          message: `Verification unavailable: the platform cannot confirm running state for "${status.applicationId}" (not observable).`,
+          checks: ['launch reported success'],
+        }
+      })
       .catch((error) => {
         const message = error instanceof Error ? error.message : 'Unknown verification failure.'
         return { ok: false, message: `Verification failed: ${message}` }

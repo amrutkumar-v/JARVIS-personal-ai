@@ -55,8 +55,34 @@ export type LaunchMechanism = 'exe' | 'aumid' | 'uri'
 /** AUMID charset (packaged-application id). Conservative, never a path. */
 const AUMID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_!+.-]{0,254}$/
 
-/** Launch schemes allowed for `uri` mechanisms. Explicit allow-list only. */
-export const ALLOWED_URI_SCHEMES = new Set(['ms-settings']) as ReadonlySet<string>
+/** Launch schemes allowed for `uri` mechanisms. Explicit allow-list only.
+ *
+ * Security rationale: default-deny. Every entry is (1) shell-owned (ms-settings),
+ * (2) a public URI-protocol owned by a publisher whose desktop client is
+ * typically installed on a personal machine, or (3) the universal `open:` verb
+ * (ShellExec's IsAllowedUri still rejects paths-with-spaces / quotes / shell
+ * metacharacters so `open:C:\evil.bat` fails at the C# side independently of
+ * this list). Dangerous schemes NEVER included here: powershell, file,
+ * javascript, ms-windows-store, search-ms.
+ *
+ * This list is DEFENSE-IN-DEPTH and MUST be kept exactly in sync with
+ * ShellExec.cs `AllowedUriSchemes` string[] (verified by the parity test).
+ */
+export const ALLOWED_URI_SCHEMES = new Set([
+  'ms-settings',
+  'mailto',
+  'whatsapp',
+  'spotify',
+  'discord',
+  'telegram',
+  'slack',
+  'ms-teams',
+  'obs',
+  'zoommtg',
+  'zoomus',
+  'steam',
+  'open',
+]) as ReadonlySet<string>
 
 function isValidAumid(value: string): boolean {
   return AUMID_PATTERN.test(value)
@@ -142,6 +168,46 @@ export function slugify(name: string): string {
 }
 
 /**
+ * Derive natural-name aliases from a Store/packaged display name so a claim
+ * like `whatsapp` resolves to the record whose slug is `whatsappdesktop`.
+ * Splits camelCase + punctuation into word tokens; never fabricates a target
+ * and never invents names — it only re-tokens the REAL registry display name.
+ *
+ * Additionally, for the package-family slug it strips the common Store-app
+ * suffix tokens "desktop" and "app" (e.g. "WhatsAppDesktop" slugified to
+ * "whatsappdesktop" → also registers "whatsapp"). These suffixes are a
+ * convention of the Microsoft Store submission pattern, not invention: the
+ * publisher explicitly chose `{Brand}Desktop` as the package prefix. The
+ * stripped variant is only added when the remnant is ≥ 3 characters and
+ * still matches the slug charset (never introduces new tokens).
+ */
+export function packagedAliases(displayName: string): string[] {
+  const tokenParts = (displayName ?? '')
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .replace(/[^A-Za-z0-9]+/g, ' ')
+    .toLowerCase()
+    .split(' ')
+  const tokens = new Set<string>()
+  for (const part of tokenParts) {
+    const token = part.trim()
+    if (token.length >= 3) tokens.add(token)
+  }
+  const slug = slugify(displayName)
+  if (slug.length >= 3) tokens.add(slug)
+  // Strip Microsoft Store package suffixes: {Brand}Desktop / {Brand}App /
+  // {Brand}Client / {Brand}UWP → {Brand}. Each strip is bounded and only
+  // adds the stripped alias if the remnant is still ≥ 3 chars.
+  const STORE_SUFFIXES = ['desktop', 'app', 'client', 'uwp']
+  for (const suffix of STORE_SUFFIXES) {
+    if (slug.endsWith(suffix) && slug.length > suffix.length) {
+      const remnant = slug.slice(0, -suffix.length).replace(/[^a-z0-9]+$/, '')
+      if (remnant.length >= 3) tokens.add(remnant)
+    }
+  }
+  return [...tokens].sort().slice(0, 8)
+}
+
+/**
  * Normalize a claimed application name to the registry's matching form:
  * lowercase, whitespace/underscores/punctuation collapsed to dashes. This is
  * the SAME normalization applied to configured slugs and display names, so a
@@ -158,6 +224,42 @@ export function normalizeClaim(input: string): string {
     .replace(/-+/g, '-')
     .replace(/^-+|-+$/g, '')
     .slice(0, 63)
+}
+
+/**
+ * Bounded heuristic to derive a plausible process-image basename for a
+ * packaged (Store/MSIX) app from its real displayName + AUMID. Returns
+ * `undefined` when the target cannot be reliably derived (i.e. never guesses).
+ *
+ * The image name is used ONLY for post-launch tasklist.exe observation, never
+ * for launch construction. Fabricating one would fake verification, so we
+ * return undefined whenever the derivation is non-obvious.
+ *
+ * Rules:
+ *   1. Take the slugified displayName.
+ *   2. Strip Microsoft Store package suffixes ({Brand}Desktop / App / Client).
+ *   3. If the stripped remnant has >= 3 chars and is purely [a-z0-9-],
+ *      return it (dashes collapsed). Otherwise undefined.
+ */
+export function inferPackagedProcessImage(displayName: string, aumid: string): string | undefined {
+  const slug = slugify(displayName)
+  const SUFFIXES = ['desktop', 'app', 'client', 'uwp']
+  let base = slug
+  for (const suffix of SUFFIXES) {
+    if (base.endsWith('-' + suffix)) {
+      base = base.slice(0, -(suffix.length + 1))
+      break
+    }
+    if (base.endsWith(suffix) && base.length > suffix.length + 2) {
+      // Only strip when the remnant would still have at least 2 chars before it
+      // (avoids stripping the single-word slug "App" → "").
+      const remnant = base.slice(0, -suffix.length)
+      if (remnant.length >= 3) base = remnant
+    }
+  }
+  base = base.replace(/-+/g, '')
+  if (base.length >= 3 && /^[a-z0-9]+$/.test(base)) return base
+  return undefined
 }
 
 /**
@@ -593,6 +695,8 @@ export class AppRegistry {
         mechanism: 'aumid',
         aumid,
         target: '',
+        aliases: packagedAliases(entry.displayName),
+        processImage: inferPackagedProcessImage(entry.displayName, aumid),
       })
     }
   }

@@ -70,5 +70,32 @@ describe('Phase 5 — postActionVerify', () => {
     it('returns undefined for clipboard.read (read-only, no cross-tool verification)', () => {
       expect(planPostActionObservation('clipboard.read', {}, { success: true, output: null, summary: 'ok' })).toBeUndefined()
     })
+
+    // Regression (real-windows execution audit): typing verification used to
+    // plan a bare clipboard.read with NO way for the text to reach the
+    // clipboard — the verifier's own premise (Ctrl+A, Ctrl+C) never executed.
+    it('plans desktop.type → clipboard.read WITH select-all + copy pre-observe actions', () => {
+      const obs = planPostActionObservation('desktop.type', { text: 'hello' }, { success: true, output: null, summary: 'ok' })
+      expect(obs).toBeDefined()
+      expect(obs!.observeToolId).toBe('clipboard.read')
+      expect(obs!.preObserve).toEqual([
+        { toolId: 'desktop.hotkey', params: { keys: ['control', 'a'] }, reason: 'select all text in the focused window' },
+        { toolId: 'desktop.hotkey', params: { keys: ['control', 'c'] }, reason: 'copy the selection to the clipboard' },
+      ])
+    })
+    it('desktop.type verification passes only when the clipboard genuinely contains the typed text', () => {
+      const obs = planPostActionObservation('desktop.type', { text: 'hello' }, { success: true, output: null, summary: 'ok' })
+      expect(obs!.verify({ text: 'hello world' }).passed).toBe(true)
+    })
+    it('an EMPTY clipboard can never verify typing (copy failed or found nothing)', () => {
+      const obs = planPostActionObservation('desktop.type', { text: 'hello' }, { success: true, output: null, summary: 'ok' })
+      // clipboard.read reports { empty: true } (no text) for an empty clipboard.
+      expect(obs!.verify({ empty: true }).passed).toBe(false)
+      expect(obs!.verify({}).passed).toBe(false)
+    })
+    it('desktop.type verification fails when the clipboard holds different content', () => {
+      const obs = planPostActionObservation('desktop.type', { text: 'hello' }, { success: true, output: null, summary: 'ok' })
+      expect(obs!.verify({ text: 'unrelated content' }).passed).toBe(false)
+    })
   })
 })

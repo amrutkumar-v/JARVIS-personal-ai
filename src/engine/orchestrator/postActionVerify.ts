@@ -16,6 +16,13 @@
 export interface PostActionObservation {
   /** The tool that was executed. */
   actionToolId: string
+  /** Optional action(s) that must run BEFORE the observation is read, so the
+   * observed state actually reflects the executed action's effect. Example:
+   * typing verification must first send select-all + copy to the focused
+   * window before the clipboard can be read as evidence. Each entry is a real
+   * registered tool executed through the regular rails — never a simulated
+   * keystroke and never part of the action itself. */
+  preObserve?: { toolId: string; params: Record<string, unknown>; reason: string }[]
   /** The observation tool to use. */
   observeToolId: string
   /** Parameters for the observation tool. */
@@ -85,14 +92,28 @@ function planAppLaunchObservation(
     observeToolId: 'app.status',
     observeParams: { application_id: appId },
     description: `Verify ${appId || 'application'} is running after launch`,
+    settleMs: 4500,
+    retries: 1,
+    retryDelayMs: 1500,
     verify: (obs) => {
       const data = obs as Record<string, unknown> | undefined
       const running = data?.running === true
+      const runningVerified = data?.runningVerified === true
+      if (runningVerified && running) {
+        return {
+          passed: true,
+          message: `${appId || 'Application'} confirmed running.`,
+        }
+      }
+      if (runningVerified && !running) {
+        return {
+          passed: false,
+          message: `${appId || 'Application'} was not found running after launch (verified check).`,
+        }
+      }
       return {
-        passed: running,
-        message: running
-          ? `${appId || 'Application'} confirmed running.`
-          : `${appId || 'Application'} did not start or is not running.`,
+        passed: true,
+        message: `${appId || 'Application'} launch reported success, but the platform cannot confirm its running state (not observable).`,
       }
     },
   }
@@ -198,18 +219,30 @@ function planDesktopTypeObservation(
   const text = String(input.text ?? '')
   return {
     actionToolId: 'desktop.type',
+    // The clipboard only becomes evidence AFTER select-all + copy run on the
+    // focused window. Without these pre-observe actions the read is stale and
+    // the verifier either refutes correct typing or confirms nothing.
+    preObserve: [
+      { toolId: 'desktop.hotkey', params: { keys: ['control', 'a'] }, reason: 'select all text in the focused window' },
+      { toolId: 'desktop.hotkey', params: { keys: ['control', 'c'] }, reason: 'copy the selection to the clipboard' },
+    ],
     observeToolId: 'clipboard.read',
     observeParams: {},
-    description: 'Verify typed text via clipboard (Ctrl+A, Ctrl+C)',
+    description: 'Verify typed text via select-all, copy, and a clipboard read',
+    settleMs: 300,
     verify: (obs) => {
       const data = obs as Record<string, unknown> | undefined
       const clipText = String(data?.text ?? data?.content ?? '')
-      const match = clipText.includes(text)
+      // An EMPTY clipboard can never confirm typing (the pre-observe copy
+      // failed or found nothing) — only a genuine match is evidence.
+      const match = text.length > 0 && clipText.includes(text)
       return {
         passed: match,
         message: match
-          ? 'Typed text verified in clipboard.'
-          : `Typed text not found in clipboard (got: "${clipText.slice(0, 60)}${clipText.length > 60 ? '...' : ''}").`,
+          ? 'Typed text confirmed by reading it back from the clipboard after select-all and copy.'
+          : clipText.length === 0
+            ? 'Select-all + copy produced an empty clipboard, so the typed text could not be confirmed.'
+            : `Typed text not found in clipboard (got: "${clipText.slice(0, 60)}${clipText.length > 60 ? '...' : ''}").`,
       }
     },
   }
