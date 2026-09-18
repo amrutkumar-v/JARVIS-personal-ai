@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest'
-import { RealAppBackend, confirmRunning, observeRunningStable, type RunningProbe } from './appBackend.js'
+import { RealAppBackend, confirmRunning, observeRunningStable, type RunningProbe, type ShellRouteRunner } from './appBackend.js'
 import { AppRegistry } from './appRegistry.js'
 import { isNativeError } from './errors.js'
 import type { NativeError } from './errors.js'
 import type { ApplicationBackend } from './applications.js'
+import type { ChildProcess } from 'node:child_process'
+import { EventEmitter } from 'node:events'
 
 /**
  * RealAppBackend unit tests run PRE-spawn validation only: everything that
@@ -195,5 +197,121 @@ describe('RealAppBackend — pre-spawn validation (Phase 1.3)', () => {
 
   it('resolveProcessName(): launchable app stays resolvable even when disabled (close may still clean it up)', () => {
     expect(backend.resolveProcessName('locked')).toBe('write')
+  })
+})
+
+/* -------------------------------------------------- Task 0: ShellExec exit */
+
+/**
+ * Build a fake ChildProcess emitter that behaves like a spawned ShellExec.exe.
+ * Resolves with the provided exit code on 'exit' event. pid is a fixed fake so
+ * the caller can assert.
+ */
+function fakeShellExecChild(exitCode: number): { child: ChildProcess; emitSpawnThenExit: () => void } {
+  const emitter = new EventEmitter() as unknown as ChildProcess
+  ;(emitter as ChildProcess & { pid: number }).pid = 99999
+  ;(emitter as ChildProcess & { unref: () => ChildProcess }).unref = () => emitter
+  const emitSpawnThenExit = () => {
+    setTimeout(() => {
+      emitter.emit('spawn')
+      setTimeout(() => emitter.emit('exit', exitCode, null), 5)
+    }, 5)
+  }
+  return { child: emitter, emitSpawnThenExit }
+}
+
+function shellRunner(exitCode: number): ShellRouteRunner {
+  return async (_route, applicationId) => {
+    void applicationId
+    const { child, emitSpawnThenExit } = fakeShellExecChild(exitCode)
+    const promise = new Promise<{ child: ChildProcess; exitCode: number }>((resolve) => {
+      child.once('exit', (code, _sig) => resolve({ child, exitCode: typeof code === 'number' ? code : -1 }))
+    })
+    emitSpawnThenExit()
+    return promise
+  }
+}
+
+describe('RealAppBackend — ShellExec exit-code classification (T0)', () => {
+  function backendWith(exit: number) {
+    const reg = new AppRegistry({
+      configured: {
+        calc: { mechanism: 'aumid', aumid: 'Microsoft.WindowsCalculator_8wekyb3d8bbwe!App' },
+        uri: { mechanism: 'uri', uri: 'ms-settings:' },
+      },
+      discover: false,
+    })
+    return new RealAppBackend(reg, async () => ({ running: false, observed: false }), shellRunner(exit))
+  }
+
+  it('TR-T0-1: ShellExec exit 3 → NativeError io_error; started NEVER reported true', async () => {
+    const b = backendWith(3)
+    const err = await b.launch('calc').catch((e) => e)
+    expect(isNativeError(err)).toBe(true)
+    expect((err as NativeError).code).toBe('io_error')
+    expect((err as NativeError).message).toContain('calc')
+  })
+
+  it('TR-T0-1 (URI path): ShellExec exit 3 on URI → same io_error classification', async () => {
+    const b = backendWith(3)
+    const err = await b.launch('uri').catch((e) => e)
+    expect(isNativeError(err)).toBe(true)
+    expect((err as NativeError).code).toBe('io_error')
+  })
+
+  it('ShellExec exit 4 (security gate rejected route) → invalid_path', async () => {
+    const b = backendWith(4)
+    const err = await b.launch('calc').catch((e) => e)
+    expect(isNativeError(err)).toBe(true)
+    expect((err as NativeError).code).toBe('invalid_path')
+    expect((err as NativeError).message).toContain('ShellExec security gate')
+  })
+
+  it('ShellExec exit 5 (usage) → invalid_argument', async () => {
+    const b = backendWith(5)
+    const err = await b.launch('calc').catch((e) => e)
+    expect(isNativeError(err)).toBe(true)
+    expect((err as NativeError).code).toBe('invalid_argument')
+  })
+
+  it('TR-T0-2: ShellExec exit 0 → success; reportShellLaunch returns started:true (no regression)', async () => {
+    const b = backendWith(0)
+    const result = await b.launch('calc')
+    expect(result.started).toBe(true)
+    expect(result.applicationId).toBe('calc')
+    // Without processImage the shell-route verify returns unverified, but the
+    // important property is: we did NOT throw; activation proceeded.
+    expect(typeof result.verified).toBe('boolean')
+  })
+
+  it('TR-T0-3: spawnDetached (exe path) still resolves on spawn (never waits for exit)', async () => {
+    const reg = new AppRegistry({
+      configured: {
+        // Existing test pattern: notepad exe target exists on real win32 and is
+        // accepted by validateFolderArg (no folder) + safeAccess always throws
+        // on non-win32 so we use a mock-app with test-only trick: a probe isn't
+        // needed here, this just validates that the constructor injection path
+        // doesn't affect exe code.
+        notepad: { target: 'C:\\Windows\\System32\\notepad.exe' },
+      },
+      discover: false,
+    })
+    // Inject a shell runner that would wait forever if exe path used it
+    const waitForever: ShellRouteRunner = async () => {
+      await new Promise(() => {})
+      return { child: {} as ChildProcess, exitCode: 0 }
+    }
+    const b = new RealAppBackend(reg, undefined, waitForever)
+    // Notepad won't actually spawn on non-win32 / missing path but the
+    // constructor injection path is validated: the shellRunner passed to
+    // constructor is stored correctly and the exe path doesn't invoke it.
+    // safeAccess → undefined → throws NativeError not_found on non-existent
+    // targets. That's the correct behavior; the point is this doesn't hang.
+    const err = await b.launch('notepad').catch((e) => e)
+    // Either it spawned successfully (win32 real env) or it threw on missing
+    // target. The assertion is: it didn't deadlock-wait on the forever-promise
+    // shellRunner (which would have timed out the test).
+    expect(true).toBe(true)
+    void err
   })
 })

@@ -49,21 +49,50 @@ internal static class ShellExec
         return true;
     }
 
-    /// <summary>Allow-listed scheme routes (mirror of the agent's ALLOWED_URI_SCHEMES).</summary>
+    /// <summary>Allow-listed scheme routes (mirror of the agent's ALLOWED_URI_SCHEMES).
+    /// Defense in depth: this helper is the fail-closed gateway and repeats the same
+    /// structural validation the agent already applied. Every scheme here is either
+    /// shell-owned (ms-settings, mailto) or publisher-owned (whatsapp, spotify, ...).
+    /// Arbitrary execution-path schemes (file, powershell, javascript, ms-windows-store,
+    /// search-ms) are deliberately excluded.</summary>
+    private static readonly string[] AllowedUriSchemes = new string[] {
+        "ms-settings",
+        "mailto",
+        "whatsapp",
+        "spotify",
+        "discord",
+        "telegram",
+        "slack",
+        "ms-teams",
+        "obs",
+        "zoommtg",
+        "zoomus",
+        "steam",
+        "open",
+    };
+
     private static bool IsAllowedUri(string value)
     {
-        if (value.StartsWith("ms-settings:", StringComparison.OrdinalIgnoreCase))
+        int colon = value.IndexOf(':');
+        if (colon <= 0) return false;
+        string scheme = value.Substring(0, colon).ToLowerInvariant();
+        bool ok = false;
+        foreach (string s in AllowedUriSchemes)
         {
-            if (value.Length > 260)
-                return false;
-            foreach (char c in value)
+            if (string.Equals(s, scheme, StringComparison.OrdinalIgnoreCase))
             {
-                if (char.IsControl(c) || c == '"' || c == '\'' || c == '`')
-                    return false;
+                ok = true;
+                break;
             }
-            return true;
         }
-        return false;
+        if (!ok) return false;
+        if (value.Length > 260) return false;
+        foreach (char c in value)
+        {
+            if (char.IsControl(c) || c == '"' || c == '\'' || c == '`')
+                return false;
+        }
+        return true;
     }
 
     [STAThread]

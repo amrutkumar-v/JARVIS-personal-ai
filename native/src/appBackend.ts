@@ -3,10 +3,27 @@ import { access, stat } from 'node:fs/promises'
 import { basename, dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { APP_LIMITS } from './limits.js'
-import { nativeError } from './errors.js'
+import { isNativeError, nativeError } from './errors.js'
 import type { NativeAppLaunchResult, NativeAppRefreshResult, NativeAppSpec, NativeAppStatusResult } from './protocol.js'
 import type { ApplicationBackend } from './applications.js'
 import { AppRegistry, type AppRecord } from './appRegistry.js'
+
+/**
+ * The result of running a shell-route activation (AUMID / URI) through the
+ * ShellExec.exe helper: the child process reference plus its exit code. The
+ * backend only uses the exit code for the activation-status classification;
+ * the child reference is returned so the caller can call `.unref()`.
+ */
+type ShellRouteRunResult = { child: ChildProcess; exitCode: number }
+
+/**
+ * Seam used by tests so shell-route activations can be simulated with a
+ * chosen exit code without ever running a real process. Matches the shape of
+ * `runShellRoute` exactly. The default production implementation calls the
+ * real ShellExec.exe helper and waits for it to exit (ShellExec exits as soon
+ * as ShellExecute has been dispatched, so this is sub-millisecond).
+ */
+export type ShellRouteRunner = (route: string, applicationId: string) => Promise<ShellRouteRunResult>
 
 /**
  * Native Windows Agent — real application backend (Phase 1.3).
@@ -23,7 +40,7 @@ import { AppRegistry, type AppRecord } from './appRegistry.js'
  *                  (Store/MSIX) applications — required so the packaged app
  *                  surfaces as a persistent foreground WINDOW;
  *       - `uri`   — the same ShellExecuteEx helper for a SAFE, allow-listed
- *                  scheme (currently only `ms-settings:`).
+ *                  scheme (e.g. `ms-settings:`, `whatsapp:`, `spotify:`).
  *  4. folders are only ever passed to records that declare `allowFolder`
  *     (File Explorer) and only as a validated absolute directory path;
  *  5. the process is observed over a bounded window with `tasklist` and the
@@ -32,6 +49,15 @@ import { AppRegistry, type AppRecord } from './appRegistry.js'
  *     reported as success on the spawn event alone. When the spawned process
  *     defers to an already-running instance (single-instance apps), the image
  *     name still allows an honest image-level verification.
+ *
+ *  6. Shell-route (aumid/uri) activations additionally CONSUME the exit code
+ *     returned by the ShellExec.exe fail-closed gateway:
+ *        - 0 → activation dispatched to the shell; continue with verify.
+ *        - 3 → ShellExecute itself failed (broken package, bad AUMID).
+ *        - 4 → the ShellExec security gate REJECTED the route outright.
+ *        - 5 → usage / internal error in the helper.
+ *     Non-zero exit is always a structured NativeError, never a false
+ *     `started:true` claim.
  *
  * `app.*` never builds a command line with user/model input beyond the fixed
  * executable path, a validated AUMID, a validated allow-listed URI, or a
@@ -42,10 +68,12 @@ export class RealAppBackend implements ApplicationBackend {
   readonly id = 'real-app'
   private readonly registry: AppRegistry
   private readonly probe: RunningProbe
+  private readonly shellRouteRunner: ShellRouteRunner
 
-  constructor(registry?: AppRegistry, probe?: RunningProbe) {
+  constructor(registry?: AppRegistry, probe?: RunningProbe, shellRouteRunner?: ShellRouteRunner) {
     this.registry = registry ?? new AppRegistry()
     this.probe = probe ?? observeRunning
+    this.shellRouteRunner = shellRouteRunner ?? runShellRoute
   }
 
   async list(): Promise<NativeAppSpec[]> {
@@ -119,16 +147,18 @@ export class RealAppBackend implements ApplicationBackend {
     switch (record.mechanism) {
       case 'aumid': {
         const route = 'shell:AppsFolder\\' + (record.aumid ?? '')
-        const child = await runShellRoute(route, applicationId)
-        child.unref()
-        const pid = child.pid
+        const result = await this.shellRouteRunner(route, applicationId)
+        classifyShellExecExit(applicationId, result.exitCode)
+        result.child.unref()
+        const pid = result.child.pid
         return this.reportShellLaunch(record, applicationId, pid)
       }
       case 'uri': {
         const uri = record.uri ?? ''
-        const child = await runShellRoute(uri, applicationId)
-        child.unref()
-        const pid = child.pid
+        const result = await this.shellRouteRunner(uri, applicationId)
+        classifyShellExecExit(applicationId, result.exitCode)
+        result.child.unref()
+        const pid = result.child.pid
         return this.reportShellLaunch(record, applicationId, pid)
       }
       default: {
@@ -430,6 +460,49 @@ export async function observeRunningStable(
   return { running: false, observed: sawObservation }
 }
 
+/* ------------------------------------------------- shell-exec exit code */
+
+/**
+ * Map the ShellExec.exe exit code to a structured NativeError. Exit code 0
+ * means the activation was dispatched to the shell; any non-zero code is a
+ * hard failure that MUST NOT be reported as `started:true`.
+ *
+ * Exit code contract (from ShellExec.cs):
+ *   0 → ok
+ *   3 → ShellExecute itself returned a failure code (bad package, broken state)
+ *   4 → ShellExec security gate rejected the route (fail-closed)
+ *   5 → usage / argument-count error (internal: we should never hit this)
+ */
+function classifyShellExecExit(applicationId: string, exitCode: number): void {
+  if (exitCode === 0) return
+  switch (exitCode) {
+    case 3:
+      throw nativeError(
+        'io_error',
+        `Shell activation refused by Windows for "${applicationId}": ShellExecute returned a failure code.`,
+        applicationId,
+      )
+    case 4:
+      throw nativeError(
+        'invalid_path',
+        `The shell route for "${applicationId}" was rejected by the ShellExec security gate.`,
+        applicationId,
+      )
+    case 5:
+      throw nativeError(
+        'invalid_argument',
+        `ShellExec helper reported a usage error for "${applicationId}".`,
+        applicationId,
+      )
+    default:
+      throw nativeError(
+        'io_error',
+        `ShellExec helper exited with unexpected code ${exitCode} for "${applicationId}".`,
+        applicationId,
+      )
+  }
+}
+
 /* ------------------------------------------------------------------ spawn */
 
 type LaunchSpawnOptions = { detached?: boolean; windowsHide?: boolean }
@@ -446,9 +519,14 @@ type LaunchSpawnOptions = { detached?: boolean; windowsHide?: boolean }
  * validation the registry already applied (an AUMID route or an allow-listed
  * URI) and refuses anything else. All arguments are constructed by the agent
  * from validated registry fields — never from user/model text.
+ *
+ * This function WAITS for ShellExec.exe to EXIT before returning. ShellExec
+ * exits immediately after ShellExecute has been dispatched, so the wait is
+ * sub-millisecond and the exit code lets the caller distinguish real
+ * activations from rejected ones.
  */
-function runShellRoute(route: string, applicationId: string): Promise<ChildProcess> {
-  return spawnProcess(shellExecHelperPath(), [route], applicationId, { detached: false, windowsHide: false })
+async function runShellRoute(route: string, applicationId: string): Promise<ShellRouteRunResult> {
+  return spawnProcessAndWait(shellExecHelperPath(), [route], applicationId, { detached: false, windowsHide: false })
 }
 
 function spawnDetached(target: string, args: string[], applicationId: string): Promise<ChildProcess> {
@@ -496,6 +574,67 @@ function spawnProcess(
       if (settled) return
       settled = true
       resolve(child)
+    })
+  })
+}
+
+/**
+ * Variant of `spawnProcess` that additionally waits for the child to EXIT and
+ * returns the exit code. Used exclusively for the ShellExec.exe helper, which
+ * is a short-lived stub that exits as soon as ShellExecute has been
+ * dispatched. For long-running applications (the `exe` mechanism), the
+ * original `spawnProcess` is still used (we never wait for those to exit).
+ */
+function spawnProcessAndWait(
+  target: string,
+  args: string[],
+  applicationId: string,
+  opts: LaunchSpawnOptions,
+): Promise<ShellRouteRunResult> {
+  return new Promise<ShellRouteRunResult>((resolve, reject) => {
+    let settled = false
+    let spawnedChild: ChildProcess | undefined
+    const timer = setTimeout(() => {
+      if (settled) return
+      settled = true
+      reject(nativeError('timeout', `Launch of "${applicationId}" timed out while starting the process.`, applicationId))
+    }, APP_LIMITS.LAUNCH_SPAWN_TIMEOUT_MS)
+
+    let child: ChildProcess
+    try {
+      child = spawn(target, args, {
+        detached: opts.detached ?? true,
+        stdio: 'ignore',
+        windowsHide: opts.windowsHide ?? true,
+        shell: false,
+      })
+    } catch (err) {
+      clearTimeout(timer)
+      if (settled) return
+      settled = true
+      reject(translateSpawnError(err, applicationId))
+      return
+    }
+    spawnedChild = child
+
+    child.once('error', (err) => {
+      clearTimeout(timer)
+      if (settled) return
+      settled = true
+      reject(translateSpawnError(err, applicationId))
+    })
+    child.once('spawn', () => {
+      // Intentionally do NOT resolve on spawn: wait for exit below so the
+      // caller can classify the ShellExec exit code.
+    })
+    child.once('exit', (code, _signal) => {
+      clearTimeout(timer)
+      if (settled) return
+      settled = true
+      // code is null when killed by signal; treat as unexpected exit code -1
+      const exitCode = typeof code === 'number' ? code : -1
+      void _signal
+      resolve({ child: spawnedChild!, exitCode })
     })
   })
 }
