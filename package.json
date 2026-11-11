@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite --host 0.0.0.0 --port 3000",
-    "build": "tsc -b && npm run build:backend && vite build",
+    "build": "tsc -b && npm run build:backend && vite build && node scripts/check-frontend-secrets.mjs",
     "build:backend": "tsc -p server/tsconfig.build.json",
     "backend": "node --env-file-if-exists=.env.local server/dist/index.js",
     "backend:check": "tsc --noEmit -p server/tsconfig.json",
@@ -16,14 +16,13 @@
     "install:startup": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/windows/install-startup.ps1",
     "uninstall:startup": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/windows/uninstall-startup.ps1",
     "native:check": "tsc -p native/tsconfig.json",
-    "native:build": "tsc -p native/tsconfig.build.json",
+    "native:build": "tsc -p native/tsconfig.build.json && node native/scripts/buildShellExec.mjs",
     "native:agent": "node native/dist/agentMain.js"
   },
   "dependencies": {
     "@mediapipe/tasks-vision": "^0.10.17",
     "@react-three/drei": "^10.7.8",
     "@react-three/fiber": "^9.7.0",
-    "koffi": "^2.16.3",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
     "three": "^0.185.1",

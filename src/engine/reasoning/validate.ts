@@ -21,6 +21,7 @@
 
 import type { ReasoningCapabilityDescriptor, ReasoningIntent, ReasoningStep, StructuredPlan } from './contract'
 import { REASONING_PLAN_LIMITS } from './contract'
+import { isSafeFolder, isSafeApplicationTarget, isSafeWorkspacePath, isWorkspaceRelativeProperty } from '../goal/safety'
 
 export type PlanValidationCode =
   | 'malformed'
@@ -42,14 +43,6 @@ const ALLOWED_STEP_KEYS = new Set<string>(['capabilityId', 'arguments', 'reason'
 /** Intents that never carry executable steps. */
 const NON_EXECUTING_INTENTS = new Set<string>(['unsupported', 'clarification', 'reject'])
 
-/** Anything a folder/path argument must NEVER contain. */
-const UNSAFE_PATH =
-  /([a-zA-Z]:[\\/]|^\s*[\\/][\\/]|\.\.|[\u0001-\u001f]|(^|[/\\])etc([/\\]|$)|[/\\]system32([/\\]|$)|%[a-zA-Z][a-zA-Z0-9_]*%)/i
-/** Application targets must not look like paths, executables or commands. */
-const PATH_LIKE_APP_TARGET = /[\\/:[\]|]/
-/** Characters that would turn a name into a compound command. */
-const SHELL_INJECTION = /[;&|$`<>]/
-
 export function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
@@ -58,35 +51,6 @@ function typeMatches(value: unknown, type: 'string' | 'number' | 'boolean'): boo
   if (type === 'string') return typeof value === 'string'
   if (type === 'number') return typeof value === 'number' && Number.isFinite(value)
   return typeof value === 'boolean'
-}
-
-const SAFE_FOLDER_PREFIXES = ['{userprofile}', '{workspace}', '{temp}']
-
-/** A folder argument is only safe when it is a bounded curated token under the
- * user profile / workspace / temp roots. No absolute paths, never a raw
- * user-supplied path. */
-function isSafeFolder(value: string): boolean {
-  if (value.trim().length === 0 || value.length > 260) return false
-  if (UNSAFE_PATH.test(value)) return false
-  return SAFE_FOLDER_PREFIXES.some((prefix) => {
-    if (value === prefix) return true
-    if (value.startsWith(prefix)) {
-      return value.charAt(prefix.length) === '\\' && !value.includes('..')
-    }
-    return false
-  })
-}
-
-/** An application target (id/alias typed by the model) must be a NAME. */
-function isSafeApplicationTarget(value: string): boolean {
-  const trimmed = value.trim()
-  if (trimmed.length === 0 || trimmed.length > 64) return false
-  if (PATH_LIKE_APP_TARGET.test(trimmed)) return false
-  if (SHELL_INJECTION.test(trimmed)) return false
-  if (/\.exe$/i.test(trimmed)) return false
-  if (/\.(bat|cmd|ps1|sh|com)$/i.test(trimmed)) return false
-  if (UNSAFE_PATH.test(trimmed)) return false
-  return true
 }
 
 /**
@@ -185,27 +149,39 @@ export function parseAndValidatePlan(raw: unknown, catalog: ReasoningCapabilityD
       }
     }
     // Folders/paths must be bounded, curated tokens (never arbitrary paths).
-    for (const key of argKeys) {
-      const value = args[key]
-      if (typeof value === 'string' && /folder|path|location|directory|target/i.test(key)) {
-        if (!isSafeFolder(value)) {
-          return {
-            ok: false,
-            code: 'unsafe_path',
-            // The argument NAME is model-supplied and never echoed; the schema
-            // keyword "folder token" is static and safe to say.
-            reason: 'a folder/path argument must be an allowed, bounded folder token and is not - refusing the plan.',
+    // Schema-based: arguments declared as folder/path in the capability schema are checked.
+    // Fallback to name-based detection for schemas without descriptions (defense in depth).
+    //
+    // A workspace-relative path (the filesystem family, whose schema says
+    // "relative to the workspace root") is a DIFFERENT contract: it is
+    // resolved against a root the tool owns, and the tool re-validates it
+    // through `normalizeSafePath` before the provider sees it. Both layers
+    // still reject absolute paths and traversal.
+    for (const arg of descriptor.arguments) {
+      const value = args[arg.name]
+      if (typeof value === 'string' && (arg.type === 'string')) {
+        const isFolderArg = /folder|path|directory|location/i.test(arg.description ?? '') || /folder|path|directory|location|target/i.test(arg.name)
+        if (isFolderArg) {
+          const workspaceRelative = isWorkspaceRelativeProperty({ type: 'string', description: arg.description })
+          const safe = workspaceRelative ? isSafeWorkspacePath(value) : isSafeFolder(value)
+          if (!safe) {
+            return {
+              ok: false,
+              code: 'unsafe_path',
+              reason: workspaceRelative
+                ? 'a path argument must be relative to the workspace root and is not - refusing the plan.'
+                : 'a folder/path argument must be an allowed, bounded folder token and is not - refusing the plan.',
+            }
           }
         }
       }
-    }
-    // Application targets must be names — never paths, executables or commands.
-    if (typeof args.application_id === 'string') {
-      if (!isSafeApplicationTarget(args.application_id)) {
-        return {
-          ok: false,
-          code: 'unsafe_path',
-          reason: 'the application target must be a name, not a path, executable or command.',
+      if (typeof value === 'string' && arg.name === 'application_id') {
+        if (!isSafeApplicationTarget(value)) {
+          return {
+            ok: false,
+            code: 'unsafe_path',
+            reason: 'the application target must be a name, not a path, executable or command.',
+          }
         }
       }
     }

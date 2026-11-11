@@ -28,22 +28,45 @@ export interface SpawnHandle {
 
 export type SpawnFactory = (script: string, args: string[], env: Record<string, string>) => SpawnHandle
 
-/** Build the supervised agent's CLI args (port/token/root plus optional config). */
+/**
+ * Build the supervised agent's CLI args.
+ *
+ * The bearer token is deliberately NEVER placed in argv. A child process
+ * command line is readable by any local user (`wmic`/`Get-CimInstance`), so
+ * the token travels to the agent through its environment instead
+ * (`JARVIS_NATIVE_TOKEN`, read by the agent's existing precedence contract).
+ */
 export function buildNativeAgentArgs(options: {
   port: number
   token: string
+  allowNoToken?: boolean
   config?: string
   allowedOrigins?: string[]
 }): string[] {
+  if (!options.token && options.allowNoToken !== true) {
+    throw new Error('Native agent token is required. Set allowNoToken only for explicit loopback development.')
+  }
   const args: string[] = [`--port`, String(options.port)]
-  args.push(options.token ? '--token' : '--no-token')
-  if (options.token) args.push(options.token)
+  // A tokenless agent still needs the explicit opt-in flag; a tokenized agent
+  // receives nothing here and reads JARVIS_NATIVE_TOKEN from its environment.
+  if (!options.token) args.push('--no-token')
   args.push('--root', '{workspace}')
   if (options.config) args.push('--config', options.config)
   if (options.allowedOrigins && options.allowedOrigins.length > 0) {
     args.push('--allowed-origins', options.allowedOrigins.join(','))
   }
   return args
+}
+
+/**
+ * Environment for the supervised agent child.
+ *
+ * Only the native agent token is forwarded, under the exact variable name the
+ * agent already reads. No other credential is propagated, and nothing here is
+ * ever rendered into argv.
+ */
+export function buildNativeAgentEnv(options: { token: string | undefined }): Record<string, string> {
+  return options.token ? { JARVIS_NATIVE_TOKEN: options.token } : {}
 }
 
 /** Real child-process handle for `node native/dist/agentMain.js`. */
@@ -104,6 +127,8 @@ export interface NativeStatus {
 export interface NativeSupervisorOptions {
   probeUrl: string
   token?: string
+  /** Explicit opt-in to a tokenless agent bound to loopback. */
+  allowInsecureNoToken?: boolean
   /** Spawn the native agent as a supervised child process. */
   supervise: boolean
   /** Node script to launch for the agent (absolute path). */
@@ -144,8 +169,16 @@ export class NativeSupervisor {
   private restartTimer: ReturnType<typeof setTimeout> | null = null
   private probeTimer: ReturnType<typeof setInterval> | null = null
   private shuttingDown = false
+  /** Monotonic id of the newest probe; only the newest result is applied. */
+  private probeSeq = 0
+  private lastAppliedProbeId = 0
+  /** Every child ever spawned, so a shutdown kills them ALL. */
+  private readonly children = new Set<SpawnHandle>()
 
   constructor(options: NativeSupervisorOptions) {
+    if (options.supervise && !options.token && options.allowInsecureNoToken !== true) {
+      throw new Error('Refusing to supervise a tokenless native agent without explicit local-development opt-in.')
+    }
     this.options = options
     this.log = options.log ?? nullLogger()
     this.now = options.now ?? (() => Date.now())
@@ -156,6 +189,8 @@ export class NativeSupervisor {
   start(): void {
     if (this.options.supervise) void this.ensureChild()
     this.probeTimer = setInterval(() => void this.probe(), this.options.probeIntervalMs ?? 5000)
+    // The probe must not keep the event loop alive on its own.
+    this.probeTimer.unref?.()
     void this.probe()
   }
 
@@ -183,16 +218,26 @@ export class NativeSupervisor {
   /** Bound, rolling-window child restarter. */
   private spawnChild(): void {
     if (this.shuttingDown) return
+    // Never start a second agent while one is already running: two agents
+    // would race for the port, and the loser's EADDRINUSE exit would burn the
+    // restart budget.
+    if (this.child.running) return
     const spawnFactory = this.options.spawn ?? ((script, args, env) => spawnNodeAgent(script, args, env))
     let handle: SpawnHandle
     try {
-      handle = spawnFactory(this.options.agentScript, [...this.options.agentArgs], {})
+      // The token travels via the child environment, never via argv.
+      handle = spawnFactory(
+        this.options.agentScript,
+        [...this.options.agentArgs],
+        buildNativeAgentEnv({ token: this.options.token }),
+      )
     } catch (error) {
       this.recordChildExit(error instanceof Error ? error : new Error(String(error)))
       return
     }
     this.child.handle = handle
     this.child.running = true
+    this.children.add(handle)
     this.adopted = false
     this.log.info('native', 'native agent child started', { pid: handle.pid })
 
@@ -218,6 +263,8 @@ export class NativeSupervisor {
     if (this.shuttingDown) return
     // Re-probe before restarting: if an agent now owns the port (an orphan
     // survived our redundant spawn), adopt it instead of queuing a duplicate.
+    // `probe()` returns the NEWEST known state, so a slow probe that resolves
+    // late cannot make this decision on stale information.
     void this.probe().then((result) => {
       if (result.ok) {
         this.adopted = true
@@ -229,6 +276,9 @@ export class NativeSupervisor {
   }
 
   private scheduleRestart(): void {
+    // A restart is already pending: queueing a second one would spawn two
+    // agents and orphan the first (only the last handle is killed on stop).
+    if (this.restartTimer) return
     const at = this.now()
     this.child.exitTimes = this.child.exitTimes.filter((t) => at - t < (this.options.childRestartWindowMs ?? 60_000))
     this.child.exitTimes.push(at)
@@ -245,13 +295,38 @@ export class NativeSupervisor {
       this.restartTimer = null
       this.spawnChild()
     }, backoffMs)
+    this.restartTimer.unref?.()
   }
 
   /** Probe the native agent and refresh connection state. */
   async probe(): Promise<ProbeResult> {
     const probe = this.options.probe ?? probeNativeAgent
+    const probeId = ++this.probeSeq
     this.lastProbeAt = this.now()
-    const result = await probe(this.probeUrl, this.options.token ?? '')
+    let result = await probe(this.probeUrl, this.options.token ?? '')
+    if (result.ok) {
+      const expectedTokenRequired = Boolean(this.options.token)
+      const permittedNoToken = !expectedTokenRequired && this.options.allowInsecureNoToken === true
+      if (result.tokenRequired !== expectedTokenRequired || (!expectedTokenRequired && !permittedNoToken)) {
+        result = {
+          ok: false,
+          connected: false,
+          reachable: result.reachable,
+          protocol: result.protocol,
+          version: result.version,
+          platform: result.platform,
+          tokenRequired: result.tokenRequired,
+          error: expectedTokenRequired
+            ? 'Native agent identity does not confirm bearer-token protection.'
+            : 'Native agent is tokenless; explicit local-development opt-in is required.',
+        }
+      }
+    }
+    // A slow probe that resolves AFTER a newer one must not overwrite the
+    // newer state — otherwise `/health` can report a connected agent as
+    // disconnected for a whole probe interval.
+    if (probeId < this.lastAppliedProbeId) return this.probeStatus
+    this.lastAppliedProbeId = probeId
     this.probeStatus = result
     if (!result.ok) {
       this.log.warn('native', result.error ?? 'native agent probe failed', {
@@ -284,6 +359,16 @@ export class NativeSupervisor {
     this.probeTimer = null
     if (this.restartTimer) clearTimeout(this.restartTimer)
     this.restartTimer = null
+    // Kill EVERY child ever spawned: an orphan would keep holding port 8765
+    // and would be adopted by the next backend boot with stale configuration.
+    for (const handle of this.children) {
+      try {
+        handle.kill()
+      } catch {
+        // already gone
+      }
+    }
+    this.children.clear()
     if (this.child.handle) this.child.handle.kill()
     this.child.handle = null
     this.child.running = false

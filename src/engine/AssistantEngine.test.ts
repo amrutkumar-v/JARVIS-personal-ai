@@ -4,6 +4,8 @@ import { resetProviders } from './providers'
 import { useJarvisStore } from '../state/jarvis.store'
 import { useConversationStore } from '../state/conversation.store'
 import type { EngineOutMessage } from './contracts'
+import type { AIProvider } from './provider'
+import { LocalScheduler } from '../scheduling/scheduler'
 
 /**
  * Minimal in-memory window/localStorage so the mock's MemoryManager can
@@ -64,6 +66,55 @@ describe('AssistantEngine (real tool-calling loop via mock provider)', () => {
     expect(useJarvisStore.getState().lastAssistantText).toMatch(/local time/i)
   })
 
+  it('plans and verifies a natural relative reminder against the scheduling schema', async () => {
+    const now = Date.now()
+    const values = new Map<string, string>()
+    const scheduler = new LocalScheduler({
+      storage: {
+        getItem: (key) => values.get(key) ?? null,
+        setItem: (key, value) => void values.set(key, value),
+        removeItem: (key) => void values.delete(key),
+      },
+      now: () => now,
+    })
+    const provider: AIProvider = {
+      id: 'sentinel',
+      label: 'Test provider',
+      generate: async () => { throw new Error('Natural reminder planning should not depend on model output.') },
+      isConfigured: () => true,
+      isReachable: async () => true,
+    }
+    const engine = new AssistantEngine({ providers: [provider], scheduling: scheduler })
+    const events = collect(engine)
+
+    await engine.process('Remind me in 1 minute to test JARVIS')
+
+    expect(scheduler.list()).toHaveLength(1)
+    expect(scheduler.list()[0]).toMatchObject({ text: 'test JARVIS', kind: 'once' })
+    expect(scheduler.list()[0]!.nextRun).toBeGreaterThanOrEqual(now + 60_000)
+    expect(scheduler.list()[0]!.nextRun).toBeLessThan(now + 61_000)
+    expect(useJarvisStore.getState().lastAssistantText).toMatch(/scheduled.*test JARVIS.*verified/i)
+    expect(useJarvisStore.getState().lastAssistantText).toMatch(/browser tab remains open/i)
+    expect(events.join('\n')).toContain('[tool:scheduling.create] success')
+  })
+
+  it('lists reminders with the empty input required by scheduling.list', async () => {
+    const scheduler = new LocalScheduler()
+    scheduler.scheduleOnce(Date.now() + 60_000, 'read the schedule')
+    const provider: AIProvider = {
+      id: 'sentinel',
+      label: 'Test provider',
+      generate: async () => { throw new Error('Natural reminder listing should not depend on model output.') },
+      isConfigured: () => true,
+      isReachable: async () => true,
+    }
+    const engine = new AssistantEngine({ providers: [provider], scheduling: scheduler })
+
+    await engine.process('What reminders are scheduled?')
+
+    expect(useJarvisStore.getState().lastAssistantText).toContain('read the schedule')
+  })
+
   it('stores and recalls a note across turns', async () => {
     const engine = new AssistantEngine()
     collect(engine)
@@ -99,6 +150,8 @@ describe('AssistantEngine (real tool-calling loop via mock provider)', () => {
     expect(caps.toolsEnabled).toBe(true)
     expect(caps.memoryEnabled).toBe(true)
     expect(caps.callingEnabled).toBe(false)
+    expect(caps.aiProviderMode).toBe('MOCK')
+    expect(caps.aiConnected).toBe(false)
   })
 })
 

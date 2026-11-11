@@ -57,13 +57,19 @@ export async function runToolVerification(
     if (!check || typeof check.ok !== 'boolean') {
       throw new Error('verifier returned an invalid result')
     }
+    const status: VerificationStatus = check.status ?? (check.ok ? 'verified' : 'failed')
+    if (
+      !['verified', 'failed', 'unverified'].includes(status) ||
+      check.ok !== (status === 'verified')
+    ) {
+      throw new Error('verifier returned an inconsistent status')
+    }
     const checks = Array.isArray(check.checks) ? check.checks.map(String) : undefined
-    const status: VerificationStatus = check.ok ? 'verified' : 'failed'
     return {
       status,
-      message: check.ok
+      message: status === 'verified'
         ? check.message || 'Verification succeeded.'
-        : check.message || 'Verification failed.',
+        : check.message || (status === 'unverified' ? 'Verification could not confirm the result.' : 'Verification failed.'),
       checks,
       durationMs: Date.now() - startedAt,
     }

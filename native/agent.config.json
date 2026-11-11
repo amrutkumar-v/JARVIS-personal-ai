@@ -15,9 +15,9 @@
     },
     "calculator": {
       "name": "Calculator",
-      "mechanism": "aumid",
-      "aumid": "Microsoft.WindowsCalculator_8wekyb3d8bbwe!App",
-      "processImage": "CalculatorApp"
+      "mechanism": "exe",
+      "processImage": "CalculatorApp",
+      "target": "{windir}\\System32\\calc.exe"
     }
   }
 }

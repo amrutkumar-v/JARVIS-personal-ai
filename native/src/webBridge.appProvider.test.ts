@@ -4,6 +4,7 @@ import { MemoryAppBackend } from './testingApps.js'
 import { NativeWindowsApplicationProvider } from '../../src/native/NativeWindowsApplicationProvider'
 import { NativeAgentRpc } from '../../src/native/nativeRpc'
 import { FileSystemError } from '../../src/filesystem'
+import { startNativeBroker } from '../test-support/startNativeBroker.js'
 
 /**
  * Phase 1.3 — the WEB application bridge provider against a LIVE local agent.
@@ -21,6 +22,7 @@ const TOKEN = 'app-bridge-token'
 
 describe('web bridge application provider — live local agent (deterministic memory backend)', () => {
   let agent: Awaited<ReturnType<typeof startAgent>>
+  let broker: Awaited<ReturnType<typeof startNativeBroker>>
   let memory: MemoryAppBackend
   let provider: NativeWindowsApplicationProvider
 
@@ -32,11 +34,13 @@ describe('web bridge application provider — live local agent (deterministic me
       { applicationId: 'unlaunchable', name: 'Unlaunchable', launchable: false },
     ])
     agent = await startAgent({ roots: [ROOT], token: TOKEN, applications: memory, port: 0 })
-    provider = new NativeWindowsApplicationProvider(new NativeAgentRpc({ baseUrl: agent.baseUrl, token: TOKEN, requestTimeoutMs: 2000 }))
+    broker = await startNativeBroker(agent.baseUrl, TOKEN)
+    provider = new NativeWindowsApplicationProvider(new NativeAgentRpc({ baseUrl: broker.baseUrl, fetchImpl: broker.fetchImpl, requestTimeoutMs: 2000 }))
     await provider.refreshNativeStatus()
   })
 
   afterAll(async () => {
+    await broker.close()
     await agent.close()
   })
 

@@ -13,6 +13,7 @@ import type { BackendHealth, DeviceRecord } from '../backend/types'
 import type { ReconnectPhase } from '../backend/reconnect'
 import type { CapabilityCatalogItem } from '../engine/contracts'
 import type { GestureIntent, GesturePhase, GestureTrackingQuality } from '../gesture'
+import type { PersistentTask } from '../engine/tasks/types'
 
 export interface Notice {
   id: number
@@ -138,6 +139,10 @@ export interface JarvisState {
   /* ---------- Scheduled reminders (Phase 11 live mirror) ---------- */
   schedule: ScheduledUiItem[]
 
+  /* ---------- Persistent Autonomous Tasks (Phase B / F) ---------- */
+  persistentTasks: PersistentTask[]
+  activeTaskId: string | null
+
   /* ---------- Notices (transient user-facing errors/warnings) ---------- */
   notices: Notice[]
 
@@ -175,6 +180,9 @@ export interface JarvisState {
   setCamera(patch: Partial<CameraUiState>): void
   setBackend(patch: Partial<BackendUiState>): void
   setSchedule(items: readonly ScheduledUiItem[]): void
+  setPersistentTasks(tasks: PersistentTask[]): void
+  updatePersistentTask(task: PersistentTask): void
+  setActiveTaskId(id: string | null): void
   setGesture(patch: Partial<GestureUiState>): void
   setTheme(theme: JarvisTheme): void
   setDemoMode(enabled: boolean): void
@@ -193,6 +201,7 @@ export interface ActivityEntry {
 const DEFAULT_CAPABILITIES: Capabilities = {
   aiConnected: false,
   aiConfigured: false,
+  aiProviderMode: 'DISCONNECTED',
   aiStatus: 'DISCONNECTED',
   aiStatusMessage: '',
   speechRecognitionAvailable: false,
@@ -256,6 +265,44 @@ const DEFAULT_PROFILE: Profile = {
   version: '0.1.0',
 }
 
+/**
+ * Durable UI preferences that are NOT part of the user's memory profile.
+ *
+ * The theme and the demo mode are presentation state, not memory: they belong
+ * to this browser profile and must survive a reload. Everything the user
+ * configures as a *preference* is persisted through the memory manager instead.
+ */
+const UI_PREFS_KEY = 'jarvis.ui.v1'
+
+interface UiPrefs {
+  theme?: JarvisTheme
+  demoMode?: boolean
+}
+
+function readUiPrefs(): UiPrefs {
+  if (typeof window === 'undefined') return {}
+  try {
+    const raw = window.localStorage.getItem(UI_PREFS_KEY)
+    if (!raw) return {}
+    const parsed = JSON.parse(raw) as UiPrefs
+    return parsed && typeof parsed === 'object' ? parsed : {}
+  } catch {
+    return {}
+  }
+}
+
+function writeUiPrefs(patch: UiPrefs): void {
+  if (typeof window === 'undefined') return
+  try {
+    window.localStorage.setItem(UI_PREFS_KEY, JSON.stringify({ ...readUiPrefs(), ...patch }))
+  } catch {
+    // Storage can be blocked (private mode, quota). The in-memory value still
+    // applies for this session.
+  }
+}
+
+const INITIAL_UI_PREFS = readUiPrefs()
+
 const rawStore = create<JarvisState>()((set, get) => ({
   capabilities: { ...DEFAULT_CAPABILITIES },
   capCatalog: [],
@@ -284,10 +331,13 @@ const rawStore = create<JarvisState>()((set, get) => ({
 
   schedule: [],
 
+  persistentTasks: [],
+  activeTaskId: null,
+
   notices: [],
 
-  theme: DEFAULT_THEME,
-  demoMode: false,
+  theme: INITIAL_UI_PREFS.theme ?? DEFAULT_THEME,
+  demoMode: INITIAL_UI_PREFS.demoMode ?? false,
 
   setCapabilities: (patch) =>
     set({ capabilities: { ...get().capabilities, ...patch } }),
@@ -343,10 +393,28 @@ const rawStore = create<JarvisState>()((set, get) => ({
   setCamera: (patch) => set({ camera: { ...get().camera, ...patch } }),
   setBackend: (patch) => set({ backend: { ...get().backend, ...patch } }),
   setSchedule: (items) => set({ schedule: [...items] }),
+  setPersistentTasks: (tasks) => set({ persistentTasks: tasks }),
+  updatePersistentTask: (task) =>
+    set((state) => {
+      const idx = state.persistentTasks.findIndex((t) => t.id === task.id)
+      if (idx >= 0) {
+        const next = [...state.persistentTasks]
+        next[idx] = task
+        return { persistentTasks: next }
+      }
+      return { persistentTasks: [task, ...state.persistentTasks] }
+    }),
+  setActiveTaskId: (id) => set({ activeTaskId: id }),
   setGesture: (patch) => set({ gesture: { ...get().gesture, ...patch } }),
 
-  setTheme: (theme) => set({ theme }),
-  setDemoMode: (enabled) => set({ demoMode: enabled }),
+  setTheme: (theme) => {
+    set({ theme })
+    writeUiPrefs({ theme })
+  },
+  setDemoMode: (enabled) => {
+    set({ demoMode: enabled })
+    writeUiPrefs({ demoMode: enabled })
+  },
 
   resetRun: () => {
     set({

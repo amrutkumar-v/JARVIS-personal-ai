@@ -39,6 +39,8 @@ export class BrowserSpeechToTextProvider implements SpeechToTextProvider {
   private activeFlag = false
   private stopping = false
   private denied = false
+  /** True while the caller still wants the recognizer running. */
+  private wantActive = false
 
   readonly supported: boolean
 
@@ -92,6 +94,7 @@ export class BrowserSpeechToTextProvider implements SpeechToTextProvider {
 
   start(): boolean {
     if (!this.recognition || this.activeFlag || this.denied) return false
+    this.wantActive = true
     this.activeFlag = true
     this.stopping = false
     try {
@@ -108,6 +111,7 @@ export class BrowserSpeechToTextProvider implements SpeechToTextProvider {
   }
 
   stop(): void {
+    this.wantActive = false
     if (!this.recognition || !this.activeFlag) return
     this.stopping = true
     try {
@@ -118,6 +122,7 @@ export class BrowserSpeechToTextProvider implements SpeechToTextProvider {
   }
 
   abort(): void {
+    this.wantActive = false
     this.activeFlag = false
     this.stopping = false
     try {
@@ -180,6 +185,19 @@ export class BrowserSpeechToTextProvider implements SpeechToTextProvider {
         if (wasStopping) this.emitEnd('done')
         else if (this.denied) this.emitEnd('error')
         else this.emitEnd('done')
+      }
+      // Chrome ends a `continuous` recognizer on its own after a stretch of
+      // silence. The voice session is still open, so the command listener
+      // resumes itself instead of leaving the session deaf for the rest of
+      // its bounded lifetime. `wantActive` is false once the session stops
+      // the listener, so this never resurrects a closed session.
+      if (this.wantActive && !this.denied && !wasStopping) {
+        try {
+          this.activeFlag = true
+          this.recognition?.start()
+        } catch {
+          this.activeFlag = false
+        }
       }
     }
   }

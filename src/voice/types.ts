@@ -62,11 +62,28 @@ export interface VoiceConfig {
 }
 
 export const DEFAULT_VOICE_PHRASES: VoicePhrases = {
-  wake: "I'm awake. What can I do for you?",
+  wake: "I'm here, {name}. How can I help?",
   noCommand: "I didn't hear a command.",
   sleep: 'Going to sleep.',
   cancel: 'Cancelled.',
   failure: "I couldn't complete that.",
+}
+
+/**
+ * Resolve the `{name}` placeholder in a spoken phrase.
+ *
+ * With a known operator name the greeting is personal ("I'm here, Amrut. How
+ * can I help?"). Without one — or with the untouched default profile name —
+ * the placeholder is dropped cleanly ("I'm here. How can I help?") so JARVIS
+ * never greets an anonymous "Operator".
+ */
+export function resolveVoicePhrase(phrase: string, name?: string): string {
+  const clean = (name ?? '').trim()
+  const isPlaceholderName = !clean || clean.toLowerCase() === 'operator'
+  const resolved = isPlaceholderName
+    ? phrase.replace(/,\s*\{name\}/g, '').replace(/\{name\}/g, '')
+    : phrase.replace(/\{name\}/g, clean)
+  return resolved.replace(/\s{2,}/g, ' ').trim()
 }
 
 export const DEFAULT_VOICE_CONFIG: VoiceConfig = {

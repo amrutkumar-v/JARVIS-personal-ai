@@ -51,6 +51,14 @@ function jarvisDevApiPlugin(env: Record<string, string>): Plugin {
   // Router env = env files (.env.local) overlaid on the shell's env, and the
   // historical single-upstream dev proxy (Gemini default / custom target).
   const mergedEnv: Record<string, string | undefined> = { ...env, ...process.env }
+  const trustedDevOrigins = new Set([
+    'http://localhost:3000',
+    'http://127.0.0.1:3000',
+    ...(mergedEnv.JARVIS_DEV_TRUSTED_ORIGINS ?? '')
+      .split(',')
+      .map((origin) => origin.trim())
+      .filter(Boolean),
+  ])
   return {
     name: 'jarvis-dev-api-proxy',
     configureServer(server) {
@@ -62,13 +70,28 @@ function jarvisDevApiPlugin(env: Record<string, string>): Plugin {
       server.middlewares.use(async (req: IncomingMessage, res: ServerResponse, next: () => void) => {
         const url = req.url?.split('?')[0] || ''
 
-        // Enable CORS for all /api endpoints
-        res.setHeader('Access-Control-Allow-Origin', '*')
-        res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
-        res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization')
-        res.setHeader('Access-Control-Expose-Headers', 'x-jarvis-provider, x-jarvis-provider-model')
+        if (!url.startsWith('/api/')) return next()
+        const origin = typeof req.headers.origin === 'string' ? req.headers.origin : undefined
+        if (origin && !trustedDevOrigins.has(origin)) {
+          res.writeHead(403, { 'Content-Type': 'application/json' })
+          res.end(JSON.stringify({ ok: false, error: 'origin_denied' }))
+          return
+        }
+        if (origin) {
+          res.setHeader('Access-Control-Allow-Origin', origin)
+          res.setHeader('Access-Control-Allow-Credentials', 'true')
+          res.setHeader('Vary', 'Origin')
+          res.setHeader('Access-Control-Expose-Headers', 'x-jarvis-provider, x-jarvis-provider-model')
+        }
 
         if (req.method === 'OPTIONS') {
+          if (!origin || !trustedDevOrigins.has(origin)) {
+            res.writeHead(403, { 'Content-Type': 'application/json' })
+            res.end(JSON.stringify({ ok: false, error: 'origin_denied' }))
+            return
+          }
+          res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
+          res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Jarvis-Provider')
           res.writeHead(204)
           res.end()
           return
@@ -158,7 +181,7 @@ export default defineConfig(({ mode }) => {
       sourcemap: false,
     },
     server: {
-      host: '0.0.0.0',
+      host: '127.0.0.1',
       port: 3000,
       allowedHosts: true,
     },

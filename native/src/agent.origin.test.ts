@@ -33,9 +33,10 @@ describe('native agent origin gate (Phase 11 — P0 convergence)', () => {
     await agent.close()
   })
 
-  it('allows requests without an Origin header (server probes, curl)', async () => {
+  it('allows authenticated non-browser requests without Origin, without granting CORS', async () => {
     const res = await rpc(agent.baseUrl, undefined, TOKEN)
     expect(res.status).toBe(200)
+    expect(res.headers.get('access-control-allow-origin')).toBeNull()
     expect(await asJson(res)).toMatchObject({ jsonrpc: '2.0', id: 1, result: { pong: true } })
   })
 
@@ -47,9 +48,21 @@ describe('native agent origin gate (Phase 11 — P0 convergence)', () => {
     }
   })
 
-  it('allows file:// pages (Origin: null)', async () => {
+  it('denies Origin: null by default', async () => {
     const res = await rpc(agent.baseUrl, 'null', TOKEN)
-    expect(res.status).toBe(200)
+    expect(res.status).toBe(403)
+    expect(res.headers.get('access-control-allow-origin')).toBeNull()
+  })
+
+  it('allows Origin: null only when explicitly configured', async () => {
+    const explicitlyAllowed = await startAgent({ roots: [ROOT], token: TOKEN, allowedOrigins: ['null'], port: 0 })
+    try {
+      const res = await rpc(explicitlyAllowed.baseUrl, 'null', TOKEN)
+      expect(res.status).toBe(200)
+      expect(res.headers.get('access-control-allow-origin')).toBe('null')
+    } finally {
+      await explicitlyAllowed.close()
+    }
   })
 
   it('denies a random website origin without leaking CORS permission', async () => {
@@ -87,12 +100,12 @@ describe('isOriginAllowed', () => {
     expect(isOriginAllowed('https://nope.example', ['https://jarvis.example'])).toBe(false)
   })
 
-  it('defaults to loopback + null when no explicit list is given', () => {
+  it('defaults to loopback origins only when no explicit list is given', () => {
     expect(isOriginAllowed('http://localhost:5173', undefined)).toBe(true)
     expect(isOriginAllowed('http://127.0.0.1:9999', undefined)).toBe(true)
     expect(isOriginAllowed('http://[::1]:8080', undefined)).toBe(true)
-    expect(isOriginAllowed('null', undefined)).toBe(true)
+    expect(isOriginAllowed('null', undefined)).toBe(false)
     expect(isOriginAllowed('https://evil.example', undefined)).toBe(false)
-    expect(isOriginAllowed(undefined, undefined)).toBe(true)
+    expect(isOriginAllowed(undefined, undefined)).toBe(false)
   })
 })

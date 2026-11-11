@@ -28,6 +28,47 @@ interface CreateInput {
   weekday?: number
 }
 
+export type SchedulingIntentPlan =
+  | { toolId: 'scheduling.create'; params: { text: string; when: string; repeat: 'once' } }
+  | { toolId: 'scheduling.list'; params: Record<string, never> }
+
+/** Resolve the unambiguous reminder forms the app can parse without guessing. */
+export function planNaturalSchedulingRequest(query: string, now = Date.now()): SchedulingIntentPlan | undefined {
+  const text = query.trim()
+  if (/\b(reminder|reminders|scheduled|schedule|when.*remind)\b/i.test(text) && /\b(list|show|what|when)\b/i.test(text)) {
+    return { toolId: 'scheduling.list', params: {} }
+  }
+  if (!/\b(remind me|set (?:a )?reminder|schedule (?:a )?reminder)\b/i.test(text)) return undefined
+
+  const relative = /\bin\s+(\d{1,4})\s+(seconds?|minutes?|hours?|days?)\b/i.exec(text)
+  const atClock = /\bat\s+(\d{1,2}:\d{2})\b/i.exec(text)
+  if (!relative && !atClock) return undefined
+
+  const durationMs = relative
+    ? Number(relative[1]) * ({ second: 1_000, minute: 60_000, hour: 3_600_000, day: 86_400_000 } as const)[
+        relative[2]!.toLowerCase().replace(/s$/, '') as 'second' | 'minute' | 'hour' | 'day'
+      ]
+    : undefined
+  let at: number
+  if (durationMs !== undefined) {
+    at = now + durationMs
+  } else {
+    const [hour, minute] = atClock![1]!.split(':').map(Number)
+    if (hour! > 23 || minute! > 59) return undefined
+    const date = new Date(now)
+    date.setHours(hour!, minute!, 0, 0)
+    if (date.getTime() <= now) date.setDate(date.getDate() + 1)
+    at = date.getTime()
+  }
+
+  let reminderText = text.replace(/^\s*(?:please\s+)?(?:remind me|set (?:a )?reminder|schedule (?:a )?reminder)\s*/i, '')
+  reminderText = reminderText.replace(relative?.[0] ?? atClock?.[0] ?? '', '')
+  reminderText = reminderText.replace(/^\s*(?:to|that|about)\s+/i, '').replace(/[.!?\s]+$/, '').trim()
+  if (!reminderText) return undefined
+
+  return { toolId: 'scheduling.create', params: { text: reminderText, when: new Date(at).toISOString(), repeat: 'once' } }
+}
+
 function isHHMM(value: string | undefined): boolean {
   if (!/^\d{1,2}:\d{2}$/.test(value ?? '')) return false
   const [h, m] = (value as string).split(':').map(Number)
@@ -93,7 +134,7 @@ export class SchedulingCreateTool extends SchedulingTool {
   readonly name = 'Schedule a reminder'
   readonly description =
     'Create ONE reminder: one-time (absolute time), daily ("HH:MM"), or weekly (weekday 0..6 + "HH:MM"). ' +
-    'The reminder is persisted locally and fires through JARVIS while the app is open. Provide the reminder ' +
+    'Reminders are stored locally and fire only while the JARVIS browser tab remains open. Provide the reminder ' +
     'text, a repeat kind, and a time (or "when"). Seconds are truncated to the minute.'
   readonly permission: ToolPermission = 'low_risk'
   readonly verifiable: boolean = true
@@ -109,7 +150,8 @@ export class SchedulingCreateTool extends SchedulingTool {
   }
 
   canRun(query: string): boolean {
-    return /\b(remind me|reminder|remember to|schedule|scheduled)\b/i.test(query) && /(\bat\b|\b\d{1,2}:\d{2}\b|daily|weekly|every)/i.test(query)
+    return /\b(remind me|reminder|remember to|schedule|scheduled)\b/i.test(query) &&
+      /(\bin\s+\d+\s+(?:seconds?|minutes?|hours?|days?)\b|\bat\b|\b\d{1,2}:\d{2}\b|daily|weekly|every)/i.test(query)
   }
 
   private parse(input: ToolInput): CreateInput {
@@ -131,14 +173,14 @@ export class SchedulingCreateTool extends SchedulingTool {
     try {
       if (parsed.kind === 'once') {
         const { id } = this.scheduler.scheduleOnce(parsed.at, c.text)
-        return { ok: true, message: `Reminder scheduled: "${c.text}" for ${new Date(parsed.at).toLocaleString()}. It will fire while JARVIS is open.`, data: { id, at: parsed.at, kind: 'once', text: c.text } }
+        return { ok: true, message: `Reminder scheduled: "${c.text}" for ${new Date(parsed.at).toLocaleString()}. It will fire only while the JARVIS browser tab remains open.`, data: { id, at: parsed.at, kind: 'once', text: c.text } }
       }
       if (parsed.kind === 'daily') {
         const { id } = this.scheduler.scheduleDaily(parsed.time, c.text)
-        return { ok: true, message: `Daily reminder scheduled: "${c.text}" every day at ${parsed.time}.`, data: { id, time: parsed.time, kind: 'daily', text: c.text } }
+        return { ok: true, message: `Daily reminder scheduled: "${c.text}" every day at ${parsed.time}; it will fire only while the JARVIS browser tab remains open.`, data: { id, time: parsed.time, kind: 'daily', text: c.text } }
       }
       const { id } = this.scheduler.scheduleWeekly(parsed.weekday, parsed.time, c.text)
-      return { ok: true, message: `Weekly reminder scheduled: "${c.text}" every ${['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'][parsed.weekday] ?? parsed.weekday} at ${parsed.time}.`, data: { id, weekday: parsed.weekday, time: parsed.time, kind: 'weekly', text: c.text } }
+      return { ok: true, message: `Weekly reminder scheduled: "${c.text}" every ${['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'][parsed.weekday] ?? parsed.weekday} at ${parsed.time}; it will fire only while the JARVIS browser tab remains open.`, data: { id, weekday: parsed.weekday, time: parsed.time, kind: 'weekly', text: c.text } }
     } catch (error) {
       return { ok: false, message: error instanceof Error ? error.message : 'Could not schedule the reminder.', data: { reason: 'scheduling_failed' } }
     }

@@ -290,6 +290,22 @@ describe('MemoryManager (structured persistent memory)', () => {
     expect(second.successful).toBe(0)
   })
 
+  it('does not compare stored vectors across providers and backfills vectors from the previous provider', async () => {
+    const deterministicMemory = new MemoryManager(new EmbeddingManager())
+    deterministicMemory.remember('rare orbital glasswing fact')
+    await settle()
+    expect(deterministicMemory.items()[0]?.metadata.embeddingProvider).toBe('deterministic-test')
+
+    const semanticMemory = new MemoryManager(new EmbeddingManager({ provider: new FakeProvider() }))
+    const crossProviderHits = await semanticMemory.search('unrelated wording', { minScore: 0.9 })
+    expect(crossProviderHits).toEqual([])
+
+    const result = await semanticMemory.backfillEmbeddings()
+    expect(result.processed).toBe(1)
+    expect(result.successful).toBe(1)
+    expect(semanticMemory.items()[0]?.metadata.embeddingProvider).toBe('fake-real')
+  })
+
   it('replaces malformed persisted embeddings during backfill', async () => {
     const record = {
       version: 3,
@@ -392,6 +408,7 @@ describe('MemoryManager (structured persistent memory)', () => {
     const h = real.getEmbeddingHealth()
     expect(h.enabled).toBe(true)
     expect(h.realEmbeddingsAvailable).toBe(true)
+    expect(h.mode).toBe('semantic')
     expect(h.fallbackActive).toBe(false)
     expect(h.status).toBe('healthy')
     expect(h.providerId).toBe('fake-real')
@@ -400,6 +417,7 @@ describe('MemoryManager (structured persistent memory)', () => {
     const d = det.getEmbeddingHealth()
     expect(d.enabled).toBe(true)
     expect(d.realEmbeddingsAvailable).toBe(false)
+    expect(d.mode).toBe('deterministic_fallback')
     expect(d.fallbackActive).toBe(true)
     expect(d.providerId).toBe('deterministic-test')
   })

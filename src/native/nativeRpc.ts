@@ -2,22 +2,22 @@ import { FileSystemError, fsError } from '../filesystem'
 import type { NativePlatformStatus } from '../filesystem'
 import type { NativeIdentity, NativeResponse } from '../../native/src/protocol'
 import type { NativeErrorCode } from '../../native/src/protocol'
+import { ensureBackendSession } from '../backend/session'
 
 /**
  * Web-side RPC client for the native Windows agent (Phase 1.2/1.3).
  *
- * One shared transport + connectivity probe is used by BOTH the filesystem
- * bridge and the application bridge: HTTP JSON-RPC to the local agent, bearer
- * token auth, per-request timeout via AbortController, structured error
+ * One shared transport + connectivity probe is used by the browser capability
+ * providers. Requests cross the backend's authenticated, allow-listed RPC
+ * broker; the privileged native bearer token never enters browser code.
+ * Per-request timeout via AbortController, structured error
  * mapping into `FileSystemError` kinds, and an honest known-state that both
  * providers expose through their capability reports. Nothing here ever reaches
  * beyond the agent's `NATIVE_METHODS` allow-list.
  */
 export interface NativeBridgeOptions {
-  /** Base URL of the local native agent (default http://127.0.0.1:8765). */
+  /** Base URL of the trusted JARVIS backend. */
   baseUrl?: string
-  /** Bearer token the agent requires (empty = none configured). */
-  token?: string
   /** Wall time a single operation may take (ms). */
   requestTimeoutMs?: number
   /** Wall time for the connectivity probe (ms). */
@@ -26,7 +26,7 @@ export interface NativeBridgeOptions {
   fetchImpl?: typeof fetch
 }
 
-const DEFAULT_BASE_URL = 'http://127.0.0.1:8765'
+const DEFAULT_BASE_URL = 'http://127.0.0.1:8787'
 
 /** Map a structured native error code onto the web FileSystemError kind set. */
 export function mapNativeCode(code: NativeErrorCode, message: string, path: string | undefined): FileSystemError {
@@ -83,7 +83,6 @@ export function isAbortError(error: unknown): boolean {
 
 export class NativeAgentRpc {
   private readonly baseUrl: string
-  private readonly token: string
   private readonly requestTimeoutMs: number
   private readonly probeTimeoutMs: number
   private readonly fetchImpl: typeof fetch
@@ -92,7 +91,6 @@ export class NativeAgentRpc {
 
   constructor(options: NativeBridgeOptions = {}) {
     this.baseUrl = (options.baseUrl ?? DEFAULT_BASE_URL).replace(/\/+$/, '')
-    this.token = options.token ?? ''
     this.requestTimeoutMs = options.requestTimeoutMs ?? 10_000
     this.probeTimeoutMs = options.probeTimeoutMs ?? 1500
     this.fetchImpl =
@@ -139,37 +137,49 @@ export class NativeAgentRpc {
   }
 
   private async callRaw<T>(method: string, params: Record<string, unknown>, timeoutMs?: number): Promise<T> {
+    try {
+      await ensureBackendSession(this.baseUrl, this.fetchImpl)
+    } catch {
+      this.known = { connected: false, reason: 'The JARVIS backend session could not be established.' }
+      throw fsError('unavailable', 'The JARVIS backend session could not be established.')
+    }
     const controller = new AbortController()
     const timer = setTimeout(() => controller.abort(), timeoutMs ?? this.requestTimeoutMs)
     let response: Response
     try {
-      response = await this.fetchImpl(this.baseUrl, {
+      response = await this.fetchImpl(`${this.baseUrl}/api/native/rpc`, {
         method: 'POST',
         headers: {
           'content-type': 'application/json',
-          ...(this.token ? { authorization: `Bearer ${this.token}` } : {}),
         },
+        credentials: 'include',
         body: JSON.stringify({ jsonrpc: '2.0', id: this.nextId(), method, params }),
         signal: controller.signal,
       })
     } catch (error) {
-      clearTimeout(timer)
       if (isAbortError(error)) {
         this.known = { connected: false, reason: 'The native agent did not answer in time.' }
         throw fsError('timeout', 'The native agent did not answer in time.')
       }
       this.known = { connected: false, reason: 'The native agent is not reachable.' }
       throw fsError('unavailable', 'The native Windows agent is not reachable. Start it with `npm run native:agent`.')
-    } finally {
-      clearTimeout(timer)
     }
 
+    // The timer must stay armed while the BODY is read: clearing it as soon
+    // as the headers arrive leaves an unbounded read — a peer that sends
+    // headers and then stalls would hang the probe forever.
     let envelope: NativeResponse
     try {
       envelope = (await response.json()) as NativeResponse
-    } catch {
+    } catch (error) {
+      if (isAbortError(error)) {
+        this.known = { connected: false, reason: 'The native agent did not answer in time.' }
+        throw fsError('timeout', 'The native agent did not answer in time.')
+      }
       this.known = { connected: false, reason: 'The native agent returned an unreadable response.' }
       throw fsError('unavailable', 'The native agent returned an unreadable response.')
+    } finally {
+      clearTimeout(timer)
     }
 
     if ('error' in envelope && envelope.error) {

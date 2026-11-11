@@ -44,10 +44,19 @@ export interface AiHealthCheckResult {
   availableProviders?: string[]
   /** Providers a REAL probe proved reachable (empty when nothing was probed). */
   healthyProviders?: string[]
+  /** Healthy fallback selected for an unpinned request when the primary is down. */
+  fallbackProvider?: string
   capabilities?: string[]
   providersProbed?: boolean
   providers?: AiProviderHealthSummary[]
 }
+
+/**
+ * An injected REAL model-discovery probe. Returns the model ids an upstream
+ * engine genuinely listed for this process, or `[]` when nothing could be
+ * verified. Callers MUST NOT read `[]` as "zero models" (see checkAiHealth).
+ */
+export type AiModelDiscoveryProbe = () => Promise<string[]>
 
 export interface AiProviderHealthSummary {
   id: string
@@ -112,18 +121,41 @@ function readConfig(): AiConfig {
   }
 }
 
-/** Check upstream AI health and distinguish connection status */
-export async function checkAiHealth(): Promise<AiHealthCheckResult> {
+/**
+ * Check upstream AI health and distinguish connection status.
+ *
+ * @param probeModels optional real model-discovery probe (injected, e.g. from
+ *   <code>RemoteProvider.listModels</code>). It is called AT MOST ONCE per
+ *   health calculation, and only on the keyless DIRECT transport (a proxy
+ *   cannot be enumerated client-side). Honest MODEL_UNAVAILABLE is only ever
+ *   emitted when the discoverer positively confirmed the configured model is
+ *   absent from a SUCCESSFUL non-empty discovery. An empty result, a rejected
+ *   probe, or a proxy are all "not verified" and must never downgrade health.
+ */
+export async function checkAiHealth(
+  probeModels?: AiModelDiscoveryProbe,
+  pinnedProvider?: string | null,
+): Promise<AiHealthCheckResult> {
   const cfg = getAiConfig()
-  const healthEndpoint =
-    cfg.transport === 'proxy' && cfg.proxyUrl
-      ? `${cfg.proxyUrl.replace(/\/+$/, '')}/health`
-      : '/api/ai/health'
+  if (cfg.transport === 'none' || cfg.providerId === MOCK_PROVIDER_ID) {
+    return {
+      status: 'MISCONFIGURED',
+      code: 'MISCONFIGURED',
+      message: 'No real AI endpoint and model are configured.',
+    }
+  }
+
+  if (cfg.transport === 'direct') {
+    return checkDirectAiHealth(cfg, probeModels)
+  }
+
+  const healthEndpoint = `${cfg.proxyUrl!.replace(/\/+$/, '')}/health`
   try {
     const res = await fetch(healthEndpoint, { method: 'GET' })
     if (res.ok) {
       const data = (await res.json()) as AiHealthCheckResult
-      return data
+      const refined = await refineWithModelAvailability(data, cfg, probeModels)
+      return resolveEffectiveRouterHealth(refined, pinnedProvider)
     }
     return {
       status: 'DISCONNECTED',
@@ -137,6 +169,160 @@ export async function checkAiHealth(): Promise<AiHealthCheckResult> {
       message: err instanceof Error ? err.message : 'Cannot reach AI health endpoint.',
     }
   }
+}
+
+/**
+ * Resolve what the browser can really route to. Router `status` describes its
+ * configured primary; with automatic routing, a real healthy fallback also
+ * means JARVIS can answer. Keep the primary failure in `message` and expose
+ * the fallback separately so the UI never claims the primary is healthy.
+ */
+export function resolveEffectiveRouterHealth(
+  result: AiHealthCheckResult,
+  pinnedProvider?: string | null,
+): AiHealthCheckResult {
+  const providers = result.providers ?? []
+  const isHealthy = (id: string): AiProviderHealthSummary | undefined => {
+    const provider = providers.find((candidate) => candidate.id === id)
+    return provider && provider.available && provider.status === 'CONNECTED' && result.healthyProviders?.includes(id)
+      ? provider
+      : undefined
+  }
+
+  if (pinnedProvider) {
+    const pinned = isHealthy(pinnedProvider)
+    if (pinned) {
+      return {
+        ...result,
+        status: 'CONNECTED',
+        code: 'CONNECTED',
+        provider: pinned.id,
+        model: pinned.model || result.model,
+        fallbackProvider: undefined,
+        message: result.provider && result.provider !== pinned.id
+          ? `Pinned provider ${pinned.name} is reachable.`
+          : result.message,
+      }
+    }
+    if (result.provider !== pinnedProvider) {
+      const unavailable = providers.find((candidate) => candidate.id === pinnedProvider)
+      return {
+        ...result,
+        status: 'DISCONNECTED',
+        code: 'DISCONNECTED',
+        provider: pinnedProvider,
+        model: unavailable?.model || result.model,
+        fallbackProvider: undefined,
+        message: unavailable
+          ? `Pinned provider ${unavailable.name} is not reachable (${unavailable.status}).`
+          : `Pinned provider ${pinnedProvider} health could not be verified.`,
+      }
+    }
+    return result
+  }
+
+  const active = (result.provider ? isHealthy(result.provider) : undefined)
+    ?? (result.healthyProviders ?? []).map(isHealthy).find((provider) => provider !== undefined)
+  if (!active) return result
+
+  const primaryId = result.provider ?? result.primary
+  const isFallback = result.status !== 'CONNECTED' && primaryId !== active.id
+  const primary = providers.find((provider) => provider.id === primaryId)
+  return {
+    ...result,
+    status: 'CONNECTED',
+    code: 'CONNECTED',
+    provider: active.id,
+    model: active.model || result.model,
+    fallbackProvider: isFallback ? active.id : undefined,
+    message: isFallback
+      ? `Primary ${primary?.name ?? primaryId ?? 'provider'} is unavailable; automatic routing can use ${active.name} (${active.model}) as a fallback.`
+      : result.message,
+  }
+}
+
+/** Check the configured direct provider itself; never route it through JARVIS' dev proxy. */
+async function checkDirectAiHealth(
+  cfg: AiConfig,
+  probeModels?: AiModelDiscoveryProbe,
+): Promise<AiHealthCheckResult> {
+  if (!cfg.baseUrl || !cfg.model) {
+    return { status: 'MISCONFIGURED', code: 'MISCONFIGURED', message: 'A direct AI endpoint and model are required.' }
+  }
+
+  const base = cfg.baseUrl.replace(/\/+$/, '').replace(/\/(?:chat\/completions|models)$/i, '')
+  const root = base.replace(/\/v\d+$/i, '')
+  const urls = [...new Set([`${root}/api/tags`, `${base}/models`])]
+  let lastHttpStatus: number | undefined
+  let hadTransportFailure = false
+
+  for (const url of urls) {
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), 5000)
+    try {
+      const res = await fetch(url, { method: 'GET', signal: controller.signal })
+      lastHttpStatus = res.status
+      if (res.status === 401 || res.status === 403) {
+        return { status: 'AUTHENTICATION_FAILED', code: 'AUTHENTICATION_FAILED', message: `Configured provider rejected the health request (HTTP ${res.status}).`, upstream: cfg.baseUrl }
+      }
+      if (res.status === 429) {
+        return { status: 'RATE_LIMITED', code: 'RATE_LIMITED', message: 'Configured provider is rate-limited.', upstream: cfg.baseUrl }
+      }
+      if (res.ok) {
+        return refineWithModelAvailability({
+          status: 'CONNECTED',
+          code: 'CONNECTED',
+          model: cfg.model,
+          upstream: cfg.baseUrl,
+        }, cfg, probeModels)
+      }
+    } catch {
+      hadTransportFailure = true
+    } finally {
+      clearTimeout(timer)
+    }
+  }
+
+  if (hadTransportFailure && lastHttpStatus === undefined) {
+    return { status: 'NETWORK_ERROR', code: 'NETWORK_ERROR', message: 'Cannot reach the configured direct AI provider.', upstream: cfg.baseUrl }
+  }
+  return {
+    status: 'DISCONNECTED',
+    code: 'DISCONNECTED',
+    message: `Configured provider health routes did not respond successfully${lastHttpStatus ? ` (last HTTP ${lastHttpStatus})` : ''}.`,
+    upstream: cfg.baseUrl,
+  }
+}
+
+/**
+ * Refine a reachable health result with real model discovery.
+ *
+ * Semantics (mirroring RemoteProvider.listModels'):
+ *   - probe resolves to `[]`  => discovery NOT verified → keep status.
+ *   - probe resolves to a non-empty list that omits the configured model
+ *     => confirmed absent → MODEL_UNAVAILABLE.
+ *   - probe resolves to a non-empty list that includes the configured model
+ *     => confirmed usable → keep status.
+ *   - probe rejects            => discovery NOT verified → keep status.
+ * As v2 proxies/endpoints stay honest by themselves, only the keyless DIRECT
+ * transport may be refined here.
+ */
+async function refineWithModelAvailability(
+  result: AiHealthCheckResult,
+  cfg: AiConfig,
+  probeModels?: AiModelDiscoveryProbe,
+): Promise<AiHealthCheckResult> {
+  if (!probeModels) return result
+  if (cfg.transport !== 'direct' || !cfg.model) return result
+  let models: string[]
+  try {
+    models = await probeModels()
+  } catch {
+    return result
+  }
+  if (models.length === 0) return result
+  if (models.includes(cfg.model)) return result
+  return { ...result, status: 'MODEL_UNAVAILABLE', code: 'MODEL_UNAVAILABLE' }
 }
 
 /** Cached singleton so providers and UI agree on the same configuration. */

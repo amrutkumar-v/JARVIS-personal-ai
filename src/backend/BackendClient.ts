@@ -15,6 +15,7 @@
 
 import { getBackendConfig, type BackendConfig } from './config'
 import { ReconnectController, type ReconnectPhase } from './reconnect'
+import { ensureBackendSession } from './session'
 import type {
   BackendEventType,
   BackendHealth,
@@ -29,6 +30,7 @@ import type {
   NotifyResult,
   OutboundFile,
 } from './types'
+import type { PersistentTask } from '../engine/tasks/types'
 
 export type BackendListener<T = unknown> = (data: T) => void
 
@@ -44,6 +46,8 @@ export interface BackendEventHandlers {
   onWake?: BackendListener<{ event: string; at: number }>
   /** Real telephony call-state observations pushed by the phone. */
   onCall?: BackendListener<CallEventData>
+  /** Real-time durable task updates pushed by the task service. */
+  onTask?: BackendListener<PersistentTask>
 }
 
 export interface BackendClientDeps {
@@ -60,7 +64,10 @@ export interface EventSourceLike {
   onerror: (() => void) | null
 }
 
-const EVENT_NAMES: BackendEventType[] = ['device', 'notify', 'open-url', 'file', 'inbound', 'assistant', 'wake', 'call']
+const EVENT_NAMES: BackendEventType[] = ['device', 'notify', 'open-url', 'file', 'inbound', 'assistant', 'wake', 'call', 'task']
+
+/** Fallback bound for a single backend HTTP request when none is configured. */
+const DEFAULT_REQUEST_TIMEOUT_MS = 15_000
 
 export class BackendClient {
   private readonly config: BackendConfig
@@ -74,13 +81,14 @@ export class BackendClient {
   private disconnected = false
   private connectTimer: ReturnType<typeof setTimeout> | null = null
   private healthSnapshot: BackendHealth | null = null
-  private listener: ((event: { data: string }) => void) | null = null
+  /** One listener per SSE event name, so the NAME is what routes the frame. */
+  private listeners = new Map<string, (event: { data: string }) => void>()
   private readyHandler: ((event: { data: string }) => void) | null = null
 
   constructor(deps: BackendClientDeps = {}) {
     this.config = deps.config ?? getBackendConfig()
     this.fetchImpl = deps.fetchImpl ?? (typeof fetch === 'function' ? fetch.bind(globalThis) : async () => { throw new Error('fetch unavailable') })
-    this.makeEventSource = deps.makeEventSource ?? ((url: string) => new EventSource(url) as unknown as EventSourceLike)
+    this.makeEventSource = deps.makeEventSource ?? ((url: string) => new EventSource(url, { withCredentials: true }) as unknown as EventSourceLike)
     this.handlers = {}
     this.reconnect = new ReconnectController(
       { maxAttempts: this.config.maxReconnectAttempts, baseMs: this.config.reconnectBaseMs },
@@ -132,11 +140,34 @@ export class BackendClient {
   private connect(): void {
     if (!this.started) return
     this.closeSource()
+    if (typeof window === 'undefined') {
+      this.connectWithSession()
+      return
+    }
+    void ensureBackendSession(this.config.baseUrl, this.fetchImpl)
+      .then(() => {
+        if (this.started) this.connectWithSession()
+      })
+      .catch(() => {
+        if (!this.started) return
+        if (!this.disconnected) {
+          this.disconnected = true
+          this.handlers.onDisconnected?.()
+        }
+        this.scheduleReconnect()
+      })
+  }
+
+  private connectWithSession(): void {
     const source = this.makeEventSource(`${this.config.baseUrl}/events`)
     this.source = source
-    this.listener = (event: { data: string }): void => this.dispatchMessage(event.data)
+    // The server writes `event: <type>` + `data: <payload>` — the payload is the
+    // BARE event body, NOT an envelope. The SSE event NAME is therefore the
+    // only reliable type discriminator, so each name gets its own listener.
     for (const name of EVENT_NAMES) {
-      source.addEventListener(name, this.listener)
+      const handler = (event: { data: string }): void => this.dispatchMessage(name, event.data)
+      this.listeners.set(name, handler)
+      source.addEventListener(name, handler)
     }
     this.readyHandler = (event: { data: string }) => {
       try {
@@ -163,17 +194,15 @@ export class BackendClient {
 
   private closeSource(): void {
     if (!this.source) return
-    if (this.listener) {
-      for (const name of EVENT_NAMES) {
-        this.source.removeEventListener(name, this.listener)
-      }
+    for (const [name, handler] of this.listeners) {
+      this.source.removeEventListener(name, handler)
     }
+    this.listeners.clear()
     if (this.readyHandler) {
       this.source.removeEventListener('ready', this.readyHandler)
     }
     this.source.close()
     this.source = null
-    this.listener = null
     this.readyHandler = null
   }
 
@@ -190,30 +219,41 @@ export class BackendClient {
     }, delay)
   }
 
-  private dispatchMessage(data: string): void {
+  /**
+   * Route one SSE frame to its handler.
+   *
+   * `name` is the SSE event name the server wrote (`event: notify`), and
+   * `data` is the BARE payload the server wrote next to it. The server never
+   * wraps the payload in an envelope, so the name — not a field inside the
+   * JSON — decides which handler runs.
+   */
+  private dispatchMessage(name: string, data: string): void {
     try {
-      const envelope = JSON.parse(data) as { type?: BackendEventType; data?: unknown }
-      switch (envelope.type) {
+      const payload = JSON.parse(data) as unknown
+      switch (name) {
         case 'notify':
-          this.handlers.onNotify?.(envelope.data as { deviceId: string; title: string; message: string; at: number })
+          this.handlers.onNotify?.(payload as { deviceId: string; title: string; message: string; at: number })
           break
         case 'open-url':
-          this.handlers.onOpenUrl?.(envelope.data as { deviceId: string; deviceName?: string; url: string; at: number })
+          this.handlers.onOpenUrl?.(payload as { deviceId: string; deviceName?: string; url: string; at: number })
           break
         case 'file':
-          this.handlers.onFile?.(envelope.data as OutboundFile)
+          this.handlers.onFile?.(payload as OutboundFile)
           break
         case 'inbound':
-          this.handlers.onInbound?.(envelope.data as InboundMessage)
+          this.handlers.onInbound?.(payload as InboundMessage)
           break
         case 'device':
-          this.handlers.onDevice?.(envelope.data as { event: string; device: DeviceRecord })
+          this.handlers.onDevice?.(payload as { event: string; device: DeviceRecord })
           break
         case 'wake':
-          this.handlers.onWake?.(envelope.data as { event: string; at: number })
+          this.handlers.onWake?.(payload as { event: string; at: number })
           break
         case 'call':
-          this.handlers.onCall?.(envelope.data as CallEventData)
+          this.handlers.onCall?.(payload as CallEventData)
+          break
+        case 'task':
+          this.handlers.onTask?.(payload as PersistentTask)
           break
         case 'assistant':
           break
@@ -225,17 +265,37 @@ export class BackendClient {
 
   /* --------------------------------------------------- fetch helpers */
 
+  /**
+   * Every request is BOUNDED.
+   *
+   * Without a timeout a half-open socket (a wedged backend, a suspended
+   * laptop) leaves the promise pending forever: the tool call never resolves,
+   * its verification never runs, and the assistant hangs with no error. The
+   * abort turns that into an ordinary, reportable failure.
+   */
+  private requestSignal(): AbortSignal | undefined {
+    const timeoutMs = this.config.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS
+    if (typeof AbortSignal === 'undefined' || typeof AbortSignal.timeout !== 'function') return undefined
+    try {
+      return AbortSignal.timeout(timeoutMs)
+    } catch {
+      return undefined
+    }
+  }
+
   private async postJson(
     path: string,
     body: unknown,
   ): Promise<{ status: number; ok: boolean; error?: string; body: Record<string, unknown> }> {
     const headers: Record<string, string> = { 'content-type': 'application/json' }
-    if (this.config.token) headers.authorization = `Bearer ${this.config.token}`
     try {
+      await ensureBackendSession(this.config.baseUrl, this.fetchImpl)
       const res = await this.fetchImpl(`${this.config.baseUrl}${path}`, {
         method: 'POST',
         headers,
         body: JSON.stringify(body),
+        credentials: 'include',
+        signal: this.requestSignal(),
       })
       const parsed = (await res.json().catch(() => ({}))) as Record<string, unknown>
       return { status: res.status, ok: res.ok, error: typeof parsed.error === 'string' ? parsed.error : undefined, body: parsed }
@@ -248,7 +308,11 @@ export class BackendClient {
 
   async listDevices(): Promise<DeviceRecord[]> {
     try {
-      const res = await this.fetchImpl(`${this.config.baseUrl}/api/device/registry`)
+      await ensureBackendSession(this.config.baseUrl, this.fetchImpl)
+      const res = await this.fetchImpl(`${this.config.baseUrl}/api/device/registry`, {
+        credentials: 'include',
+        signal: this.requestSignal(),
+      })
       const body = (await res.json().catch(() => ({}))) as { devices?: DeviceRecord[] }
       return body.devices ?? []
     } catch {
@@ -298,7 +362,11 @@ export class BackendClient {
 
   async listFiles(): Promise<OutboundFile[]> {
     try {
-      const res = await this.fetchImpl(`${this.config.baseUrl}/api/files`)
+      await ensureBackendSession(this.config.baseUrl, this.fetchImpl)
+      const res = await this.fetchImpl(`${this.config.baseUrl}/api/files`, {
+        credentials: 'include',
+        signal: this.requestSignal(),
+      })
       const body = (await res.json().catch(() => ({}))) as { files?: OutboundFile[] }
       return body.files ?? []
     } catch {
@@ -329,6 +397,8 @@ export class BackendClient {
     contact?: string
     number?: string
     reason?: string
+    /** Text to speak on the phone during a live call (the `speak` action). */
+    text?: string
   }): Promise<CallDispatchResult> {
     return this.postJson('/api/device/call', input).then((res) => {
       const state = typeof res.body.state === 'string' ? (res.body.state as CallDispatchResult['state']) : 'FAILED'
@@ -361,5 +431,83 @@ export class BackendClient {
       deviceOnline: res.body.deviceOnline === true,
       error: res.error,
     }))
+  }
+
+  /* --------------------------------------------------- Persistent Task API */
+
+  async getTasks(): Promise<PersistentTask[]> {
+    try {
+      await ensureBackendSession(this.config.baseUrl, this.fetchImpl)
+      const res = await this.fetchImpl(`${this.config.baseUrl}/api/tasks`, {
+        credentials: 'include',
+        signal: this.requestSignal(),
+      })
+      const body = (await res.json().catch(() => ({}))) as { tasks?: PersistentTask[] }
+      return body.tasks ?? []
+    } catch {
+      return []
+    }
+  }
+
+  async pauseTask(taskId: string): Promise<boolean> {
+    try {
+      const res = await this.postJson(`/api/tasks/${encodeURIComponent(taskId)}/pause`, {})
+      return res.ok
+    } catch {
+      return false
+    }
+  }
+
+  async resumeTask(taskId: string): Promise<boolean> {
+    try {
+      const res = await this.postJson(`/api/tasks/${encodeURIComponent(taskId)}/resume`, {})
+      return res.ok
+    } catch {
+      return false
+    }
+  }
+
+  async cancelTask(taskId: string): Promise<boolean> {
+    try {
+      const res = await this.postJson(`/api/tasks/${encodeURIComponent(taskId)}/cancel`, {})
+      return res.ok
+    } catch {
+      return false
+    }
+  }
+
+  async approveTask(taskId: string, approvalId: string): Promise<boolean> {
+    try {
+      const res = await this.postJson(`/api/tasks/${encodeURIComponent(taskId)}/approve`, { approvalId })
+      return res.ok
+    } catch {
+      return false
+    }
+  }
+
+  async rejectTask(taskId: string, approvalId: string, reason?: string): Promise<boolean> {
+    try {
+      const res = await this.postJson(`/api/tasks/${encodeURIComponent(taskId)}/reject`, { approvalId, reason })
+      return res.ok
+    } catch {
+      return false
+    }
+  }
+
+  /**
+   * Execute an autonomous development action via the backend DevEngine.
+   */
+  async executeDevAction(
+    action: string,
+    params: Record<string, unknown> = {},
+  ): Promise<{ ok: boolean; message: string; data?: unknown; error?: string }> {
+    const res = await this.postJson('/api/dev/execute', { action, params })
+    const body = res.body || {}
+    return {
+      ok: res.ok && body.ok !== false,
+      message: typeof body.message === 'string' ? body.message : (res.error ?? ''),
+      data: body.data,
+      error: res.error || (typeof body.error === 'string' ? body.error : undefined),
+    }
   }
 }

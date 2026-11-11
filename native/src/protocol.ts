@@ -154,6 +154,8 @@ export type NativeErrorCode =
   | 'io_error'
   /** The request's browser origin is not in the agent's CORS allow-list. */
   | 'origin_denied'
+  /** The request's Host header is not in the agent's allow-list (DNS rebinding defense). */
+  | 'host_denied'
   /** A claimed application name matched more than one registered application. */
   | 'ambiguous'
 
@@ -260,6 +262,14 @@ export interface NativeAppLaunchResult {
   verified: boolean
   /** Provider-safe explanation (never a raw OS error). */
   detail: string
+  /** True when the launched launcher handed off to a different application process. */
+  handoff?: boolean
+  /** The transient launcher pid, when the launch handed off. */
+  handoffFromPid?: number
+  /** Image name of the real application process, when handed off. */
+  handoffToImage?: string
+  /** The real application pid, when handed off. */
+  handoffToPid?: number
 }
 
 /* --------------------------------------------------------------- observe */

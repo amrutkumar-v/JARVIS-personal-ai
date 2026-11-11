@@ -1,4 +1,4 @@
-import { describe, expect, it, beforeEach } from 'vitest'
+import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest'
 import { AssistantEngine } from '../engine/AssistantEngine'
 import type { AIProvider, AIRequest, AIResponse } from '../engine'
 import { useConversationStore } from '../state/conversation.store'
@@ -7,6 +7,7 @@ import { FakeDesktopInteractionProvider } from '../desktop/testing'
 import { FakeObservationProvider } from '../observation/testing'
 import { VoiceManager } from './voiceManager'
 import { FakeWakeWordProvider, FakeSpeechToTextProvider, FakeTextToSpeechProvider } from './testing'
+import { WAKE_COMMAND_TIMEOUT_MS } from './normalization'
 
 /**
  * Phase 1.6 — voice is an INPUT INTERFACE to the EXISTING Agent Core.
@@ -224,5 +225,126 @@ describe('Phase 1.6 — voice-driven closed-loop desktop control (deterministic 
   it('browser (no native URL) mode still reports no fabricated desktop surface', () => {
     const engine = new AssistantEngine({ providers: [new ScriptedProvider([])] })
     expect(engine.desktopProvider).toBeUndefined()
+  })
+})
+
+/**
+ * The acceptance path the user actually experiences:
+ *   wake word → ONE spoken greeting → the microphone listens → the AI answers
+ *   OUT LOUD, and the session can be woken again afterwards.
+ *
+ * The engine and the voice session share ONE text-to-speech stream here, so
+ * every utterance the user hears is observable in one place.
+ */
+describe('wake → greeting → listen → spoken answer', () => {
+  beforeEach(() => {
+    stubBrowserStorage()
+    useConversationStore.getState().clearConversation()
+    vi.useFakeTimers()
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('speaks one greeting, opens the mic, and answers out loud', async () => {
+    const provider = new ScriptedProvider([text('The lights are on.')])
+    const engine = new AssistantEngine({ providers: [provider] })
+
+    const tts = new FakeTextToSpeechProvider()
+    const stt = new FakeSpeechToTextProvider()
+    const wake = new FakeWakeWordProvider()
+
+    // ONE TTS stream shared by the engine and the voice session.
+    const output: Parameters<AssistantEngine['attach']>[0] = {
+      speak: (t, onDone) => tts.speak(t, { onDone: () => onDone?.() }),
+      stop: () => tts.stop(),
+      pickVoice: () => null,
+      get speaking() {
+        return tts.speaking
+      },
+      supported: true,
+    }
+    engine.attach(output)
+
+    let run: Promise<void> | undefined
+    const manager = new VoiceManager({
+      wake,
+      stt,
+      tts,
+      userName: () => 'Amrut',
+      callbacks: {
+        submitCommand: (t) => {
+          run = engine.process(t)
+        },
+        cancelCurrent: () => engine.cancelCurrentTask(),
+      },
+    })
+    // The engine's status drives the voice session cycle, exactly as the app wires it.
+    engine.on((m) => {
+      if (m.type === 'status') manager.engineStatus(m.status)
+    })
+
+    // 1. The wake phrase fires.
+    manager.arm()
+    wake.emitWake({ phrase: 'wake up jarvis' })
+
+    // 2. Exactly ONE greeting is spoken — personalised, never a duplicate.
+    expect(tts.lastText).toBe("I'm here, Amrut. How can I help?")
+    expect(tts.spoken.filter((s) => s.text.includes('How can I help'))).toHaveLength(1)
+
+    // 3. The greeting finishes → the microphone opens for the command.
+    tts.finishLast()
+    expect(manager.state).toBe('LISTENING_FOR_COMMAND')
+    expect(stt.listening).toBe(true)
+
+    // 4. The spoken command enters the SAME engine path a typed one uses.
+    stt.emitTranscript('turn on the lights')
+    await run
+
+    // 5. The AI's answer is spoken out loud through the same TTS stream.
+    expect(tts.spoken.map((s) => s.text)).toContain('The lights are on.')
+  })
+
+  it('the session can be woken again after the first one ends', async () => {
+    const provider = new ScriptedProvider([text('First answer.')])
+    const engine = new AssistantEngine({ providers: [provider] })
+    const tts = new FakeTextToSpeechProvider()
+    const stt = new FakeSpeechToTextProvider()
+    const wake = new FakeWakeWordProvider()
+
+    let run: Promise<void> | undefined
+    const manager = new VoiceManager({
+      wake,
+      stt,
+      tts,
+      userName: () => 'Amrut',
+      callbacks: {
+        submitCommand: (t) => {
+          run = engine.process(t)
+        },
+        cancelCurrent: () => engine.cancelCurrentTask(),
+      },
+    })
+    engine.on((m) => {
+      if (m.type === 'status') manager.engineStatus(m.status)
+    })
+
+    manager.arm()
+    wake.emitWake({ phrase: 'wake up jarvis' })
+    tts.finishLast()
+    stt.emitTranscript('first question')
+    await run
+
+    // The bounded session ends when the user goes quiet; the wake provider
+    // must be listening again so the NEXT wake word works.
+    vi.advanceTimersByTime(WAKE_COMMAND_TIMEOUT_MS)
+    tts.finishLast()
+    expect(manager.state).toBe('SLEEPING')
+    expect(wake.active).toBe(true)
+
+    wake.emitWake({ phrase: 'wake up jarvis' })
+    expect(manager.state).toBe('AWAKE')
+    expect(tts.spoken.filter((s) => s.text.includes('How can I help'))).toHaveLength(2)
   })
 })

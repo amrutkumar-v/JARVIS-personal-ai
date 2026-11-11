@@ -27,7 +27,7 @@ export const MAX_PAYLOAD_FIELD_CHARS = 120
  * commands are the real telephony surface the Android companion implements
  * through OS telephony APIs where the platform permits them.
  */
-export type OutboundCommandKind = 'ping' | 'call.dial' | 'call.hangup' | 'call.answer' | 'call.reject'
+export type OutboundCommandKind = 'ping' | 'call.dial' | 'call.hangup' | 'call.answer' | 'call.reject' | 'call.speak'
 
 export const OUTBOUND_COMMAND_KINDS: readonly OutboundCommandKind[] = [
   'ping',
@@ -35,6 +35,7 @@ export const OUTBOUND_COMMAND_KINDS: readonly OutboundCommandKind[] = [
   'call.hangup',
   'call.answer',
   'call.reject',
+  'call.speak',
 ]
 
 /**
@@ -48,6 +49,20 @@ export const COMMAND_PAYLOAD_FIELDS: Record<OutboundCommandKind, readonly string
   'call.hangup': [],
   'call.answer': [],
   'call.reject': ['reason'],
+  'call.speak': ['text'],
+}
+
+/**
+ * Per-kind bound for a single payload field. `call.speak` carries a spoken
+ * sentence, which is legitimately longer than a phone number or a reason.
+ */
+export const COMMAND_PAYLOAD_FIELD_LIMITS: Record<OutboundCommandKind, number> = {
+  ping: MAX_PAYLOAD_FIELD_CHARS,
+  'call.dial': MAX_PAYLOAD_FIELD_CHARS,
+  'call.hangup': MAX_PAYLOAD_FIELD_CHARS,
+  'call.answer': MAX_PAYLOAD_FIELD_CHARS,
+  'call.reject': MAX_PAYLOAD_FIELD_CHARS,
+  'call.speak': 400,
 }
 
 export interface OutboundCommand {
@@ -59,6 +74,8 @@ export interface OutboundCommand {
   expiresAt: number
   /** Allow-listed, bounded payload for this kind (absent for payload-free kinds). */
   payload?: Record<string, string>
+  /** When the command was handed to the phone. `undefined` until then. */
+  deliveredAt?: number
   /** `undefined` until the phone acknowledges. */
   ackedAt?: number
   ok?: boolean
@@ -108,14 +125,15 @@ export function sanitizeCommandPayload(
   if (!payload) return undefined
   const allowed = COMMAND_PAYLOAD_FIELDS[kind]
   if (allowed.length === 0) return undefined
+  const limit = COMMAND_PAYLOAD_FIELD_LIMITS[kind] ?? MAX_PAYLOAD_FIELD_CHARS
   const out: Record<string, string> = {}
   for (const field of allowed) {
     const value = payload[field]
     if (typeof value === 'string') {
-      const trimmed = value.trim().slice(0, MAX_PAYLOAD_FIELD_CHARS)
+      const trimmed = value.trim().slice(0, limit)
       if (trimmed) out[field] = trimmed
     } else if (typeof value === 'number' && Number.isFinite(value)) {
-      out[field] = String(value).slice(0, MAX_PAYLOAD_FIELD_CHARS)
+      out[field] = String(value).slice(0, limit)
     }
   }
   return Object.keys(out).length > 0 ? out : undefined
@@ -180,7 +198,16 @@ export class PhoneCommandQueue {
     return this.enqueue({ deviceId, kind: 'ping', online })
   }
 
-  /** Drain (and mark in-flight) the pending commands a phone should run now. */
+  /**
+   * Drain the pending commands a phone should run now, and mark them
+   * DELIVERED.
+   *
+   * A command is handed to the phone exactly once. Without the delivered mark,
+   * a phone whose acknowledgement never arrives (a dropped LAN socket mid-call)
+   * would be handed the SAME `call.dial` again on its next poll — placing a
+   * second real call. Delivery is therefore recorded, and an unacknowledged
+   * command simply expires.
+   */
   nextFor(deviceId: string, limit = 10): OutboundCommand[] {
     const id = deviceId.trim().toLowerCase()
     this.prune(id)
@@ -189,6 +216,8 @@ export class PhoneCommandQueue {
     for (const command of this.commands.values()) {
       if (found.length >= limit) break
       if (command.deviceId !== id || command.ackedAt !== undefined || command.expiresAt <= at) continue
+      if (command.deliveredAt !== undefined) continue
+      command.deliveredAt = at
       found.push({ ...command })
     }
     return found

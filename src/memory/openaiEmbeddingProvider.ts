@@ -1,5 +1,4 @@
 import type { ProviderHealth } from './embeddings'
-import { getAiConfig } from '../config/ai'
 
 /**
  * OpenAI-compatible Embedding Provider — Phase 0.6B
@@ -59,11 +58,11 @@ interface ResolvedEmbeddingConfig {
 }
 
 function resolveEmbeddingConfig(): ResolvedEmbeddingConfig {
-  const cfg = getAiConfig()
-
   // Support a separate embeddings endpoint; otherwise fall back to the AI base.
   const proxyUrl = envString('VITE_JARVIS_EMBEDDING_PROXY_URL')?.trim() || ''
-  const baseUrl = proxyUrl || envString('VITE_JARVIS_EMBEDDING_BASE_URL')?.trim() || cfg.baseUrl || ''
+  // Chat endpoints are not assumed to implement embeddings. An explicit
+  // embedding URL/proxy is required; a chat-only base URL is never reused.
+  const baseUrl = proxyUrl || envString('VITE_JARVIS_EMBEDDING_BASE_URL')?.trim() || ''
   const model = envString('VITE_JARVIS_EMBEDDING_MODEL')?.trim() || 'text-embedding-3-small'
   const key = envString('JARVIS_API_KEY')?.trim() || null
   const proxyMode = Boolean(proxyUrl)
@@ -97,6 +96,8 @@ export class OpenAIEmbeddingProvider {
   private proxyMode = false
   private dimensions_: number = 1536
   private lastError: string | undefined
+  private lastSuccessAt: number | undefined
+  private configSignature = ''
 
   constructor() {
     this.refreshConfig()
@@ -110,6 +111,12 @@ export class OpenAIEmbeddingProvider {
   /** Keep the resolved settings current with the (possibly mutated) environment. */
   private refreshConfig(): void {
     const cfg = resolveEmbeddingConfig()
+    const signature = JSON.stringify([cfg.baseUrl, cfg.model, cfg.dimensions, cfg.proxyMode])
+    if (signature !== this.configSignature) {
+      this.lastError = undefined
+      this.lastSuccessAt = undefined
+      this.configSignature = signature
+    }
     this.baseUrl = cfg.baseUrl
     this.model = cfg.model
     this.key = cfg.key
@@ -169,10 +176,26 @@ export class OpenAIEmbeddingProvider {
       }
 
       const json = (await res.json()) as OpenAIEmbeddingResponse
-      return json.data.map((d) => ({
+      if (
+        !json || !Array.isArray(json.data) || json.data.length !== texts.length ||
+        json.data.some((d) => !Array.isArray(d?.embedding) || d.embedding.length === 0 ||
+          d.embedding.some((n) => typeof n !== 'number' || !Number.isFinite(n)))
+      ) {
+        throw new Error('Embedding service returned a malformed vector response')
+      }
+      const vectors = json.data.map((d) => ({
         values: d.embedding,
         dimensions: d.embedding.length,
       }))
+      if (vectors.some((v) => v.dimensions !== vectors[0]?.dimensions)) {
+        throw new Error('Embedding service returned vectors with inconsistent dimensions')
+      }
+      if (vectors[0]?.dimensions !== this.dimensions_) {
+        throw new Error(`Embedding service returned ${vectors[0]?.dimensions ?? 0} dimensions, expected ${this.dimensions_}`)
+      }
+      this.lastSuccessAt = Date.now()
+      this.lastError = undefined
+      return vectors
     } catch (error) {
       clearTimeout(timeout)
       this.lastError = error instanceof Error ? error.message : String(error)
@@ -208,12 +231,13 @@ export class OpenAIEmbeddingProvider {
     this.refreshConfig()
     const configured = this.configured()
 
-    let status: ProviderHealth['status'] = 'unknown'
-    if (!configured) {
-      status = 'unhealthy'
-    } else {
-      status = 'healthy'
-    }
+    const status: ProviderHealth['status'] = !configured
+      ? 'unhealthy'
+      : this.lastError
+        ? 'unhealthy'
+        : this.lastSuccessAt
+          ? 'healthy'
+          : 'unknown'
 
     return {
       configured,

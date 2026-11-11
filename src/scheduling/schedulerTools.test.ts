@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { LocalScheduler } from './scheduler'
-import { createSchedulerTools } from './schedulerTools'
+import { createSchedulerTools, planNaturalSchedulingRequest } from './schedulerTools'
+import { validateToolArguments } from '../engine/agent'
 
 class MemoryStorage {
   private map = new Map<string, string>()
@@ -38,6 +39,29 @@ describe('scheduling tools (real LocalScheduler)', () => {
     expect(create.verifiable).toBe(true)
     expect(cancel.verifiable).toBe(true)
     expect(list.verifiable).toBe(false)
+  })
+
+  it('plans a natural relative reminder as a valid create call with only schema fields', () => {
+    const now = new Date(2026, 8, 27, 12, 0, 0).getTime()
+    const { create } = makeTools(now)
+    const request = 'Remind me in 1 minute to test JARVIS'
+    const plan = planNaturalSchedulingRequest(request, now)
+
+    expect(create.canRun(request)).toBe(true)
+    expect(plan).toEqual({
+      toolId: 'scheduling.create',
+      params: { text: 'test JARVIS', when: new Date(now + 60_000).toISOString(), repeat: 'once' },
+    })
+    expect(Object.keys(plan!.params).sort()).toEqual(['repeat', 'text', 'when'])
+    expect(validateToolArguments(create, plan!.params)).toMatchObject({ ok: true })
+  })
+
+  it('plans reminder listing with the empty parameter object from its schema', () => {
+    const { list } = makeTools()
+    const plan = planNaturalSchedulingRequest('What reminders are scheduled?')
+    expect(plan).toEqual({ toolId: 'scheduling.list', params: {} })
+    expect(list.inputSchema.properties).toEqual({})
+    expect(validateToolArguments(list, plan!.params)).toMatchObject({ ok: true })
   })
 
   it('create → verify(): reminder really persisted in the live schedule', async () => {

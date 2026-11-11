@@ -60,9 +60,9 @@ const HEALTH: BackendHealth = {
   paths: { dataDir: 'x' },
 }
 
-function makeClient(events: FakeEventSource, fetchImpl: typeof fetch = fetch, token = '') {
+function makeClient(events: FakeEventSource, fetchImpl: typeof fetch = fetch) {
   return new BackendClient({
-    config: { baseUrl: 'http://test:8787', token, maxReconnectAttempts: 2, reconnectBaseMs: 5, mirrorThrottleMs: 10 },
+    config: { baseUrl: 'http://test:8787', maxReconnectAttempts: 2, reconnectBaseMs: 5, mirrorThrottleMs: 10 },
     makeEventSource: (url) => {
       events.nextUrl = url
       return events
@@ -102,10 +102,38 @@ describe('BackendClient', () => {
     client.on('onInbound', inbound)
     client.start()
     es.push('ready', HEALTH)
-    es.push('notify', { type: 'notify', data: { deviceId: 'p', title: 'T', message: 'M', at: 1 } })
-    es.push('inbound', '{"type":"inbound","data":{"deviceId":"p","deviceName":"Pixel","text":"hi","at":2}}')
+    // The real server writes `event: <type>` + `data: <BARE payload>` — the
+    // payload is NOT wrapped in a {type,data} envelope.
+    es.push('notify', { deviceId: 'p', title: 'T', message: 'M', at: 1 })
+    es.push('inbound', '{"deviceId":"p","deviceName":"Pixel","text":"hi","at":2}')
     expect(notify).toHaveBeenCalledWith({ deviceId: 'p', title: 'T', message: 'M', at: 1 })
     expect(inbound).toHaveBeenCalledWith({ deviceId: 'p', deviceName: 'Pixel', text: 'hi', at: 2 })
+    client.stop()
+  })
+
+  it('routes a real call-state frame pushed by the backend', () => {
+    const es = new FakeEventSource('')
+    const client = makeClient(es)
+    const call = vi.fn()
+    client.on('onCall', call)
+    client.start()
+    es.push('ready', HEALTH)
+    es.push('call', { deviceId: 's26-ultra', state: 'CONNECTED', direction: 'outgoing', at: 7 })
+    expect(call).toHaveBeenCalledWith({ deviceId: 's26-ultra', state: 'CONNECTED', direction: 'outgoing', at: 7 })
+    client.stop()
+  })
+
+  it('delivers the frame body verbatim — it never unwraps a {type,data} envelope', () => {
+    const es = new FakeEventSource('')
+    const client = makeClient(es)
+    const notify = vi.fn()
+    client.on('onNotify', notify)
+    client.start()
+    es.push('ready', HEALTH)
+    // The name routes the frame; the body is handed over as-is. An
+    // envelope-shaped body is therefore delivered whole, never unwrapped.
+    es.push('notify', { type: 'notify', data: { deviceId: 'p', title: 'T', message: 'M', at: 1 } })
+    expect(notify).toHaveBeenCalledWith({ type: 'notify', data: { deviceId: 'p', title: 'T', message: 'M', at: 1 } })
     client.stop()
   })
 
@@ -187,18 +215,19 @@ describe('BackendClient', () => {
     expect(notify.error).toBe('backend unreachable')
   })
 
-  it('POSTs JSON with an Authorization header when a token is configured', async () => {
+  it('POSTs JSON with an HttpOnly-session credential and never sends a bearer token', async () => {
     const es = new FakeEventSource('')
     const calls: Array<{ url: string; init: RequestInit }> = []
     const fetchImpl = (async (url: string, init: RequestInit) => {
       calls.push({ url, init })
       return new Response(JSON.stringify({ ok: true, delivered: true, deliveredTo: ['p'] }), { status: 200 })
     }) as typeof fetch
-    const client = makeClient(es, fetchImpl, 's3cret')
+    const client = makeClient(es, fetchImpl)
     const result = await client.notify({ title: 'T', message: 'M' })
     expect(result.ok).toBe(true)
     expect(result.delivered).toBe(true)
-    expect(calls[0]!.init.headers).toMatchObject({ authorization: 'Bearer s3cret' })
+    expect(calls[0]!.init.headers).not.toHaveProperty('authorization')
+    expect(calls[0]!.init.credentials).toBe('include')
   })
 })
 

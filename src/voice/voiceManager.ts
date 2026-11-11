@@ -14,7 +14,7 @@
  * like a typed one, and plans/tools/permissions/verification stay untouched.
  */
 import { VoiceStateMachine, type VoiceConfig, type VoiceState } from './types'
-import { DEFAULT_VOICE_CONFIG } from './types'
+import { DEFAULT_VOICE_CONFIG, resolveVoicePhrase } from './types'
 import { classifyUtterance } from './normalization'
 import type { WakeWordProvider } from './wakeWordProvider'
 import type { SpeechToTextProvider } from './speechProvider'
@@ -41,6 +41,11 @@ export interface VoiceManagerOptions {
   config?: Partial<VoiceConfig>
   /** Optional forward-only event counter (self-test / diagnostics UI). */
   diagnostics?: VoiceDiagnostics
+  /**
+   * Resolves the operator's name for the spoken greeting. Returns undefined
+   * (or the default profile name) when no name is known yet.
+   */
+  userName?: () => string | undefined
 }
 
 type TimerHandle = ReturnType<typeof setTimeout>
@@ -52,6 +57,7 @@ export class VoiceManager {
   private readonly tts: TextToSpeechProvider
   private readonly callbacks: VoiceManagerCallbacks
   private readonly config: VoiceConfig
+  private readonly userName: () => string | undefined
 
   private commandTimer: TimerHandle | null = null
   private sessionTimer: TimerHandle | null = null
@@ -70,6 +76,7 @@ export class VoiceManager {
     this.tts = options.tts
     this.callbacks = options.callbacks
     this.config = { ...DEFAULT_VOICE_CONFIG, ...options.config, phrases: { ...DEFAULT_VOICE_CONFIG.phrases, ...options.config?.phrases } }
+    this.userName = options.userName ?? (() => undefined)
     this.machine = new VoiceStateMachine()
     this.diag = options.diagnostics ?? null
     if (this.diag) {
@@ -109,7 +116,10 @@ export class VoiceManager {
     this.resetSessionCeiling()
     this.stt.abort()
     if (!this.transition('LISTENING_FOR_WAKE')) return false
-    if (!this.wake.start('wake')) {
+    // The provider may already be listening (the session that just ended
+    // re-armed it). Starting an already-active recognizer would fail and
+    // wrongly report a broken wake session.
+    if (!this.wake.active && !this.wake.start('wake')) {
       this.notice('warning', 'Could not start wake listening.')
       this.transition('ERROR')
       this.transition('SLEEPING')
@@ -144,11 +154,20 @@ export class VoiceManager {
 
   handleWake(payload: WakePayload): void {
     if (this.disposed) return
-    // Wake while already awake is ignored (duplicate wake events are dropped).
-    if (this.machine.state !== 'LISTENING_FOR_WAKE') return
+    // A wake is only accepted when no command is in flight. SLEEPING counts
+    // as "the session is idle but the wake provider is still listening" — that
+    // is exactly the state a session returns to, so the NEXT wake must work.
+    // Duplicate wake events are dropped here: once awake the state is AWAKE /
+    // LISTENING_FOR_COMMAND / PROCESSING / SPEAKING, none of which qualify.
+    if (this.machine.state !== 'LISTENING_FOR_WAKE' && this.machine.state !== 'SLEEPING') return
     this.diag?.increment('wakeAccepted')
     this.diag?.increment('sessionsStarted')
+    // Close the microphone before anything is spoken, so JARVIS never hears
+    // its own greeting and no second wake can arrive mid-utterance.
     this.wake?.stop()
+    if (this.machine.state === 'SLEEPING') {
+      if (!this.transition('LISTENING_FOR_WAKE')) return
+    }
     this.transition('AWAKE')
     // Phase 1.6 — the whole awake session is bounded by one session ceiling
     // armed at wake; activity never resets it, so an always-on mic always
@@ -262,8 +281,9 @@ export class VoiceManager {
       onDone()
       return
     }
+    const spoken = resolveVoicePhrase(text, this.userName())
     this.diag?.increment('speechStarted')
-    this.tts.speak(text, { volume: 1, onDone: (ok) => {
+    this.tts.speak(spoken, { volume: 1, onDone: (ok) => {
       this.diag?.increment(ok ? 'speechFinished' : 'speechInterrupted')
       onDone()
     } })
@@ -322,8 +342,9 @@ export class VoiceManager {
     this.stopAllInput()
     this.resetSessionCeiling()
     this.pendingCommand = null
-    // Silent ceiling: the bounded multi-turn session simply closes the mic.
-    this.transition('SLEEPING')
+    // Silent ceiling: the bounded multi-turn session simply closes the mic —
+    // and then goes back to listening for the wake phrase.
+    this.returnToWake()
   }
 
   private handleInputError(message: string): void {
@@ -342,6 +363,34 @@ export class VoiceManager {
 
   private returnToWake(): void {
     this.transition('SLEEPING')
+    this.resumeWakeListening()
+  }
+
+  /**
+   * Re-arm the wake provider once a voice session ends.
+   *
+   * The provider is stopped when a session OPENS (so the microphone is closed
+   * while JARVIS speaks). Without re-arming it here, the FIRST wake would work
+   * and every later one would be ignored — the session would end and the
+   * assistant would never wake again.
+   *
+   * The state machine stays in SLEEPING: "sleeping" describes the VOICE
+   * SESSION, while the wake provider is the always-on listener. A wake event
+   * arriving in SLEEPING is accepted and moves the machine back to
+   * LISTENING_FOR_WAKE.
+   */
+  private resumeWakeListening(): void {
+    if (this.disposed) return
+    const wake = this.wake
+    if (!wake || !wake.supported) return
+    if (!wake.capabilities().available) return
+    if (wake.active) return
+    try {
+      wake.start('wake')
+    } catch {
+      // A provider that refuses to restart simply stays quiet; an explicit
+      // arm() can still bring it back.
+    }
   }
 
   private stopAllInput(): void {

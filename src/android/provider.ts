@@ -1,4 +1,4 @@
-import type { CallAction, CallEventData, CallResultLookup, CallState, DeviceRecord } from '../backend/types'
+import type { CallAction, CallDirection, CallEventData, CallResultLookup, CallState, DeviceRecord } from '../backend/types'
 
 /**
  * Android companion telephony seam (REAL — replaces the earlier simulated
@@ -25,6 +25,8 @@ export interface AndroidPhoneCapability {
   online: boolean
   /** The companion build genuinely implements telephony (reported via heartbeat). */
   call: boolean
+  /** The companion build can speak text on the phone during a live call. */
+  speak: boolean
   /** Runtime permission `CALL_PHONE` is currently granted on the phone. */
   dialPermission: boolean
   /** Runtime permission `ANSWER_PHONE_CALLS` is currently granted on the phone. */
@@ -60,6 +62,22 @@ export interface AndroidCallStateInput {
   signal?: AbortSignal
 }
 
+/** A call the phone's OS last reported as live. */
+export interface ActiveCall {
+  deviceId: string
+  state: CallState
+  direction?: CallDirection
+  contactName?: string
+  number?: string
+  at: number
+}
+
+/** Call states that mean a call is currently up on the phone. */
+export const LIVE_CALL_STATES: readonly CallState[] = ['CALLING', 'RINGING', 'CONNECTED']
+
+/** Call states that mean a call is definitively over. */
+export const TERMINAL_CALL_STATES: readonly CallState[] = ['ENDED', 'REJECTED', 'CANCELLED', 'FAILED']
+
 export interface AndroidProvider {
   /** Live capability view derived from the real device registry. */
   capabilities(): AndroidCapabilities
@@ -68,7 +86,7 @@ export interface AndroidProvider {
   /** Queue a real telephony action; never claims more than the backend accepted. */
   requestCall(
     action: CallAction,
-    input: { target?: string; number?: string; reason?: string },
+    input: { target?: string; number?: string; reason?: string; text?: string },
   ): Promise<AndroidCallOutcome>
   /** The phone's concrete ack for a queued call command. */
   callResult(commandId: string, deviceId: string): Promise<CallResultLookup>
@@ -76,15 +94,30 @@ export interface AndroidProvider {
   recentCallEvents(limit?: number): CallEventData[]
   /** Bounded wait for one of `states` attributed to a command/device. */
   awaitCallState(input: AndroidCallStateInput): Promise<CallEventData | null>
+  /**
+   * The call the phone's OS last reported as live, or null when no call is up.
+   * Derived ONLY from real `/phone/event` observations.
+   */
+  activeCall(): ActiveCall | null
 }
 
-/** Runtime permission each telephony action needs the phone to have granted. */
+/**
+ * Runtime permission each telephony action needs the phone to have granted.
+ *
+ * `speak` needs NO telephony permission: playing audio on the phone is not a
+ * telephony operation. It is still gated on the phone's own `call.speak`
+ * capability, so a companion without a speech engine simply cannot be asked.
+ */
 export function callActionPermission(action: CallAction): string {
-  return action === 'dial' ? 'CALL_PHONE' : 'ANSWER_PHONE_CALLS'
+  if (action === 'dial') return 'CALL_PHONE'
+  if (action === 'speak') return ''
+  return 'ANSWER_PHONE_CALLS'
 }
 
 /** True when the phone's reported flags permit `action`. */
 export function phoneSupportsAction(phone: AndroidPhoneCapability | undefined, action: CallAction): boolean {
   if (!phone) return false
-  return action === 'dial' ? phone.dialPermission : phone.callControlPermission
+  if (action === 'dial') return phone.dialPermission
+  if (action === 'speak') return phone.speak
+  return phone.callControlPermission
 }

@@ -4,6 +4,7 @@ import { MemoryDesktopBackend } from './testingDesktop.js'
 import { NativeWindowsDesktopProvider } from '../../src/native/NativeWindowsDesktopProvider'
 import { NativeAgentRpc } from '../../src/native/nativeRpc'
 import { FileSystemError } from '../../src/filesystem'
+import { startNativeBroker } from '../test-support/startNativeBroker.js'
 
 /**
  * Phase 1.5 — the WEB desktop-interaction bridge provider against a LIVE local
@@ -22,6 +23,7 @@ const TOKEN = 'desktop-bridge-token'
 
 describe('web bridge desktop provider — live local agent (deterministic memory backend)', () => {
   let agent: Awaited<ReturnType<typeof startAgent>>
+  let broker: Awaited<ReturnType<typeof startNativeBroker>>
   let desktop: MemoryDesktopBackend
   let provider: NativeWindowsDesktopProvider
 
@@ -32,11 +34,13 @@ describe('web bridge desktop provider — live local agent (deterministic memory
       { windowId: '1003', title: 'Denied Activation', visible: true, focusable: false },
     ])
     agent = await startAgent({ roots: [ROOT], token: TOKEN, desktop, port: 0 })
-    provider = new NativeWindowsDesktopProvider(new NativeAgentRpc({ baseUrl: agent.baseUrl, token: TOKEN, requestTimeoutMs: 2000 }))
+    broker = await startNativeBroker(agent.baseUrl, TOKEN)
+    provider = new NativeWindowsDesktopProvider(new NativeAgentRpc({ baseUrl: broker.baseUrl, fetchImpl: broker.fetchImpl, requestTimeoutMs: 2000 }))
     await provider.refreshNativeStatus()
   })
 
   afterAll(async () => {
+    await broker.close()
     await agent.close()
   })
 

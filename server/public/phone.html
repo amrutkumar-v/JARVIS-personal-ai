@@ -72,7 +72,6 @@
   <script>
     (function () {
       'use strict';
-      var TOKEN = __JARVIS_BACKEND_TOKEN__;
       var DEVICE_KEY = null;
       var PARAMS = new URLSearchParams(window.location.search);
       var TRUSTED = PARAMS.get('device') || '';
@@ -80,14 +79,11 @@
       var es = null;
       var heartbeatTimer = null;
       var expectedCaps = ['notifications', 'files', 'inbound', 'battery', 'network', 'status'];
-      var expectedPerms = ['notify', 'inbound'];
+      // A browser page has NO Android runtime permissions. It must not report
+      // a permission vocabulary of its own: the permissions array is the
+      // device's real grant state (CALL_PHONE, ANSWER_PHONE_CALLS), and a
+      // browser claiming a made-up one would clobber it.
       var $ = function (id) { return document.getElementById(id); };
-
-      function authHeaders(headers) {
-        headers = headers || {};
-        if (TOKEN) headers['Authorization'] = 'Bearer ' + TOKEN;
-        return headers;
-      }
 
       function setConn(state, ok) {
         var label = $('connLabel');
@@ -105,7 +101,7 @@
       function post(path, body) {
         return fetch(path, {
           method: 'POST',
-          headers: authHeaders({ 'Content-Type': 'application/json' }),
+          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(body),
         }).then(function (res) { return res.json(); });
       }
@@ -124,7 +120,6 @@
           network: ((navigator.connection && navigator.connection.type) || 'lan'),
           connection: 'lan-bridge',
           capabilities: expectedCaps,
-          permissions: expectedPerms,
         };
         return batteryMeta().then(function (b) { return Object.assign(meta, b); });
       }

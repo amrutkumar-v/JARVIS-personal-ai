@@ -41,10 +41,11 @@ the deterministic provider is active, `getHealth().fallbackActive === true`.
 OpenAI-compatible `/embeddings` endpoint (OpenAI, Azure, Ollama, LM Studio,
 vLLM, …). See [Configuration](#configuration) below.
 
-Auto-promotion is conservative: a chat-only AI endpoint is never mistaken for
-"real semantic memory" — a real provider is only appointed when embedding
-configuration is explicitly declared. You can still inject (or swap) the real
-provider explicitly, e.g.:
+Auto-promotion is conservative: a chat-only AI endpoint is never reused for
+embeddings. Declaring embedding configuration selects this provider even if
+the configuration is incomplete; JARVIS then reports embeddings unavailable
+instead of silently switching to deterministic output. You can still inject
+(or swap) a provider explicitly, e.g.:
 
 ```ts
 import { EmbeddingManager, openAIEmbeddingProvider, getDefaultEmbeddingManager } from '../memory'
@@ -64,17 +65,34 @@ real key.
 | `VITE_JARVIS_EMBEDDING_DIMENSIONS` | Optional dimension override (auto-derived for common models). |
 | `JARVIS_API_KEY`                 | Shared API key used for the embeddings endpoint.           |
 
-If `VITE_JARVIS_EMBEDDING_BASE_URL` is empty the provider falls back to the
-general AI base URL (`VITE_JARVIS_AI_BASE_URL`). A missing/empty
-`VITE_JARVIS_EMBEDDING_BASE_URL` simply keeps JARVIS on the deterministic
-provider — it never crashes the app.
+For Ollama, use its OpenAI-compatible embeddings endpoint and a separate
+embedding model. The official Ollama [embedding guide](https://github.com/ollama/ollama/blob/main/docs/capabilities/embeddings.mdx)
+and [embeddinggemma model](https://ollama.com/library/embeddinggemma) support
+this example:
+
+```sh
+ollama pull embeddinggemma
+```
+
+```dotenv
+VITE_JARVIS_EMBEDDING_BASE_URL=http://127.0.0.1:11434/v1
+VITE_JARVIS_EMBEDDING_MODEL=embeddinggemma
+VITE_JARVIS_EMBEDDING_DIMENSIONS=768
+```
+
+The chat model configured for `VITE_JARVIS_AI_MODEL` is separate. JARVIS does
+not assume that a chat endpoint also serves embeddings. With no explicit
+embedding configuration the deterministic fallback is selected. With partial
+or invalid embedding configuration the real provider is selected but remains
+unavailable until a valid endpoint, model, and matching dimensions work.
 
 ## Provider health
 
 `EmbeddingManager.getHealth(): ProviderHealth` (30 s cache, no blocking probe
 per search) reports:
 
-- `status: 'healthy' | 'degraded' | 'unhealthy' | 'unknown'`
+- `status: 'healthy' | 'degraded' | 'unhealthy' | 'unknown'`; a real provider
+  stays `unknown` until it returns a valid vector, then becomes `healthy`.
 - `configured` — valid endpoint + model present
 - `providerId` / `label` / `model` / `dimensions`
 - `fallbackActive` — `true` whenever the deterministic provider is in use
@@ -82,17 +100,16 @@ per search) reports:
 
 To distinguish the three important states from `MemoryManager.getEmbeddingHealth()`:
 
-| State                              | `enabled` | `realEmbeddingsAvailable` | `fallbackActive` |
-| ---------------------------------- | --------- | ------------------------- | ---------------- |
-| Real provider configured & healthy | `true`    | `true`                    | `false`          |
-| Real provider not configured       | `false`   | `false`                   | `true` ¹         |
-| Provider failing at runtime        | `true` ²  | `true` ²                  | `false` ²        |
+| State | UI mode | Meaning |
+| --- | --- | --- |
+| Real provider returned a valid vector | `semantic` | Semantic embeddings have been verified in this session. |
+| No explicit embedding endpoint | `deterministic_fallback` | Hash vectors are active; they do not provide semantic understanding. Lexical ranking remains available. |
+| Partial config, no successful vector, or provider failure | `unavailable` | JARVIS uses lexical retrieval; it does not claim semantic memory. |
 
-¹ A fully unconfigured manager reports `enabled:false` and `fallbackActive:true`
-(recommend configuring a real provider).
-² Configuration is still valid even while a request is failing; failures surface
-in `status: 'unhealthy'`/`lastError` and retrieval gracefully degrades to
-lexical-only scoring.
+Provider status does not claim that every existing memory has a semantic
+vector. Search and dedup compare only vectors recorded for the active provider
+and dimensions. `MemoryManager.backfillEmbeddings()` refreshes absent or
+stale-provider vectors and keeps the old vector if the replacement fails.
 
 ## Fallback behavior
 
@@ -167,7 +184,7 @@ Rules enforced by design:
 
 - **Batching** — `generateEmbeddingsBatch()` chunks by `batchSize` (default 20).
 - **Retries** — each batch is retried up to `maxRetries` with linear backoff.
-- **Malformed responses** — a vector with the wrong dimensions, empty, or with
+- **Malformed responses** — a vector with the wrong configured dimensions, empty, or with
   non-finite (`NaN`/`Infinity`) components is treated as a failed embedding and
   never persisted.
 - **Count mismatches** — a batch response that doesn't line up 1:1 with the

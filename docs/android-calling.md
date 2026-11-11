@@ -49,6 +49,37 @@ USER ("Call Dad")
 If the event never arrives, verification fails and the step is **not** reported
 as a success — the honest "unverified/failed" rails already exist in the engine.
 
+## 2b. The conversational call (`call.converse` → `call.conclude`)
+
+This is the flow for *"call Dad and ask whether he can come at 5 pm, then hang
+up"*. The engine plans it, the user confirms it once, and every step is
+verified against a real observation:
+
+```
+USER ("call Dad and ask whether he can come at 5 pm today")
+  → confirmation gate (tool tier `user_confirmation`)   ← nothing queued before this
+  → POST /api/device/call { action: 'dial', contact: 'Dad' }
+  → phone dials; phone pushes call.state CONNECTED       ← the tool waits for this
+  → POST /api/device/call { action: 'speak', text: "Hi, this is JARVIS, Amrut's
+                             personal assistant, calling on Amrut's behalf." }
+  → phone acknowledges: "SPOKEN: …"                       ← the tool waits for THIS
+  → POST /api/device/call { action: 'speak', text: "Amrut asked me to ask you:
+                             whether you can come to the house at 5 pm today" }
+  → phone acknowledges again
+  → the call is left OPEN, and the exchange is written to memory as an OPEN record
+
+USER ("he said yes, come at 5 pm")
+  → POST /api/device/call { action: 'speak', text: "Thanks for your time.
+                             I'll pass that on to Amrut. Goodbye." }
+  → POST /api/device/call { action: 'hangup' }
+  → phone pushes call.state ENDED                        ← the tool waits for this
+  → the memory record becomes the CLOSED summary (asked / said / relayed answer)
+  → `call.summarize` reads it back
+```
+
+The split into two tools is deliberate and is a **platform limit**, not a design
+choice. See §5b.
+
 ## 3. The closed command vocabulary
 
 `server/src/phoneCommands.ts` is the only way JARVIS can ask a phone to do
@@ -62,9 +93,11 @@ payload fields it accepts; anything else is dropped before it reaches a device:
 | `call.answer` | — | `TelecomManager.acceptRingingCall` |
 | `call.reject` | `reason` | `TelecomManager.endCall` on the ringing call |
 | `call.hangup` | — | `TelecomManager.endCall` |
+| `call.speak` | `text` | `TextToSpeech` → `MediaPlayer` on the call's audio path |
 
 There is no generic "run this" command, no shell, and no way for the model to
-add a kind.
+add a kind. `call.speak` carries a spoken sentence, so it has its own longer
+field bound (400 characters) while every other kind stays at 120.
 
 ## 4. The call-state vocabulary
 
@@ -107,6 +140,19 @@ Verified against the API 34 SDK:
   shows the ringing state, and `contactName`/`number` appear only when they are
   genuinely known — e.g. for a call this app placed).
 
+## 5b. What JARVIS can and cannot do ON a call
+
+| Capability | Status | Why |
+| --- | --- | --- |
+| JARVIS **talks** on the call | **SUPPORTED** | The phone's own `TextToSpeech` synthesizes the text and a `MediaPlayer` plays it with `USAGE_VOICE_COMMUNICATION`, which puts it on the call's audio path. Verified by the phone's own acknowledgement (`SPOKEN: …`). |
+| The other party **hears** it | **ONLY ON SPEAKERPHONE** | During a call Android routes call audio to the communication device (earpiece / wired headset / Bluetooth). The phone checks whether the built-in speaker is the active communication device and says so in the acknowledgement, so the PC is never told "they heard it" when that is untrue. |
+| JARVIS **hears** the other party | **NOT POSSIBLE ON ANDROID** | Since Android 10 a normal app cannot capture a live call's far-end audio: the `VOICE_CALL` / `VOICE_DOWNLINK` `AudioSource`s are refused unless the app holds `CAPTURE_AUDIO_OUTPUT`, a `signature|privileged` permission that is never granted to a third-party app. `MediaProjection` + `AudioPlaybackCapture` captures *playback*, not the call. Becoming the default dialer does not grant call-audio capture either. |
+| Therefore the **reply** | **RELAYED BY THE HUMAN** | The human answers the phone, and either speaks the answer to the PC (the voice session picks it up) or types it. JARVIS records it and folds it into the call summary. This is the closest legitimate arrangement on a normal phone, and it is reported honestly rather than simulated. |
+
+There is no path — short of a privileged/OEM-signed app or a second device with
+a microphone near the speaker — that lets this companion app hear the other
+party, so no such path is claimed here.
+
 ## 6. Where the code lives
 
 | Concern | Module |
@@ -115,12 +161,14 @@ Verified against the API 34 SDK:
 | Call endpoints + capability/permission/offline gates | `server/src/http.ts` (`/api/device/call`, `/api/device/call/result`) |
 | Device event intake + bus fan-out | `server/src/phoneServer.ts` (`/phone/event`) |
 | Real telephony actions (Android) | `android/.../telephony/TelephonyController.kt` |
+| Speaking on a live call (Android) | `android/.../telephony/CallSpeaker.kt` |
 | Real call-state observation (Android) | `android/.../telephony/CallStateObserver.kt` |
 | Real contacts lookup (Android) | `android/.../telephony/ContactsResolver.kt` |
 | Capability/permission truth (Android) | `android/.../telephony/TelephonyCapability.kt` |
 | Command execution + event push (Android) | `android/.../service/JarvisSyncService.kt` |
 | Backend-backed provider (PC) | `src/android/BackendAndroidProvider.ts` |
 | Telephony tools + verifier (PC) | `src/android/AndroidCallTools.ts` |
+| Conversational call (open / close / summarize) | `src/android/AndroidCallConversationTools.ts` |
 | Engine seam + capability cluster | `src/engine/AssistantEngine.ts` (`attachAndroid`) |
 
 ## 7. Confirmation
@@ -144,7 +192,9 @@ command reaches the phone, and no reliability credit is recorded.
 | `server/src/phoneServer.test.ts` | `/phone/event` needs the credential, real state published verbatim on the bus, queued `call.dial` payload intact |
 | `server/src/phone.integration.test.ts` | full flow (queue → poll → event → ack → verified result) plus every refusal: offline, no capability, missing permission, bad action/target/number, untrusted/non-phone device, unknown call id, invalid event kind/state |
 | `src/android/AndroidCallTools.test.ts` | tool-level honesty (each refusal state + engine recovery code), verification only from a real event, missing event ⇒ failure |
-| `src/android/AndroidCall.engine.test.ts` | engine integration: no provider ⇒ no tools/capabilities; bound provider ⇒ tools + `phone_call_*`; confirmation then verify; detach removes everything; `callingEnabled` snapshot |
+| `src/android/AndroidCall.engine.test.ts` | engine integration: no provider ⇒ no tools/capabilities; bound provider ⇒ tools + `phone_call_*`; confirmation then verify; detach removes everything; `callingEnabled` snapshot; **the conversational call: plan → confirm → dial → introduce → ask → leave open, and close → hang up → record** |
+| `src/android/AndroidCallConversation.test.ts` | the conversational tools in isolation: the exact spoken lines, every refusal (no brief, no target, offline, no `CALL_PHONE`, phone cannot speak, never connects, phone refuses to speak), the open/closed memory record, and the summary |
+| `src/android/BackendAndroidProvider.test.ts` | the live-call view derived only from real observations (ENDED wins over an older CONNECTED; a synthetic CALL_REQUESTED does not hide a live call) |
 | `android/app/src/test/.../TelephonyCapabilityTest.kt` | dialable-number normalization |
 | `android/app/src/test/.../CallProtocolTest.kt` | the exact wire shapes the backend sends/accepts |
 
@@ -154,9 +204,14 @@ command reaches the phone, and no reliability credit is recorded.
   version, the granted permission, and whether the OS allows a non-default
   dialer to control the call. Where it is refused, the phone says so.
 - Incoming caller ID is **not** provided (no `READ_CALL_LOG`).
-- No call audio is bridged to the PC, no voicemail, no SMS auto-reply, no
-  call recording, no call summarization — those were faked before and are
-  simply absent now. `phone_call_summarize`, `phone_contacts_search`,
+- JARVIS **cannot hear** the other party on the call — Android does not allow a
+  normal app to capture live call audio (§5b). It talks; the human relays the
+  reply. The other party hears JARVIS only when the call is on speakerphone, and
+  the phone's acknowledgement says which of the two happened.
+- No call audio is bridged to the PC, no voicemail, no SMS auto-reply, and no
+  call recording — those were faked before and are simply absent now.
+  `phone_call_summarize` is now **backed by a real tool** (`call.summarize`,
+  which reads the call records JARVIS itself saved); `phone_contacts_search`,
   `phone_sms_send` and `phone_notifications_read` remain declared in the
   capability catalogue with no implementation, so they never reach the model.
 - There is no physical-device certification in this repository: the Android

@@ -6,11 +6,13 @@
  * Env:
  *   JARVIS_BACKEND_HOST            bind host (default 127.0.0.1)
  *   JARVIS_BACKEND_PORT            listen port (default 8787)
- *   JARVIS_BACKEND_TOKEN           optional bearer token for POST endpoints
+ *   JARVIS_BACKEND_TOKEN           required bearer token for non-browser API clients
+ *   JARVIS_BACKEND_TRUSTED_ORIGINS comma-separated trusted browser origins
  *   JARVIS_BACKEND_DATA_DIR        data dir (default <repo>/server/data)
  *   JARVIS_BACKEND_STATIC_DIR      built SPA dir (default <repo>/dist)
  *   JARVIS_BACKEND_NATIVE_URL      native agent probe URL (default http://127.0.0.1:8765)
  *   JARVIS_BACKEND_NATIVE_TOKEN    token used to probe / supervise the agent
+ *   JARVIS_BACKEND_ALLOW_INSECURE_NATIVE_NO_TOKEN (default false; explicit loopback dev opt-in)
  *   JARVIS_BACKEND_SUPERVISE_NATIVE (default true) launch + supervise the agent
  *   JARVIS_NATIVE_CMD              node binary for the supervised agent (default process.execPath)
  *   JARVIS_NATIVE_AGENT            agent script (default <repo>/native/dist/agentMain.js)
@@ -44,17 +46,21 @@ import { startHttpServer, type RuntimeContext } from './http.js'
 import { startPhoneServer } from './phoneServer.js'
 import { PhoneTrust } from './phoneTrust.js'
 import { PhoneCommandQueue } from './phoneCommands.js'
+import { TaskService } from './taskService.js'
+import { DevEngine } from './dev/DevEngine.js'
 import { BACKEND_NAME, BACKEND_PROTOCOL, BACKEND_VERSION } from './version.js'
 
 interface Env {
   host: string
   port: number
   token: string
+  trustedOrigins: string[]
   dataDir: string
   staticDir: string
   publicDir: string
   nativeUrl: string
   nativeToken: string
+  allowInsecureNativeNoToken: boolean
   nativeAllowedOrigins: string[]
   superviseNative: boolean
   nativeAgent: string
@@ -100,11 +106,16 @@ function readEnv(): Env {
     host: envString('JARVIS_BACKEND_HOST', '127.0.0.1'),
     port: envInt('JARVIS_BACKEND_PORT', 8787),
     token: envString('JARVIS_BACKEND_TOKEN'),
+    trustedOrigins: envString('JARVIS_BACKEND_TRUSTED_ORIGINS')
+      .split(',')
+      .map((origin) => origin.trim())
+      .filter((origin) => origin.length > 0),
     dataDir: envString('JARVIS_BACKEND_DATA_DIR', join(root, 'server', 'data')),
     staticDir: envString('JARVIS_BACKEND_STATIC_DIR', join(root, 'dist')),
     publicDir: join(root, 'server', 'public'),
     nativeUrl: envString('JARVIS_BACKEND_NATIVE_URL', 'http://127.0.0.1:8765'),
     nativeToken: envString('JARVIS_BACKEND_NATIVE_TOKEN'),
+    allowInsecureNativeNoToken: envBool('JARVIS_BACKEND_ALLOW_INSECURE_NATIVE_NO_TOKEN', false),
     nativeAllowedOrigins: envString('JARVIS_BACKEND_NATIVE_ALLOWED_ORIGINS')
       .split(',')
       .map((o) => o.trim())
@@ -130,6 +141,7 @@ class Backend {
   private readonly wake = { browserOnly: true as const }
   private readonly assistant: Record<string, unknown> = {}
   private supervisor: NativeSupervisor | null = null
+  private taskService: TaskService | null = null
   private lockAcquired = false
   private readonly lockFile: string
 
@@ -178,6 +190,10 @@ class Backend {
   }
 
   async run(printIdentity: boolean): Promise<void> {
+    if (!this.env.token) throw new Error('JARVIS_BACKEND_TOKEN must be set to a non-empty server-side value.')
+    if (!['127.0.0.1', 'localhost', '::1'].includes(this.env.host.toLowerCase())) {
+      throw new Error('JARVIS_BACKEND_HOST must remain loopback-only.')
+    }
     await this.acquireLock()
     if (process.exitCode === 1) return
 
@@ -209,23 +225,39 @@ class Backend {
     await pairing.load()
     const deviceCommands = new PhoneCommandQueue({ now: () => this.now() })
 
-    const nativeArgs = buildNativeAgentArgs({
-      port: this.env.nativeUrl.match(/:(\d+)/)?.[1] ? Number(this.env.nativeUrl.match(/:(\d+)/)![1]) : 8765,
-      token: this.env.nativeToken,
-      config: this.env.nativeConfig,
-      allowedOrigins: this.env.nativeAllowedOrigins,
-    })
-
-    this.supervisor = new NativeSupervisor({
-      probeUrl: this.env.nativeUrl,
-      token: this.env.nativeToken,
-      supervise: this.env.superviseNative,
-      agentScript: this.env.nativeAgent,
-      agentArgs: nativeArgs,
+    const taskService = new TaskService({
+      dataDir: this.env.dataDir,
+      bus,
       log: this.logger,
-      now: this.now,
     })
-    this.supervisor.start()
+    await taskService.init()
+    this.taskService = taskService
+
+    const devEngine = new DevEngine()
+
+    if (this.env.nativeToken || this.env.allowInsecureNativeNoToken) {
+      const nativeArgs = buildNativeAgentArgs({
+        port: this.env.nativeUrl.match(/:(\d+)/)?.[1] ? Number(this.env.nativeUrl.match(/:(\d+)/)![1]) : 8765,
+        token: this.env.nativeToken,
+        allowNoToken: this.env.allowInsecureNativeNoToken,
+        config: this.env.nativeConfig,
+        allowedOrigins: this.env.nativeAllowedOrigins,
+      })
+
+      this.supervisor = new NativeSupervisor({
+        probeUrl: this.env.nativeUrl,
+        token: this.env.nativeToken,
+        allowInsecureNoToken: this.env.allowInsecureNativeNoToken,
+        supervise: this.env.superviseNative,
+        agentScript: this.env.nativeAgent,
+        agentArgs: nativeArgs,
+        log: this.logger,
+        now: this.now,
+      })
+      this.supervisor.start()
+    } else {
+      this.logger.warn('native', 'native agent supervision disabled: configure JARVIS_BACKEND_NATIVE_TOKEN or explicitly opt into local tokenless development')
+    }
 
     const context: RuntimeContext = {
       name: BACKEND_NAME,
@@ -245,6 +277,8 @@ class Backend {
       now: this.now,
       pairing,
       deviceCommands,
+      tasks: taskService,
+      devEngine,
       health: () =>
         buildHealth({
           name: BACKEND_NAME,
@@ -271,6 +305,10 @@ class Backend {
       staticDir: this.env.staticDir,
       publicDir: this.env.publicDir,
       token: this.env.token,
+      trustedOrigins: this.env.trustedOrigins.length > 0 ? this.env.trustedOrigins : undefined,
+      nativeAgent: this.env.nativeToken
+        ? { baseUrl: this.env.nativeUrl, token: this.env.nativeToken }
+        : undefined,
       ai: this.env.aiBaseUrl
         ? { baseUrl: this.env.aiBaseUrl, key: this.env.aiKey, timeoutMs: this.env.aiTimeoutMs }
         : undefined,
@@ -312,6 +350,7 @@ class Backend {
       if (closing) return
       closing = true
       this.logger.info('core', 'shutting down')
+      this.taskService?.stop()
       this.supervisor?.stop()
       await phoneRunning?.close()
       await running.close()

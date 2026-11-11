@@ -38,6 +38,7 @@
 
 import { createServer } from 'node:http'
 import type { IncomingMessage, Server, ServerResponse } from 'node:http'
+import { randomBytes, timingSafeEqual } from 'node:crypto'
 import { readFile, stat } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 import { join, normalize } from 'node:path'
@@ -53,14 +54,12 @@ import { createAiProviderRouter, type AiRouter, type AiRouteResult } from './aiP
 import { PhoneTrust } from './phoneTrust.js'
 import { PhoneCommandQueue } from './phoneCommands.js'
 import { trustedDeviceByRole } from './trusted.js'
+import { NATIVE_RPC_METHODS } from './nativeMethods.js'
+import type { TaskService } from './taskService.js'
+import { DevEngine } from './dev/DevEngine.js'
 
-const CORS_HEADERS: Record<string, string> = {
-  'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-  'Access-Control-Allow-Headers': 'Content-Type, Authorization',
-  'Access-Control-Expose-Headers': 'x-jarvis-provider, x-jarvis-provider-model',
-  'Access-Control-Max-Age': '0',
-}
+const SESSION_COOKIE = 'jarvis_session'
+const SESSION_MAX_AGE_SECONDS = 8 * 60 * 60
 
 const MAX_BODY_BYTES = 48 * 1024 * 1024
 const TITLE_LIMIT = 120
@@ -90,6 +89,10 @@ export interface RuntimeContext {
   pairing?: PhoneTrust
   /** Queued outbound phone commands (optional — created in-memory when absent). */
   deviceCommands?: PhoneCommandQueue
+  /** Persistent background task orchestrator service. */
+  tasks?: TaskService
+  /** Autonomous development agent engine. */
+  devEngine?: DevEngine
 }
 
 export interface HttpServerOptions {
@@ -101,7 +104,11 @@ export interface HttpServerOptions {
   /** Directory containing static public assets (phone.html). */
   publicDir?: string
   /** Optional bearer token protecting POST endpoints. */
-  token?: string
+  token: string
+  /** Explicit browser origins allowed to call privileged backend routes. */
+  trustedOrigins?: string[]
+  /** Server-side authenticated native agent. Never sent to browser code. */
+  nativeAgent?: { baseUrl: string; token: string; fetchImpl?: typeof fetch; timeoutMs?: number }
   /** Optional server-side AI proxy configuration (JARVIS_AI_BASE_URL). */
   ai?: AiProxyOptions
   log?: Logger
@@ -118,7 +125,6 @@ function json(res: ServerResponse, status: number, body: unknown): void {
   res.writeHead(status, {
     'content-type': 'application/json; charset=utf-8',
     'content-length': Buffer.byteLength(payload),
-    ...CORS_HEADERS,
   })
   res.end(payload)
 }
@@ -128,13 +134,7 @@ function appendAiRouteHeaders(res: ServerResponse, route: AiRouteResult): void {
   if (route.model) res.setHeader('x-jarvis-provider-model', route.model)
 }
 
-function corsOnly(res: ServerResponse): void {
-  res.writeHead(204, CORS_HEADERS)
-  res.end()
-}
-
-function isAuthorized(token: string | undefined, req: IncomingMessage): boolean {
-  if (!token) return true
+function isAuthorized(token: string, req: IncomingMessage): boolean {
   const header = req.headers.authorization ?? ''
   const given = header.trim().startsWith('Bearer ') ? header.trim().slice('Bearer '.length).trim() : header.trim()
   if (!given || given.length !== token.length) return false
@@ -143,6 +143,47 @@ function isAuthorized(token: string | undefined, req: IncomingMessage): boolean 
     diff |= token.charCodeAt(i) ^ given.charCodeAt(i)
   }
   return diff === 0
+}
+
+function cookieValue(req: IncomingMessage, name: string): string | undefined {
+  const cookie = req.headers.cookie
+  if (!cookie) return undefined
+  for (const entry of cookie.split(';')) {
+    const separator = entry.indexOf('=')
+    if (separator < 0 || entry.slice(0, separator).trim() !== name) continue
+    return entry.slice(separator + 1).trim()
+  }
+  return undefined
+}
+
+function sameSecret(left: string | undefined, right: string): boolean {
+  if (!left || left.length !== right.length) return false
+  return timingSafeEqual(Buffer.from(left), Buffer.from(right))
+}
+
+function normalizeOrigin(origin: string): string | undefined {
+  if (origin === 'null') return undefined
+  try {
+    const parsed = new URL(origin)
+    if (parsed.origin !== origin || (parsed.protocol !== 'http:' && parsed.protocol !== 'https:')) return undefined
+    return parsed.origin
+  } catch {
+    return undefined
+  }
+}
+
+function defaultTrustedOrigins(host: string, port: number): string[] {
+  return [
+    `http://${hostToString(host)}:${port}`,
+    `http://127.0.0.1:${port}`,
+    `http://localhost:${port}`,
+  ]
+}
+
+function setSessionCookie(res: ServerResponse, req: IncomingMessage, sessionId: string): void {
+  const secure = Boolean((req.socket as typeof req.socket & { encrypted?: boolean }).encrypted)
+  res.setHeader('Set-Cookie', `${SESSION_COOKIE}=${sessionId}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${SESSION_MAX_AGE_SECONDS}${secure ? '; Secure' : ''}`)
+  res.setHeader('Cache-Control', 'no-store')
 }
 
 async function readRawBody(req: IncomingMessage, maxBytes = MAX_BODY_BYTES): Promise<Buffer> {
@@ -175,8 +216,15 @@ function stringSlice(value: unknown, limit: number): string | undefined {
   return s.length > 0 ? s.slice(0, limit) : undefined
 }
 
-function stringArray(value: unknown, itemLimit = 64): string[] {
-  if (!Array.isArray(value)) return []
+/**
+ * A list of strings the client reported, or `undefined` when the field was
+ * ABSENT.
+ *
+ * "Not reported" must never be confused with "reported empty": a client that
+ * omits `capabilities`/`permissions` must not erase what the device can do.
+ */
+function stringArray(value: unknown, itemLimit = 64): string[] | undefined {
+  if (!Array.isArray(value)) return undefined
   return value
     .filter((v): v is string => typeof v === 'string' && v.trim().length > 0)
     .slice(0, MAX_LIST_ITEMS)
@@ -190,21 +238,29 @@ function stringArray(value: unknown, itemLimit = 64): string[] {
  * exact Android permission each one needs the phone to report. Nothing here
  * executes anything — the phone does, on its next poll, through OS APIs only.
  */
+/** Capability the phone MUST report (via heartbeat) before a call is queued. */
+export const CALL_CAPABILITY = 'call'
+
+/** Capability the phone MUST report before it may speak into a live call. */
+export const SPEAK_CAPABILITY = 'call.speak'
+
 export interface CallActionSpec {
-  kind: 'call.dial' | 'call.hangup' | 'call.answer' | 'call.reject'
+  kind: 'call.dial' | 'call.hangup' | 'call.answer' | 'call.reject' | 'call.speak'
   /** Runtime permission the companion app MUST report for this action. */
-  permission: string
+  permission: string | null
+  /** Capability the companion app MUST report for this action. */
+  capability: string
 }
 
 export const CALL_ACTIONS: Record<string, CallActionSpec> = {
-  dial: { kind: 'call.dial', permission: 'CALL_PHONE' },
-  hangup: { kind: 'call.hangup', permission: 'ANSWER_PHONE_CALLS' },
-  answer: { kind: 'call.answer', permission: 'ANSWER_PHONE_CALLS' },
-  reject: { kind: 'call.reject', permission: 'ANSWER_PHONE_CALLS' },
+  dial: { kind: 'call.dial', permission: 'CALL_PHONE', capability: CALL_CAPABILITY },
+  hangup: { kind: 'call.hangup', permission: 'ANSWER_PHONE_CALLS', capability: CALL_CAPABILITY },
+  answer: { kind: 'call.answer', permission: 'ANSWER_PHONE_CALLS', capability: CALL_CAPABILITY },
+  reject: { kind: 'call.reject', permission: 'ANSWER_PHONE_CALLS', capability: CALL_CAPABILITY },
+  // Speaking into a live call needs no telephony permission, but the phone MUST
+  // advertise that it can actually speak (it needs a text-to-speech engine).
+  speak: { kind: 'call.speak', permission: null, capability: SPEAK_CAPABILITY },
 }
-
-/** Capability the phone MUST report (via heartbeat) before a call is queued. */
-export const CALL_CAPABILITY = 'call'
 
 /** Normalize a dialled number: keep an optional leading +, digits only. */
 export function normalizePhoneNumber(raw: string): string | undefined {
@@ -253,7 +309,6 @@ async function serveFile(res: ServerResponse, dir: string | undefined, pathname:
     res.writeHead(200, {
       'content-type': contentTypeFor(candidate),
       'content-length': body.length,
-      ...CORS_HEADERS,
     })
     res.end(body)
     return true
@@ -262,22 +317,44 @@ async function serveFile(res: ServerResponse, dir: string | undefined, pathname:
   }
 }
 
-/** Serve /phone with the optional backend token substituted in. */
-async function servePhone(res: ServerResponse, publicDir: string | undefined, token: string): Promise<boolean> {
+/** Serve the companion page without embedding any server-side credential. */
+async function servePhone(res: ServerResponse, publicDir: string | undefined): Promise<boolean> {
   if (!publicDir) return false
   const file = join(publicDir, 'phone.html')
   if (!existsSync(file)) return false
-  let html = await readFile(file, 'utf8')
-  html = html.replaceAll('__JARVIS_BACKEND_TOKEN__', JSON.stringify(token))
-  res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'content-length': Buffer.byteLength(html), ...CORS_HEADERS })
+  const html = await readFile(file, 'utf8')
+  res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'content-length': Buffer.byteLength(html) })
   res.end(html)
   return true
 }
 
 export async function startHttpServer(options: HttpServerOptions): Promise<RunningHttp> {
+  if (!options.token?.trim()) throw new Error('JARVIS_BACKEND_TOKEN is required; privileged backend APIs cannot run without authentication.')
   const log = options.log ?? nullLogger()
   const ctx = options.context
   const sseClients = new Set<{ id: string; res: ServerResponse }>()
+  const sessionId = randomBytes(32).toString('base64url')
+  const trustedOrigins = new Set(
+    (options.trustedOrigins ?? defaultTrustedOrigins(options.host, options.port))
+      .map(normalizeOrigin)
+      .filter((origin): origin is string => origin !== undefined),
+  )
+  const nativeFetch = options.nativeAgent?.fetchImpl ?? fetch
+  if (options.nativeAgent) {
+    let nativeUrl: URL
+    try {
+      nativeUrl = new URL(options.nativeAgent.baseUrl)
+    } catch {
+      throw new Error('Native RPC broker URL must be a loopback HTTP URL.')
+    }
+    if (
+      nativeUrl.protocol !== 'http:' ||
+      !['127.0.0.1', 'localhost', '[::1]', '::1'].includes(nativeUrl.hostname.toLowerCase()) ||
+      !options.nativeAgent.token.trim()
+    ) {
+      throw new Error('Native RPC broker requires a loopback HTTP agent and a non-empty server-side bearer token.')
+    }
+  }
 
   // Phone pairing trust + outbound command queue. Created in-memory when the
   // caller (tests) does not provide persisted instances; the backend wires
@@ -297,20 +374,52 @@ export async function startHttpServer(options: HttpServerOptions): Promise<Runni
 
   const server: Server = createServer(async (req, res) => {
     res.on('error', () => undefined)
-    if (req.method === 'OPTIONS') {
-      corsOnly(res)
-      return
-    }
     const url = new URL(req.url ?? '/', 'http://localhost')
     const pathname = url.pathname
+    const rawOrigin = req.headers.origin
+    const origin = typeof rawOrigin === 'string' ? normalizeOrigin(rawOrigin) : undefined
+
+    if (req.method === 'OPTIONS') {
+      if (!origin || !trustedOrigins.has(origin)) {
+        json(res, 403, { ok: false, error: 'origin_denied' })
+        return
+      }
+      res.writeHead(204, {
+        'Access-Control-Allow-Origin': origin,
+        'Access-Control-Allow-Credentials': 'true',
+        'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+        'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Jarvis-Provider',
+        'Access-Control-Expose-Headers': 'x-jarvis-provider, x-jarvis-provider-model',
+        'Access-Control-Max-Age': '600',
+        Vary: 'Origin',
+      })
+      res.end()
+      return
+    }
+
+    if (rawOrigin !== undefined) {
+      if (!origin || !trustedOrigins.has(origin)) {
+        json(res, 403, { ok: false, error: 'origin_denied' })
+        return
+      }
+      res.setHeader('Access-Control-Allow-Origin', origin)
+      res.setHeader('Access-Control-Allow-Credentials', 'true')
+      res.setHeader('Access-Control-Expose-Headers', 'x-jarvis-provider, x-jarvis-provider-model')
+      res.setHeader('Vary', 'Origin')
+    }
 
     try {
-      /* ------------------------------- auth fence --------------- */
-      // Every /api/* POST (claim, heartbeat, notify, file, inbound,
-      // assistant/state, wake) requires the configured bearer token. JARVIS
-      // exposes no unrestricted POST endpoints.
-      if (req.method === 'POST' && pathname.startsWith('/api/')) {
-        if (!isAuthorized(options.token, req)) {
+      /* ------------------------------- browser session + auth fence --------------- */
+      if (req.method === 'GET' && pathname === '/api/session') {
+        setSessionCookie(res, req, sessionId)
+        json(res, 200, { ok: true })
+        return
+      }
+
+      const protectedRoute = pathname.startsWith('/api/') || pathname === '/events'
+      if (protectedRoute && !(req.method === 'GET' && pathname === '/api/session')) {
+        const hasSession = sameSecret(cookieValue(req, SESSION_COOKIE), sessionId)
+        if (!hasSession && !isAuthorized(options.token, req)) {
           json(res, 401, { ok: false, error: 'unauthorized' })
           return
         }
@@ -329,7 +438,7 @@ export async function startHttpServer(options: HttpServerOptions): Promise<Runni
 
         if (subpath === '/health') {
           const result = await aiRouter.getHealth()
-          res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', ...CORS_HEADERS })
+          res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
           res.end(JSON.stringify(result))
           return
         }
@@ -380,7 +489,7 @@ export async function startHttpServer(options: HttpServerOptions): Promise<Runni
           }
           // Additive, key-free provider transparency headers always travel back.
           appendAiRouteHeaders(res, route)
-          res.writeHead(route.status, { 'content-type': route.contentType, ...CORS_HEADERS })
+          res.writeHead(route.status, { 'content-type': route.contentType })
           res.end(route.body)
           return
         } catch (error) {
@@ -393,8 +502,79 @@ export async function startHttpServer(options: HttpServerOptions): Promise<Runni
         }
       }
 
+      /* ------------------------------- native RPC broker --------------- */
+      if (req.method === 'POST' && pathname === '/api/native/rpc') {
+        if (!options.nativeAgent) {
+          json(res, 503, { ok: false, error: 'native_unavailable' })
+          return
+        }
+        let body: Record<string, unknown>
+        try {
+          const parsed = asRecord(await readJsonBody(req))
+          const id = parsed.id
+          const method = parsed.method
+          const params = parsed.params
+          if (
+            parsed.jsonrpc !== '2.0' ||
+            !(typeof id === 'string' || typeof id === 'number' || id === null) ||
+            typeof method !== 'string' ||
+            !(NATIVE_RPC_METHODS as readonly string[]).includes(method) ||
+            (params !== undefined && (typeof params !== 'object' || params === null || Array.isArray(params)))
+          ) {
+            json(res, 400, { jsonrpc: '2.0', id: id ?? null, error: { code: 'unsupported', message: 'Invalid or non-allow-listed native RPC request.' } })
+            return
+          }
+          body = parsed
+        } catch {
+          json(res, 400, { jsonrpc: '2.0', id: null, error: { code: 'malformed', message: 'Invalid native RPC request body.' } })
+          return
+        }
+
+        const controller = new AbortController()
+        const timeout = setTimeout(() => controller.abort(), options.nativeAgent.timeoutMs ?? 30_000)
+        try {
+          const upstream = await nativeFetch(`${options.nativeAgent.baseUrl.replace(/\/+$/, '')}/`, {
+            method: 'POST',
+            headers: {
+              'content-type': 'application/json',
+              authorization: `Bearer ${options.nativeAgent.token}`,
+            },
+            body: JSON.stringify(body),
+            signal: controller.signal,
+            redirect: 'error',
+          })
+          const responseBody = await upstream.arrayBuffer()
+          res.writeHead(upstream.status, { 'content-type': upstream.headers.get('content-type') ?? 'application/json' })
+          res.end(Buffer.from(responseBody))
+        } catch (error) {
+          const timedOut = error instanceof Error && error.name === 'AbortError'
+          json(res, timedOut ? 504 : 502, {
+            jsonrpc: '2.0',
+            id: body.id ?? null,
+            error: {
+              code: timedOut ? 'timeout' : 'native_unavailable',
+              message: timedOut ? 'The native agent did not answer in time.' : 'The native agent is not reachable.',
+            },
+          })
+        } finally {
+          clearTimeout(timeout)
+        }
+        return
+      }
+
       /* ------------------------------- health --------------- */
       if (req.method === 'GET' && pathname === '/health') {
+        const health = ctx.health()
+        json(res, 200, {
+          name: health.name,
+          version: health.version,
+          protocol: health.protocol,
+          status: health.status,
+        })
+        return
+      }
+
+      if (req.method === 'GET' && pathname === '/api/health') {
         json(res, 200, ctx.health())
         return
       }
@@ -408,7 +588,6 @@ export async function startHttpServer(options: HttpServerOptions): Promise<Runni
           'cache-control': 'no-cache',
           connection: 'keep-alive',
           'x-accel-buffering': 'no',
-          ...CORS_HEADERS,
         })
         res.write(`event: ready\ndata: ${payload}\n\n`)
         const client: SseClient = {
@@ -645,8 +824,9 @@ export async function startHttpServer(options: HttpServerOptions): Promise<Runni
           })
           return
         }
-        if (!device.capabilities.includes(CALL_CAPABILITY) || !device.permissions.includes(spec.permission)) {
-          const permissionMissing = !device.permissions.includes(spec.permission)
+        const capabilityMissing = !device.capabilities.includes(spec.capability)
+        const permissionMissing = spec.permission !== null && !device.permissions.includes(spec.permission)
+        if (capabilityMissing || permissionMissing) {
           const state: CallState = permissionMissing ? 'PERMISSION_REQUIRED' : 'NOT_SUPPORTED'
           ctx.bus.publish({ type: 'call', at: ctx.now(), data: { deviceId, state, at: ctx.now() } })
           json(res, 200, {
@@ -656,7 +836,7 @@ export async function startHttpServer(options: HttpServerOptions): Promise<Runni
             device: deviceId,
             reason: permissionMissing
               ? `${device.name} has not granted the ${spec.permission} permission, so JARVIS cannot perform this action.`
-              : `${device.name} reports no telephony capability, so JARVIS cannot perform this action.`,
+              : `${device.name} reports no ${spec.capability} capability, so JARVIS cannot perform this action.`,
           })
           return
         }
@@ -682,6 +862,17 @@ export async function startHttpServer(options: HttpServerOptions): Promise<Runni
         } else if (action === 'reject') {
           const reason = typeof body.reason === 'string' && body.reason.trim() ? body.reason.trim().slice(0, 120) : undefined
           if (reason) payload = { reason }
+        } else if (action === 'speak') {
+          const text = typeof body.text === 'string' ? body.text.trim().slice(0, 400) : ''
+          if (!text) {
+            json(res, 400, {
+              ok: false,
+              error: 'invalid_argument',
+              reason: 'A speak action needs the text to say on the phone.',
+            })
+            return
+          }
+          payload = { text }
         }
 
         const dispatch = deviceCommands.enqueue({ deviceId, kind: spec.kind, payload, online: device.online })
@@ -689,18 +880,23 @@ export async function startHttpServer(options: HttpServerOptions): Promise<Runni
           json(res, 429, { ok: false, error: 'call_queue_full', reason: dispatch.reason })
           return
         }
-        ctx.bus.publish({
-          type: 'call',
-          at: ctx.now(),
-          data: {
-            deviceId,
-            state: 'CALL_REQUESTED',
-            commandId: dispatch.command.commandId,
-            contactName: payload?.contactName,
-            number: payload?.number,
+        // Speaking is not a call STATE, so it deliberately publishes no `call`
+        // event: the phone's acknowledgement is the authoritative channel, and a
+        // synthetic state here would pollute the real observation log.
+        if (action !== 'speak') {
+          ctx.bus.publish({
+            type: 'call',
             at: ctx.now(),
-          },
-        })
+            data: {
+              deviceId,
+              state: 'CALL_REQUESTED',
+              commandId: dispatch.command.commandId,
+              contactName: payload?.contactName,
+              number: payload?.number,
+              at: ctx.now(),
+            },
+          })
+        }
         json(res, 200, {
           ok: true,
           state: 'CALL_REQUESTED',
@@ -875,9 +1071,128 @@ export async function startHttpServer(options: HttpServerOptions): Promise<Runni
           'content-type': 'application/octet-stream',
           'content-length': result.bytes.length,
           'content-disposition': `attachment; filename="${safeName.replaceAll('"', "'")}"; filename*=UTF-8''${encodeURIComponent(safeName)}`,
-          ...CORS_HEADERS,
         })
         res.end(result.bytes)
+        return
+      }
+
+      /* ------------------------------- persistent task orchestrator --------------- */
+      if (req.method === 'GET' && pathname === '/api/tasks') {
+        if (!ctx.tasks) {
+          json(res, 503, { ok: false, error: 'task_service_unavailable' })
+          return
+        }
+        const stateParam = url.searchParams.get('state')
+        const filter = stateParam ? { states: stateParam.split(',') as any } : undefined
+        const tasks = await ctx.tasks.listTasks(filter)
+        json(res, 200, { ok: true, tasks })
+        return
+      }
+
+      if (req.method === 'POST' && pathname === '/api/tasks') {
+        if (!ctx.tasks) {
+          json(res, 503, { ok: false, error: 'task_service_unavailable' })
+          return
+        }
+        const body = asRecord(await readJsonBody(req))
+        const title = typeof body.title === 'string' ? body.title.trim().slice(0, 200) : ''
+        const objective = typeof body.objective === 'string' ? body.objective.trim().slice(0, 2000) : ''
+        const priority = typeof body.priority === 'number' ? body.priority : 50
+        const subtasks = Array.isArray(body.subtasks) ? body.subtasks : []
+        const tags = Array.isArray(body.tags) ? body.tags.map(String) : []
+
+        if (!title || !objective) {
+          json(res, 400, { ok: false, error: 'title and objective are required' })
+          return
+        }
+
+        const task = await ctx.tasks.createTask({
+          title,
+          objective,
+          priority,
+          subtasks,
+          tags,
+        })
+
+        json(res, 201, { ok: true, task })
+        return
+      }
+
+      const taskMatch = pathname.match(/^\/api\/tasks\/([A-Za-z0-9_-]+)(?:\/([a-z]+))?$/)
+      if (taskMatch) {
+        if (!ctx.tasks) {
+          json(res, 503, { ok: false, error: 'task_service_unavailable' })
+          return
+        }
+        const taskId = taskMatch[1]
+        const action = taskMatch[2]
+
+        if (req.method === 'GET' && !action) {
+          const task = await ctx.tasks.getTask(taskId)
+          if (!task) {
+            json(res, 404, { ok: false, error: 'task_not_found' })
+            return
+          }
+          json(res, 200, { ok: true, task })
+          return
+        }
+
+        if (req.method === 'POST') {
+          if (action === 'pause') {
+            const ok = await ctx.tasks.pauseTask(taskId)
+            json(res, 200, { ok })
+            return
+          }
+          if (action === 'resume') {
+            const ok = await ctx.tasks.resumeTask(taskId)
+            json(res, 200, { ok })
+            return
+          }
+          if (action === 'cancel') {
+            const body = asRecord(await readJsonBody(req).catch(() => ({})))
+            const reason = typeof body.reason === 'string' ? body.reason : undefined
+            const ok = await ctx.tasks.cancelTask(taskId, reason)
+            json(res, 200, { ok })
+            return
+          }
+          if (action === 'approve') {
+            const body = asRecord(await readJsonBody(req))
+            const approvalId = typeof body.approvalId === 'string' ? body.approvalId : ''
+            if (!approvalId) {
+              json(res, 400, { ok: false, error: 'approvalId is required' })
+              return
+            }
+            const ok = await ctx.tasks.approveAction(taskId, approvalId)
+            json(res, 200, { ok })
+            return
+          }
+          if (action === 'reject') {
+            const body = asRecord(await readJsonBody(req))
+            const approvalId = typeof body.approvalId === 'string' ? body.approvalId : ''
+            const reason = typeof body.reason === 'string' ? body.reason : undefined
+            if (!approvalId) {
+              json(res, 400, { ok: false, error: 'approvalId is required' })
+              return
+            }
+            const ok = await ctx.tasks.rejectAction(taskId, approvalId, reason)
+            json(res, 200, { ok })
+            return
+          }
+        }
+      }
+
+      /* ------------------------------- dev tools execution ------------------ */
+      if (req.method === 'POST' && pathname === '/api/dev/execute') {
+        const body = asRecord(await readJsonBody(req).catch(() => ({})))
+        const action = typeof body.action === 'string' ? body.action : ''
+        const params = (body.params && typeof body.params === 'object' ? body.params : {}) as Record<string, unknown>
+        if (!action) {
+          json(res, 400, { ok: false, error: 'action_required' })
+          return
+        }
+        const devEngine = ctx.devEngine ?? new DevEngine()
+        const result = await devEngine.execute(action, params)
+        json(res, 200, result)
         return
       }
 
@@ -930,15 +1245,17 @@ export async function startHttpServer(options: HttpServerOptions): Promise<Runni
 
       /* ------------------------------- static UI --------------- */
       if (req.method === 'GET' && pathname === '/phone') {
-        if (await servePhone(res, options.publicDir, options.token ?? '')) return
+        setSessionCookie(res, req, sessionId)
+        if (await servePhone(res, options.publicDir)) return
         json(res, 404, { ok: false, error: 'phone companion page not available' })
         return
       }
 
       if (req.method === 'GET' && (pathname === '/' || pathname === '/index.html')) {
+        setSessionCookie(res, req, sessionId)
         if (await serveFile(res, options.staticDir, pathname, pathname === '/' ? 'index.html' : undefined)) return
         const splash = `JARVIS Core ${ctx.version} is running.\nHealth: GET /health / Events: GET /events / Companion device page: GET /phone`
-        res.writeHead(200, { 'content-type': 'text/plain; charset=utf-8', ...CORS_HEADERS })
+        res.writeHead(200, { 'content-type': 'text/plain; charset=utf-8' })
         res.end(splash)
         return
       }

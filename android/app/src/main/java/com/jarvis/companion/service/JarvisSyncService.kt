@@ -15,6 +15,7 @@ import com.jarvis.companion.model.CompanionIdentity
 import com.jarvis.companion.model.PhoneEventRequest
 import com.jarvis.companion.model.PollCommand
 import com.jarvis.companion.net.JarvisPhoneClient
+import com.jarvis.companion.telephony.CallSpeaker
 import com.jarvis.companion.telephony.CallStateObserver
 import com.jarvis.companion.telephony.ContactsResolver
 import com.jarvis.companion.telephony.TelephonyCapability
@@ -67,6 +68,7 @@ class JarvisSyncService : Service() {
     private val client = JarvisPhoneClient()
     private lateinit var store: PairingStore
     private lateinit var telephony: TelephonyController
+    private lateinit var speaker: CallSpeaker
     private var observer: CallStateObserver? = null
 
     /** Set while the service is allowed to run; cleared in [onDestroy]. */
@@ -100,6 +102,7 @@ class JarvisSyncService : Service() {
         super.onCreate()
         store = PairingStore(this)
         telephony = TelephonyController(this)
+        speaker = CallSpeaker(this)
         createChannel()
         startAsForeground(buildNotification("Waiting for the first heartbeat…"))
     }
@@ -127,6 +130,7 @@ class JarvisSyncService : Service() {
         active = false
         observer?.stop()
         observer = null
+        speaker.shutdown()
         loopJob?.cancel()
         scope.cancel()
         super.onDestroy()
@@ -183,7 +187,7 @@ class JarvisSyncService : Service() {
 
             _state.value = _state.value.copy(connection = "connecting", lastError = null)
             try {
-                val sent = client.heartbeat(host, token, deviceId, DeviceInfo.heartbeatMeta(this))
+                val sent = client.heartbeat(host, token, deviceId, DeviceInfo.heartbeatMeta(this, speaker.available))
                 if (!sent) throw IOException("heartbeat rejected")
 
                 val polled = client.poll(host, token, deviceId)
@@ -224,6 +228,7 @@ class JarvisSyncService : Service() {
                 "call.answer" -> executeCallControl(host, token, deviceId, command, "answer")
                 "call.reject" -> executeCallControl(host, token, deviceId, command, "reject")
                 "call.hangup" -> executeCallControl(host, token, deviceId, command, "hangup")
+                "call.speak" -> executeSpeak(host, token, deviceId, command)
                 else -> {
                     // Unknown kinds are refused, never guessed at.
                     client.ack(host, token, deviceId, command.commandId, false, "unsupported command kind: ${command.kind}")
@@ -321,6 +326,49 @@ class JarvisSyncService : Service() {
         )
     }
 
+    /**
+     * Speak a reply out loud during a live call.
+     *
+     * The phone plays the text on its loudspeaker. The other party only hears
+     * it when the call is on speakerphone — Android routes call audio to the
+     * earpiece otherwise. The acknowledgement says which happened, so the PC
+     * never claims the other party heard something it did not.
+     */
+    private suspend fun executeSpeak(
+        host: String,
+        token: String,
+        deviceId: String,
+        command: PollCommand,
+    ) {
+        val text = command.payload?.get("text")?.trim()?.takeIf { it.isNotEmpty() }
+        if (text == null) {
+            client.ack(host, token, deviceId, command.commandId, false, "FAILED: the command carried no text to speak.")
+            return
+        }
+        // Never play into an empty room — and never talk into a call that has
+        // not been ANSWERED yet. During RINGING the call audio path is not
+        // established, so the other party would hear nothing.
+        val connected = _state.value.lastCallState == "CONNECTED"
+        if (!connected) {
+            client.ack(
+                host,
+                token,
+                deviceId,
+                command.commandId,
+                false,
+                "FAILED: no call on this phone is connected, so nothing was spoken.",
+            )
+            return
+        }
+        val result = speaker.speak(text)
+        // The ack is the authoritative channel here: speaking is not a call
+        // state, so no `call.state` event is pushed for it.
+        client.ack(host, token, deviceId, command.commandId, result.ok, "${result.state}: ${result.detail}")
+        if (!result.ok) {
+            _state.value = _state.value.copy(lastError = result.detail)
+        }
+    }
+
     /** Ack a command that failed before any OS action was attempted. */
     private suspend fun ackAndReport(
         host: String,
@@ -383,7 +431,7 @@ class JarvisSyncService : Service() {
         val deviceId = store.deviceId ?: CompanionIdentity.DEVICE_ID
         val token = store.token ?: return
         try {
-            val sent = client.heartbeat(host, token, deviceId, DeviceInfo.heartbeatMeta(this))
+            val sent = client.heartbeat(host, token, deviceId, DeviceInfo.heartbeatMeta(this, speaker.available))
             if (!sent) throw IOException("heartbeat rejected")
             _state.value = _state.value.copy(connection = "connected", lastHeartbeatMs = System.currentTimeMillis(), lastBattery = DeviceInfo.batteryPercent(this))
         } catch (t: Throwable) {

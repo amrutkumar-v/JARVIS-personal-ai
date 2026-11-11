@@ -14,11 +14,16 @@ describe('Phase 5 — postActionVerify', () => {
     })
     it('app.launch verification passes when running', () => {
       const obs = planPostActionObservation('app.launch', { application_id: 'notepad' }, { success: true, output: null, summary: 'ok' })
-      expect(obs!.verify({ running: true }).passed).toBe(true)
+      expect(obs!.verify({ running: true, runningVerified: true })).toMatchObject({ status: 'verified', passed: true })
     })
     it('app.launch verification fails when not running', () => {
       const obs = planPostActionObservation('app.launch', { application_id: 'notepad' }, { success: true, output: null, summary: 'ok' })
-      expect(obs!.verify({ running: false }).passed).toBe(false)
+      expect(obs!.verify({ running: false }).status).toBe('unverified')
+      expect(obs!.verify({ running: false, runningVerified: true })).toMatchObject({ status: 'failed', passed: false })
+    })
+    it('app.launch verification is explicitly unverified when running state cannot be observed', () => {
+      const obs = planPostActionObservation('app.launch', { application_id: 'notepad' }, { success: true, output: null, summary: 'ok' })
+      expect(obs!.verify({ running: true, runningVerified: false })).toMatchObject({ status: 'unverified', passed: false })
     })
     it('plans app.close → app.status observation', () => {
       const obs = planPostActionObservation('app.close', { application_id: 'notepad' }, { success: true, output: null, summary: 'ok' })
@@ -27,11 +32,11 @@ describe('Phase 5 — postActionVerify', () => {
     })
     it('app.close verification passes when not running', () => {
       const obs = planPostActionObservation('app.close', { application_id: 'notepad' }, { success: true, output: null, summary: 'ok' })
-      expect(obs!.verify({ running: false }).passed).toBe(true)
+      expect(obs!.verify({ running: false, runningVerified: true })).toMatchObject({ status: 'verified', passed: true })
     })
     it('app.close verification fails when still running', () => {
       const obs = planPostActionObservation('app.close', { application_id: 'notepad' }, { success: true, output: null, summary: 'ok' })
-      expect(obs!.verify({ running: true }).passed).toBe(false)
+      expect(obs!.verify({ running: true, runningVerified: true })).toMatchObject({ status: 'failed', passed: false })
     })
     it('plans clipboard.write → clipboard.read observation', () => {
       const obs = planPostActionObservation('clipboard.write', { text: 'hello' }, { success: true, output: null, summary: 'ok' })
@@ -90,8 +95,8 @@ describe('Phase 5 — postActionVerify', () => {
     it('an EMPTY clipboard can never verify typing (copy failed or found nothing)', () => {
       const obs = planPostActionObservation('desktop.type', { text: 'hello' }, { success: true, output: null, summary: 'ok' })
       // clipboard.read reports { empty: true } (no text) for an empty clipboard.
-      expect(obs!.verify({ empty: true }).passed).toBe(false)
-      expect(obs!.verify({}).passed).toBe(false)
+      expect(obs!.verify({ empty: true })).toMatchObject({ status: 'unverified', passed: false })
+      expect(obs!.verify({})).toMatchObject({ status: 'unverified', passed: false })
     })
     it('desktop.type verification fails when the clipboard holds different content', () => {
       const obs = planPostActionObservation('desktop.type', { text: 'hello' }, { success: true, output: null, summary: 'ok' })

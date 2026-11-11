@@ -29,7 +29,7 @@ function buildInitialPanels(): Record<PanelId, PanelUiState> {
     const def = PANEL_DEFINITIONS[i]!
     panels[def.id] = defaultPanelState(def, i)
   }
-  if (restoredLayout) return restoredLayout.panels
+  if (restoredLayout) return { ...panels, ...restoredLayout.panels }
   return panels
 }
 

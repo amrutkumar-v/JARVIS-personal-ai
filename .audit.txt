@@ -1,0 +1,15 @@
+﻿file=D:\JARVIS\src\engine\AssistantEngine.openApps.test.ts
+lines=103
+=== reply-level assertions in working-tree test ===
+  [1] expect(reply).not.toContain('panel')
+  [2] expect(reply).toMatch(/answered from a live reading|Done\./)
+  [3] expect(reply).not.toContain('panel')
+  [4] expect(reply).toMatch(/not available|failed/i)
+  [5] expect(reply).not.toContain('chrome')
+
+reply-level-assertion-count=5
+
+=== `it()` blocks in working-tree test ===
+  57: it('runs window.list and never opens the Applications panel', async () => {
+  73: it('exposes the real inventory on the run trace (the model sees it)', async () => {
+  89: it('is honest when the desktop cannot be observed at all', async () => {

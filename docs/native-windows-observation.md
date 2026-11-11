@@ -115,8 +115,8 @@ needs no config file section.
 
 Identical to Phases 1.2/1.3 (`npm run native:build` + `npm run native:agent`,
 or just `npm run native:agent` on the same loopback port), then set
-`VITE_NATIVE_AGENT_URL`/`VITE_NATIVE_AGENT_TOKEN` in the web app. On
-non-Windows the agent itself still starts and answers `unsupported` for
+`VITE_NATIVE_AGENT_URL` in the web app. The native bearer token stays in the
+backend process and browser calls pass through `/api/native/rpc`. On non-Windows the agent itself still starts and answers `unsupported` for
 observation — observation is never faked.
 
 ## 6. Testing

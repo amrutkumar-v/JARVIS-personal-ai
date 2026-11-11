@@ -116,3 +116,49 @@ describe('DeviceRegistry — trusted four-device ecosystem', () => {
     }
   })
 })
+
+describe('DeviceRegistry — two bridges reporting for one device', () => {
+  it('a heartbeat that does NOT report capabilities never erases them', () => {
+    nowValue = 1000
+    const reg = registry()
+    reg.register({ id: 's26-ultra', capabilities: ['call', 'call.speak'] })
+    expect(reg.get('s26-ultra')?.capabilities).toContain('call')
+
+    // A report with no capabilities field (e.g. the browser companion page).
+    reg.heartbeat('s26-ultra', { battery: 55 })
+    expect(reg.get('s26-ultra')?.capabilities).toContain('call')
+    expect(reg.get('s26-ultra')?.capabilities).toContain('call.speak')
+  })
+
+  it('capabilities from two bridges ACCUMULATE — neither erases the other', () => {
+    nowValue = 1000
+    const reg = registry()
+    reg.register({ id: 's26-ultra', capabilities: ['call', 'call.speak'] })
+    // The browser companion reports a different, smaller vocabulary.
+    reg.heartbeat('s26-ultra', { capabilities: ['notifications', 'files', 'inbound'] })
+    const caps = reg.get('s26-ultra')?.capabilities ?? []
+    expect(caps).toContain('call')
+    expect(caps).toContain('call.speak')
+    expect(caps).toContain('notifications')
+  })
+
+  it('permissions REPLACE when reported — a revoked permission really disappears', () => {
+    nowValue = 1000
+    const reg = registry()
+    reg.register({ id: 's26-ultra', permissions: ['CALL_PHONE', 'ANSWER_PHONE_CALLS'] })
+    expect(reg.get('s26-ultra')?.permissions).toContain('CALL_PHONE')
+
+    // The device reports its CURRENT grant state: the user revoked the dial
+    // permission on the phone.
+    reg.heartbeat('s26-ultra', { permissions: [] })
+    expect(reg.get('s26-ultra')?.permissions ?? []).not.toContain('CALL_PHONE')
+  })
+
+  it('permissions are left untouched when a reporter does not state them', () => {
+    nowValue = 1000
+    const reg = registry()
+    reg.register({ id: 's26-ultra', permissions: ['CALL_PHONE'] })
+    reg.heartbeat('s26-ultra', { capabilities: ['notifications'] })
+    expect(reg.get('s26-ultra')?.permissions).toContain('CALL_PHONE')
+  })
+})

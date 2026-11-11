@@ -12,7 +12,9 @@ import { PhoneTrust } from './phoneTrust.js'
 import { PhoneCommandQueue } from './phoneCommands.js'
 import { BACKEND_NAME, BACKEND_PROTOCOL, BACKEND_VERSION } from './version.js'
 
-async function jsonPost(port: number, path: string, body: unknown, token = ''): Promise<{ status: number; body: any }> {
+const BACKEND_TEST_TOKEN = 'phone-backend-test-token'
+
+async function jsonPost(port: number, path: string, body: unknown, token = BACKEND_TEST_TOKEN): Promise<{ status: number; body: any }> {
   const headers: Record<string, string> = { 'content-type': 'application/json' }
   if (token) headers.authorization = `Bearer ${token}`
   const res = await fetch(`http://127.0.0.1:${port}${path}`, { method: 'POST', headers, body: JSON.stringify(body) })
@@ -20,7 +22,7 @@ async function jsonPost(port: number, path: string, body: unknown, token = ''): 
 }
 
 async function jsonGet(port: number, path: string): Promise<{ status: number; body: any }> {
-  const res = await fetch(`http://127.0.0.1:${port}${path}`)
+  const res = await fetch(`http://127.0.0.1:${port}${path}`, { headers: { authorization: `Bearer ${BACKEND_TEST_TOKEN}` } })
   return { status: res.status, body: (await res.json()) as any }
 }
 
@@ -84,7 +86,7 @@ describe('JARVIS core + phone listener end-to-end', () => {
           logFile: join(dataDir, 'logs', 'test.log'),
         }),
     }
-    main = await startHttpServer({ host: '127.0.0.1', port: 0, context, staticDir: undefined, publicDir: join(dir, 'public') })
+    main = await startHttpServer({ host: '127.0.0.1', port: 0, context, staticDir: undefined, publicDir: join(dir, 'public'), token: BACKEND_TEST_TOKEN })
     phone = await startPhoneServer({ host: '127.0.0.1', port: 0, registry, pairing, commands, now: () => nowValue, bus })
   })
 
@@ -323,6 +325,60 @@ describe('JARVIS core + phone listener end-to-end', () => {
     expect(queued.body.state).toBe('NOT_SUPPORTED')
     expect(queued.body.commandId).toBeUndefined()
     expect(callEvents.map((e) => e.state)).toEqual(['NOT_SUPPORTED'])
+  })
+
+  it('speaks on a live call: queue → the phone receives the text → the ack is the only confirmation', async () => {
+    const callEvents = captureCallEvents()
+    const token = await pairPhone('s26-ultra', ['status', 'call', 'call.speak'], ['CALL_PHONE', 'ANSWER_PHONE_CALLS'])
+
+    const queued = await jsonPost(main.port, '/api/device/call', { action: 'speak', text: 'I am on my way home.' })
+    expect(queued.status).toBe(200)
+    expect(queued.body.ok).toBe(true)
+    expect(queued.body.state).toBe('CALL_REQUESTED')
+    const commandId: string = queued.body.commandId
+
+    // The phone drains the command and receives ONLY the allow-listed text.
+    const poll = await jsonPost(phone.port, '/phone/poll', { id: 's26-ultra' }, token)
+    const speak = (poll.body.commands as any[]).find((c) => c.kind === 'call.speak')
+    expect(speak).toBeDefined()
+    expect(speak.payload).toEqual({ text: 'I am on my way home.' })
+
+    // The phone reports that it really played the audio.
+    const ack = await jsonPost(
+      phone.port,
+      '/phone/ack',
+      { id: 's26-ultra', commandId, ok: true, detail: 'SPOKEN: The phone played the text on its loudspeaker during the call.' },
+      token,
+    )
+    expect(ack.body).toMatchObject({ ok: true, acknowledged: true })
+
+    const result = await jsonPost(main.port, '/api/device/call/result', { device: 's26-ultra', commandId })
+    expect(result.body.acknowledged).toBe(true)
+    expect(result.body.result).toBe(true)
+    expect(result.body.kind).toBe('call.speak')
+    expect(result.body.detail).toContain('SPOKEN')
+
+    // Speaking is NOT a call state, so it publishes no synthetic call event.
+    expect(callEvents.map((e) => e.state)).toEqual([])
+  })
+
+  it('refuses to speak on a phone that does not advertise the call.speak capability', async () => {
+    const callEvents = captureCallEvents()
+    await pairPhone('s26-ultra', ['status', 'call'], ['CALL_PHONE', 'ANSWER_PHONE_CALLS'])
+
+    const queued = await jsonPost(main.port, '/api/device/call', { action: 'speak', text: 'hello' })
+    expect(queued.body.ok).toBe(false)
+    expect(queued.body.error).toBe('not_supported')
+    expect(queued.body.state).toBe('NOT_SUPPORTED')
+    expect(queued.body.commandId).toBeUndefined()
+    expect(callEvents.map((e) => e.state)).toEqual(['NOT_SUPPORTED'])
+  })
+
+  it('refuses a speak action with no text', async () => {
+    await pairPhone('s26-ultra', ['status', 'call', 'call.speak'], ['CALL_PHONE'])
+    const queued = await jsonPost(main.port, '/api/device/call', { action: 'speak' })
+    expect(queued.status).toBe(400)
+    expect(queued.body.error).toBe('invalid_argument')
   })
 
   it('validates call actions, targets and targets that are not phones', async () => {

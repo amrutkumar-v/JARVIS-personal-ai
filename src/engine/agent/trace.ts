@@ -1,5 +1,5 @@
 import type { AgentState } from './stateMachine'
-import type { AgentTraceEvent, AgentStepStatus, TraceStep } from './types'
+import type { AgentTraceEvent, TraceStep } from './types'
 import type { GoalTaskResult } from '../goal/types'
 
 /**
@@ -57,17 +57,16 @@ export class ExecutionTracer {
   /**
    * Phase 6 — upgrade the LAST completed step for `toolId` with a NEW
    * post-action verification outcome (e.g. a cross-tool observation that
-   * confirmed the effect after the step's own verifier left it unverified).
+   * confirmed or refuted the effect).
    *
-   * Bounded deliberately: only ever upgrades to `verified` (never downgrades),
-   * only touches the most recent matching step, and only when the run holds
-   * that step. This is what lets `makeResult` count a genuinely confirmed
-   * effect as verified without fabricating evidence.
+   * Bounded deliberately: only touches the most recent matching step and only
+   * when the run holds that step. A refutation records FAILED evidence; an
+   * observation that cannot answer the question is recorded separately by the
+   * caller and never passed here.
    */
   updateStepVerification(
     toolId: string,
-    status: AgentStepStatus,
-    verification: { status: 'verified'; message: string },
+    verification: { status: 'verified' | 'failed'; message: string },
   ): boolean {
     if (!this.run) return false
     for (let i = this.run.steps.length - 1; i >= 0; i -= 1) {
@@ -75,11 +74,16 @@ export class ExecutionTracer {
       if (step.toolId !== toolId || !step.observation) continue
       step.verification = {
         ...(step.verification ?? {}),
-        status: 'verified',
+        status: verification.status,
         message: verification.message,
         durationMs: step.verification?.durationMs ?? 0,
       }
-      step.status = status
+      step.observation = {
+        ...step.observation,
+        kind: verification.status === 'verified' ? 'success' : 'verification',
+        summary: verification.message,
+      }
+      step.status = verification.status === 'verified' ? 'COMPLETED' : 'FAILED'
       return true
     }
     return false

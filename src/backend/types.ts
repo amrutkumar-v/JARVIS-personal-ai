@@ -113,8 +113,15 @@ export interface CallEventData {
   at: number
 }
 
-/** The four telephony actions the backend will queue for a phone. */
-export type CallAction = 'dial' | 'hangup' | 'answer' | 'reject'
+/**
+ * The telephony actions the backend will queue for a phone.
+ *
+ * `speak` is not a telephony action but a call-surface action: it asks the
+ * phone to speak a given text on the loudspeaker during a live call. It needs
+ * no telephony permission, but the phone must advertise the `call.speak`
+ * capability, and the platform decides whether the far end can hear it.
+ */
+export type CallAction = 'dial' | 'hangup' | 'answer' | 'reject' | 'speak'
 
 export interface CallDispatchResult {
   ok: boolean
@@ -172,6 +179,7 @@ export type BackendEventType =
   | 'assistant'
   | 'wake'
   | 'call'
+  | 'task'
 
 export interface BackendHealth {
   name: string

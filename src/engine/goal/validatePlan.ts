@@ -9,6 +9,14 @@ import type {
   PreferredVerification,
 } from '../capabilities'
 import { resolveCapability } from '../capabilities'
+import {
+  isSafeFolder,
+  isSafeApplicationTarget,
+  isFolderPathProperty,
+  isApplicationTargetProperty,
+  isWorkspaceRelativeProperty,
+  isSafeWorkspacePath,
+} from './safety'
 
 /**
  * Plan validation (Phase 2.0).
@@ -59,6 +67,7 @@ export type PlanVerdictCode =
   | 'budget'
   | 'capability_unregistered'
   | 'capability_unavailable'
+  | 'unsafe_path'
 
 export type PlanVerdict =
   | { ok: true }
@@ -287,6 +296,49 @@ export function validatePlan(
         reason: `Plan rejected at step ${i + 1}: "${effectiveToolId}" does not accept a parameter named "${unsupported}".`,
       })
       continue
+    }
+
+    // Schema-based folder/path and application target safety (replaces name-based regex).
+    // Only arguments whose tool schema declares them as folder/path or application_id
+    // are validated — this prevents the model from bypassing by using unexpected names.
+    //
+    // Two kinds of path argument exist, and they have different contracts:
+    //   - a CURATED folder token (`{userprofile}\…`) — e.g. `open_folder`;
+    //   - a WORKSPACE-RELATIVE path — e.g. the filesystem tools, whose schema
+    //     says "relative to the workspace root" and whose own normalizer
+    //     (`src/filesystem/paths.ts`) re-validates every path before the
+    //     provider sees it. Both layers reject absolute paths and traversal.
+    const props = schema.properties ?? {}
+    for (const [argName, argValue] of Object.entries(payload)) {
+      const prop = props[argName]
+      if (prop && typeof argValue === 'string') {
+        if (isFolderPathProperty(prop)) {
+          const workspaceRelative = isWorkspaceRelativeProperty(prop)
+          const safe = workspaceRelative ? isSafeWorkspacePath(argValue) : isSafeFolder(argValue)
+          if (!safe) {
+            verdicts.push({
+              ok: false,
+              stepIndex: i,
+              toolId: effectiveToolId,
+              code: 'unsafe_path',
+              reason: workspaceRelative
+                ? `Plan rejected at step ${i + 1}: argument "${argName}" must be a path relative to the workspace root.`
+                : `Plan rejected at step ${i + 1}: argument "${argName}" must be a bounded folder token.`,
+            })
+            continue
+          }
+        }
+        if (isApplicationTargetProperty(prop) && !isSafeApplicationTarget(argValue)) {
+          verdicts.push({
+            ok: false,
+            stepIndex: i,
+            toolId: effectiveToolId,
+            code: 'unsafe_path',
+            reason: `Plan rejected at step ${i + 1}: argument "${argName}" must be an application name, not a path or command.`,
+          })
+          continue
+        }
+      }
     }
 
     if (available && !available(effectiveToolId)) {

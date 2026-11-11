@@ -1,0 +1,4 @@
+﻿
+> jarvis@0.0.0 backend:check
+> tsc --noEmit -p server/tsconfig.json
+

@@ -146,7 +146,7 @@ describe('typing verification — pre-observe actions and honest wording', () =>
     expect(result.verifiedSteps).toBe(1) // only the launch is verified
   })
 
-  it('C — empty clipboard never verifies typing (select-all found nothing to copy)', async () => {
+  it('C — clipboard read without text never verifies typing', async () => {
     const clipboard = new ScriptedClipboardProvider()
     clipboard.setRead({ success: true, text: '', byteLength: 0, verified: true })
     const desktop = new FakeDesktopInteractionProvider([{ windowId: '31', title: 'Untitled - Notepad', focusable: true }])
@@ -163,11 +163,13 @@ describe('typing verification — pre-observe actions and honest wording', () =>
     const typeStep = result.steps.find((s) => s.capability === 'type_text')
     expect(typeStep?.status).toBe('success')
     expect(typeStep?.verified).toBe(false)
-    // The failure note reflects the REAL verifier message (cause-neutral).
-    expect(typeStep?.observation?.summary).toMatch(/empty clipboard/i)
+    // The read tool reports empty OR non-text as { empty: true }, so it is
+    // insufficient evidence to claim typing failed or succeeded.
+    expect(typeStep?.observation?.summary).toMatch(/did not return text/i)
+    expect(result.verification.find((v) => v.toolId === 'type_text')?.status).toBe('unverified')
   })
 
-  it('D — reply wording is cause-neutral: reports the real verifier message, never a speculative UIPI cause', async () => {
+  it('D — reply reports that the clipboard could not verify typing, never a speculative cause', async () => {
     const clipboard = new ScriptedClipboardProvider()
     clipboard.setRead({ success: true, text: '', byteLength: 0, verified: true })
     const desktop = new FakeDesktopInteractionProvider([{ windowId: '31', title: 'Untitled - Notepad', focusable: true }])
@@ -184,7 +186,7 @@ describe('typing verification — pre-observe actions and honest wording', () =>
     const reply = replies.at(-1) ?? ''
     expect(reply).toContain('verified')
     expect(reply).not.toMatch(/UIPI/i)
-    expect(reply).toMatch(/empty clipboard/i)
+    expect(reply).toMatch(/did not return text|could not be independently verified/i)
   })
 
   it('E — verified typing path through process(): launch and type both verified, reply reports full verification', async () => {

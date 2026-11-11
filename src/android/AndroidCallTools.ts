@@ -2,6 +2,7 @@ import type { Tool, ToolCategory, ToolContext, ToolContextId, ToolInput, ToolPer
 import type { ToolInputSchema } from '../engine/provider'
 import type { CallAction, CallState, DeviceErrorKind } from '../backend/types'
 import type { AndroidProvider } from './provider'
+import { CallConcludeTool, CallConverseTool, CallSummarizeTool, CALL_CONNECT_TIMEOUT_MS } from './AndroidCallConversationTools'
 import { callActionPermission, phoneSupportsAction } from './provider'
 
 /**
@@ -41,10 +42,13 @@ const CALL_EXECUTE_TIMEOUT_MS = 15_000
 
 /** States that confirm each action really happened. */
 const CONFIRMING_STATES: Record<CallAction, CallState[]> = {
-  dial: ['CALLING', 'RINGING', 'CONNECTED'],
+  dial: ['CONNECTED', 'CALLING', 'RINGING'],
   answer: ['CONNECTED'],
-  reject: ['REJECTED', 'ENDED'],
+  reject: ['ENDED', 'REJECTED'],
   hangup: ['ENDED'],
+  // Speaking is confirmed by the PHONE'S ACK, not by a call state — the
+  // CallSpeakTool verifies against the real acknowledgement instead.
+  speak: [],
 }
 
 /** Bounded mapping from an honest call state to the engine's recovery vocabulary. */
@@ -128,10 +132,17 @@ abstract class BaseAndroidCallTool implements Tool {
         data: { deviceError: 'device_disconnected' as DeviceErrorKind, callState: 'DEVICE_OFFLINE' as CallState },
       }
     }
-    if (!phone.call) {
+    if (!phone.call && action !== 'speak') {
       return {
         ok: false,
         message: `${phone.deviceName} reports no telephony capability, so JARVIS cannot ${action} a call.`,
+        data: { deviceError: 'device_unavailable' as DeviceErrorKind, callState: 'NOT_SUPPORTED' as CallState },
+      }
+    }
+    if (action === 'speak' && !phone.speak) {
+      return {
+        ok: false,
+        message: `${phone.deviceName} does not advertise the call.speak capability (its speech engine is unavailable), so JARVIS cannot speak on that phone.`,
         data: { deviceError: 'device_unavailable' as DeviceErrorKind, callState: 'NOT_SUPPORTED' as CallState },
       }
     }
@@ -146,7 +157,10 @@ abstract class BaseAndroidCallTool implements Tool {
   }
 
   /** Shared execution: preflight → queue → honest result. */
-  protected async run(action: CallAction, input: { target?: string; number?: string; reason?: string }): Promise<ToolResult> {
+  protected async run(
+    action: CallAction,
+    input: { target?: string; number?: string; reason?: string; text?: string },
+  ): Promise<ToolResult> {
     const blocker = this.preflight(action)
     if (blocker) return blocker
     try {
@@ -373,8 +387,129 @@ export class CallEndTool extends BaseAndroidCallTool {
   }
 }
 
-/* -------------------------------------------------------------- status */
+/* -------------------------------------------------------------- speak */
 
+/** How long the phone gets to confirm that it actually played the text (ms). */
+export const CALL_SPEAK_VERIFY_TIMEOUT_MS = 12_000
+/** Poll interval while waiting for the phone's speak acknowledgement. */
+const CALL_SPEAK_POLL_MS = 700
+
+/**
+ * Speak a text on the companion phone during a live call.
+ *
+ * WHAT THIS ACTUALLY DOES — and the honest limit of it:
+ *   The phone synthesizes the text with its own Android text-to-speech engine
+ *   and plays it through the phone's loudspeaker. The other party hears it
+ *   ONLY when the call is on speakerphone, because a call's audio is routed to
+ *   the earpiece/headset otherwise.
+ *
+ * WHAT IT CANNOT DO:
+ *   It cannot hear the other party. Android 10+ blocks a normal (non-privileged,
+ *   non-default-dialer) app from capturing a live call's far-end audio — the
+ *   `CAPTURE_AUDIO_OUTPUT` permission is signature|privileged and the
+ *   `VOICE_CALL`/`VOICE_DOWNLINK` audio sources are refused. So the human
+ *   relays what the other side says; JARVIS can only talk.
+ */
+export class CallSpeakTool extends BaseAndroidCallTool {
+  readonly id = 'call.speak'
+  readonly name = 'Speak on the active call'
+  readonly description =
+    'Speak a short message out loud on the paired Android companion during a live call, so the other party hears JARVIS. ' +
+    'The phone plays it on its loudspeaker, so the call must be on speakerphone for the other side to hear it. ' +
+    'JARVIS cannot listen to the other party: Android does not allow a normal app to capture call audio.'
+  readonly permission: ToolPermission = 'low_risk'
+  readonly verifiable = true
+  readonly inputSchema: ToolInputSchema = {
+    type: 'object',
+    properties: {
+      text: { type: 'string', description: 'The exact words to say on the call. Keep it short — one or two sentences.' },
+    },
+    required: ['text'],
+  }
+
+  canRun(query: string): boolean {
+    return /\b(?:say|speak|tell|inform|read)\b.*\b(?:on the call|to them|to the caller|on the phone)\b/i.test(query || '')
+  }
+
+  async execute(input: ToolInput): Promise<ToolResult> {
+    const text = paramStr(input, 'text')
+    if (!text) {
+      return { ok: false, message: 'Give me the words to say on the call.', data: { kind: 'invalid_input' } }
+    }
+    const live = this.provider.activeCall()
+    if (!live) {
+      return {
+        ok: false,
+        message: 'There is no live call on the phone right now, so nothing was spoken.',
+        data: { kind: 'no_active_call' },
+      }
+    }
+    if (live.state !== 'CONNECTED') {
+      // The call is dialling or ringing. The audio path only exists once it
+      // CONNECTED, so wait for that (bounded) rather than talking into a
+      // phone that is not yet answered.
+      const connected = await this.provider.awaitCallState({
+        deviceId: live.deviceId,
+        states: ['CONNECTED'],
+        since: live.at,
+        timeoutMs: CALL_CONNECT_TIMEOUT_MS,
+      })
+      if (!connected) {
+        return {
+          ok: false,
+          message: `The call on the phone is ${live.state}, and it did not connect within ${CALL_CONNECT_TIMEOUT_MS / 1000}s, so nothing was spoken.`,
+          data: { kind: 'no_active_call', callState: live.state },
+        }
+      }
+    }
+    return this.run('speak', { text, reason: 'speak:CONNECTED' })
+  }
+
+  /**
+   * The ONLY honest confirmation is the phone's own acknowledgement that it
+   * played the text — the backend merely queued the command.
+   */
+  async verify(_input: ToolInput, result: ToolResult, ctx: ToolContext): Promise<ToolVerification> {
+    const data = (result.data ?? {}) as Partial<CallResultData>
+    const deviceId = data.deviceId
+    const commandId = data.commandId
+    if (!deviceId || !commandId) {
+      return { ok: false, message: 'No command id was recorded, so the phone could not confirm it spoke.', checks: [] }
+    }
+    const deadline = Date.now() + CALL_SPEAK_VERIFY_TIMEOUT_MS
+    while (Date.now() < deadline) {
+      if (ctx.signal?.aborted) {
+        return { ok: false, message: 'The speak confirmation was cancelled.', checks: [] }
+      }
+      const lookup = await this.provider.callResult(commandId, deviceId)
+      if (lookup.acknowledged) {
+        const detail = lookup.detail ?? ''
+        if (lookup.result === true) {
+          return {
+            ok: true,
+            message: `The phone confirmed it played the text on the loudspeaker.${detail ? ` (${detail})` : ''}`,
+            checks: ['phone-acknowledged'],
+          }
+        }
+        return {
+          ok: false,
+          message: `The phone did not play the text: ${detail || 'no reason reported'}`,
+          checks: ['phone-acknowledged'],
+        }
+      }
+      const remaining = deadline - Date.now()
+      if (remaining <= 0) break
+      await new Promise((resolve) => setTimeout(resolve, Math.min(CALL_SPEAK_POLL_MS, remaining)))
+    }
+    return {
+      ok: false,
+      message: `The phone did not acknowledge the speak command within ${CALL_SPEAK_VERIFY_TIMEOUT_MS / 1000}s.`,
+      checks: [],
+    }
+  }
+}
+
+/* -------------------------------------------------------------- status */
 export class CallStatusTool extends BaseAndroidCallTool {
   readonly id = 'call.status'
   readonly name = 'Call and phone status'
@@ -403,21 +538,25 @@ export class CallStatusTool extends BaseAndroidCallTool {
       `CALL_PHONE ${phone.dialPermission ? 'granted' : 'not granted'}`,
       `ANSWER_PHONE_CALLS ${phone.callControlPermission ? 'granted' : 'not granted'}`,
     ].join(', ')
-    const live = latest && ['CALLING', 'RINGING', 'CONNECTED'].includes(latest.state)
-    const who = latest?.contactName ?? latest?.number
-    const stateLine = latest
-      ? `Last reported call state: ${latest.state}${who ? ` (${who})` : ''}${latest.direction ? ` · ${latest.direction}` : ''}.`
-      : 'No call-state event has been reported since JARVIS started.'
+    const live = this.provider.activeCall()
+    const who = live?.contactName ?? live?.number
+    const stateLine = live
+      ? `Live call: ${live.state}${who ? ` (${who})` : ''}${live.direction ? ` · ${live.direction}` : ''}.`
+      : latest
+        ? `Last reported call state: ${latest.state}${latest.contactName ? ` (${latest.contactName})` : ''}${latest.direction ? ` · ${latest.direction}` : ''}.`
+        : 'No call-state event has been reported since JARVIS started.'
     return {
       ok: true,
-      message: `${phone.deviceName}: ${phone.online ? 'online' : 'offline'} · telephony ${phone.call ? 'supported' : 'not supported'} · ${permissionBits}. ${stateLine}`,
+      message: `${phone.deviceName}: ${phone.online ? 'online' : 'offline'} · telephony ${phone.call ? 'supported' : 'not supported'} · speak-on-call ${phone.speak ? 'supported' : 'not supported'} · ${permissionBits}. ${stateLine}`,
       data: {
-        callState: (latest?.state ?? 'ENDED') as CallState,
+        callState: (live?.state ?? latest?.state ?? 'ENDED') as CallState,
         active: Boolean(live),
         deviceId: phone.deviceId,
         device: phone,
         telephonySupported: phone.call,
+        speakSupported: phone.speak,
         permissions: { CALL_PHONE: phone.dialPermission, ANSWER_PHONE_CALLS: phone.callControlPermission },
+        activeCall: live,
         lastEvent: latest ?? null,
       },
     }
@@ -432,6 +571,10 @@ export function createAndroidCallTools(provider: AndroidProvider | undefined): T
     new CallAnswerTool(provider),
     new CallRejectTool(provider),
     new CallEndTool(provider),
+    new CallSpeakTool(provider),
+    new CallConverseTool(provider),
+    new CallConcludeTool(provider),
+    new CallSummarizeTool(provider),
     new CallStatusTool(provider),
   ]
 }

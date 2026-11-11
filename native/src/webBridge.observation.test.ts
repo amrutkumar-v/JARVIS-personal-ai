@@ -4,6 +4,7 @@ import { MemoryObsBackend } from './testingObs.js'
 import { NativeWindowsObservationProvider } from '../../src/native/NativeWindowsObservationProvider'
 import { NativeAgentRpc } from '../../src/native/nativeRpc'
 import { FileSystemError } from '../../src/filesystem'
+import { startNativeBroker } from '../test-support/startNativeBroker.js'
 
 /**
  * Phase 1.4 — the WEB observation bridge provider against a LIVE local agent.
@@ -21,6 +22,7 @@ const TOKEN = 'observation-bridge-token'
 
 describe('web bridge observation provider — live local agent (deterministic memory backend)', () => {
   let agent: Awaited<ReturnType<typeof startAgent>>
+  let broker: Awaited<ReturnType<typeof startNativeBroker>>
   let memory: MemoryObsBackend
   let provider: NativeWindowsObservationProvider
 
@@ -31,11 +33,13 @@ describe('web bridge observation provider — live local agent (deterministic me
       { windowId: '1002', title: 'Hidden Helper', pid: 500, processName: 'helper.exe', visible: false, minimized: true },
     ])
     agent = await startAgent({ roots: [ROOT], token: TOKEN, observation: memory, port: 0 })
-    provider = new NativeWindowsObservationProvider(new NativeAgentRpc({ baseUrl: agent.baseUrl, token: TOKEN, requestTimeoutMs: 2000 }))
+    broker = await startNativeBroker(agent.baseUrl, TOKEN)
+    provider = new NativeWindowsObservationProvider(new NativeAgentRpc({ baseUrl: broker.baseUrl, fetchImpl: broker.fetchImpl, requestTimeoutMs: 2000 }))
     await provider.refreshNativeStatus()
   })
 
   afterAll(async () => {
+    await broker.close()
     await agent.close()
   })
 

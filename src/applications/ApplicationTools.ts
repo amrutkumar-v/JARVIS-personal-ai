@@ -238,14 +238,14 @@ export class AppLaunchTool extends AppTool {
           return { ok: false, message: `Verification failed: "${status.applicationId}" is not running.` }
         }
         return {
-          ok: true,
+          ok: false,
+          status: 'unverified' as const,
           message: `Verification unavailable: the platform cannot confirm running state for "${status.applicationId}" (not observable).`,
-          checks: ['launch reported success'],
         }
       })
       .catch((error) => {
         const message = error instanceof Error ? error.message : 'Unknown verification failure.'
-        return { ok: false, message: `Verification failed: ${message}` }
+        return { ok: false, status: 'unverified' as const, message: `Verification unavailable: ${message}` }
       })
   }
 }
@@ -310,16 +310,17 @@ export class AppCloseTool extends AppTool {
       .then((status) =>
         !status.running && status.runningVerified
           ? { ok: true, message: `Confirmed "${status.displayName}" is no longer running.`, checks: ['process terminated'] }
-          : status.running
+          : status.running && status.runningVerified
             ? { ok: false, message: `Verification failed: "${status.applicationId}" is still running.` }
             : {
                 ok: false,
+                status: 'unverified' as const,
                 message: `Verification unavailable: the platform cannot confirm running state for "${status.applicationId}".`,
               },
       )
       .catch((error) => {
         const message = error instanceof Error ? error.message : 'Unknown verification failure.'
-        return { ok: false, message: `Verification failed: ${message}` }
+        return { ok: false, status: 'unverified' as const, message: `Verification unavailable: ${message}` }
       })
   }
 }

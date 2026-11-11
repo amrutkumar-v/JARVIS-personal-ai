@@ -41,10 +41,14 @@ interface Props {
   gesture?: GestureUiState
 }
 
-function PreferenceRate() {
+/**
+ * The animation-intensity control. It writes through the SAME durable path as
+ * every other preference (the memory manager's `savePreferences`), so the
+ * setting survives a reload instead of silently reverting to "high".
+ */
+function PreferenceRate({ onChange }: { onChange: (level: UserPreferences['animationIntensity']) => void }) {
   const opts: UserPreferences['animationIntensity'][] = ['low', 'medium', 'high']
   const intensity = useJarvisStore.use.preferences().animationIntensity
-  const set = useJarvisStore((s) => s.setPreferences)
   return (
     <div className="segmented" role="radiogroup" aria-label="Animation intensity">
       {opts.map((level) => (
@@ -54,7 +58,7 @@ function PreferenceRate() {
           role="radio"
           aria-checked={intensity === level}
           className={intensity === level ? 'is-active' : ''}
-          onClick={() => set({ animationIntensity: level })}
+          onClick={() => onChange(level)}
         >
           {level}
         </button>
@@ -330,9 +334,15 @@ function MemorySection({ memory }: { memory: MemoryAPI }) {
           </span>
         </li>
         <li className="cap-row">
-          <span className="cap-label">Real embeddings</span>
-          <span className="cap-value" data-tone={health.realEmbeddingsAvailable ? 'on' : 'off'}>
-            {health.realEmbeddingsAvailable ? `available (${health.dimensions}d)` : 'off — lexical search only'}
+          <span className="cap-label">Memory retrieval</span>
+          <span className="cap-value" data-tone={health.mode === 'semantic' ? 'on' : health.mode === 'deterministic_fallback' ? 'dev' : 'off'}>
+            {health.mode === 'semantic'
+              ? `semantic embeddings verified (${health.dimensions}d)`
+              : health.mode === 'deterministic_fallback'
+                ? 'deterministic fallback; no semantic understanding'
+                : health.status === 'unknown'
+                  ? 'unavailable — configured provider not yet verified'
+                  : 'unavailable — lexical search only'}
           </span>
         </li>
         <li className="cap-row">
@@ -361,8 +371,8 @@ function SchedulingSection() {
       </div>
       {schedule.length === 0 ? (
         <p className="memory-empty">
-          No reminders scheduled. Ask JARVIS to "remind me at 7 PM to water the plants". Reminders run while JARVIS
-          is open; anything missed is re-run once, honestly marked, on the next open.
+          No reminders scheduled. Ask JARVIS to "remind me at 7 PM to water the plants". Reminders run only while this
+          browser tab is open; an overdue reminder is delivered at most once after the next open.
         </p>
       ) : (
         <ul className="memory-list">
@@ -381,8 +391,8 @@ function SchedulingSection() {
         </ul>
       )}
       <p className="settings-note-inline">
-        Reminders are stored locally (browser storage) and fire only while this app is open — the browser cannot
-        guarantee timers when it is closed.
+        Reminders are saved in this browser's localStorage, but they are not background jobs. Closing this tab stops
+        execution; overdue items are caught up once when JARVIS next opens.
       </p>
     </section>
   )
@@ -436,13 +446,13 @@ function AiProvidersSection({
 
   useEffect(() => {
     let cancelled = false
-    checkAiHealth().then((h) => {
+    checkAiHealth(undefined, pinned === 'auto' ? null : pinned).then((h) => {
       if (!cancelled) setHealth(h)
     })
     return () => {
       cancelled = true
     }
-  }, [open])
+  }, [open, pinned])
 
   const tone = health
     ? health.status === 'CONNECTED'
@@ -477,7 +487,9 @@ function AiProvidersSection({
             <span>Router status</span>
             <span className="cap-value" data-tone={tone}>
               {tone === 'on'
-                ? `CONNECTED — active: ${providerDisplayName(health.provider ?? '?')}`
+                ? health.fallbackProvider
+                  ? `CONNECTED — fallback: ${providerDisplayName(health.fallbackProvider)}`
+                  : `CONNECTED — active: ${providerDisplayName(health.provider ?? '?')}`
                 : `${health.status.replace(/_/g, ' ')}${health.model ? ` · ${health.model}` : ''}`}
             </span>
           </div>
@@ -529,6 +541,8 @@ export function SettingsPanel({ open, onClose, providerLabel, modelLabel, endpoi
   const setTheme = useJarvisStore((s) => s.setTheme)
   const demoMode = useJarvisStore.use.demoMode()
   const setDemoMode = useJarvisStore((s) => s.setDemoMode)
+  const activeProviderLabel = caps.aiActiveProvider ? providerDisplayName(caps.aiActiveProvider) : providerLabel
+  const activeModelLabel = caps.aiActiveModel ?? modelLabel
 
   useEffect(() => {
     if (!open) return
@@ -549,16 +563,16 @@ export function SettingsPanel({ open, onClose, providerLabel, modelLabel, endpoi
   const capRows: Array<{ label: string; value: string; tone: 'on' | 'off' | 'dev' | 'planned' }> = [
     {
       label: 'AI engine',
-      value: caps.aiConnected
-        ? `${providerLabel} (connected)`
-        : caps.aiStatus && caps.aiStatus !== 'DISCONNECTED'
-        ? `${caps.aiStatus.toLowerCase().replace(/_/g, ' ')}`
-        : caps.aiConfigured
-        ? 'configured — unreachable'
-        : 'none',
-      tone: caps.aiConnected ? 'on' : caps.aiConfigured ? 'dev' : 'off',
+      value: caps.aiProviderMode === 'MOCK'
+        ? 'MOCK provider active'
+        : caps.aiProviderMode === 'REAL'
+          ? `${activeProviderLabel}${caps.aiFallbackProvider ? ' fallback' : ''} (REAL, connected)`
+          : caps.aiConfigured
+            ? `DISCONNECTED (${caps.aiStatus?.toLowerCase().replace(/_/g, ' ') ?? 'unreachable'})`
+            : 'DISCONNECTED — no real provider configured',
+      tone: caps.aiProviderMode === 'REAL' ? 'on' : caps.aiProviderMode === 'MOCK' ? 'dev' : 'off',
     },
-    { label: 'Model', value: modelLabel ?? '—', tone: modelLabel ? 'on' : 'off' },
+    { label: 'Model', value: activeModelLabel ?? '—', tone: activeModelLabel ? 'on' : 'off' },
     { label: 'Endpoint', value: endpointLabel ?? '—', tone: endpointLabel ? 'on' : 'off' },
     { label: 'Speech input', value: caps.speechRecognitionAvailable ? 'available' : 'unavailable', tone: caps.speechRecognitionAvailable ? 'on' : 'off' },
     { label: 'Speech output', value: caps.speechSynthesisAvailable ? 'available' : 'unavailable', tone: caps.speechSynthesisAvailable ? 'on' : 'off' },
@@ -725,7 +739,7 @@ export function SettingsPanel({ open, onClose, providerLabel, modelLabel, endpoi
           <h3>RENDERING</h3>
           <div className="setting-row">
             <span>Animation intensity</span>
-            <PreferenceRate />
+            <PreferenceRate onChange={(level) => savePrefs({ animationIntensity: level })} />
           </div>
           <div className="setting-row">
             <span>Reduced motion</span>
@@ -760,14 +774,12 @@ export function SettingsPanel({ open, onClose, providerLabel, modelLabel, endpoi
         </section>
 
         <p className="settings-note">
-          AI provider: {providerLabel}.
-          {caps.aiConnected
-            ? ` Connected to real AI endpoint (${caps.aiStatus || 'CONNECTED'}).`
-            : caps.aiStatus && caps.aiStatus !== 'DISCONNECTED'
-              ? ` AI status: ${caps.aiStatus.replace(/_/g, ' ')}${caps.aiStatusMessage ? ` (${caps.aiStatusMessage})` : ''}.`
-              : caps.aiConfigured
-                ? ' Configured — the endpoint is currently unreachable, so execution is honestly limited.'
-                : ' Development mode: the clearly-labelled mock provider is active because no real AI configuration was found.'}
+          AI provider: {caps.aiProviderMode ?? 'DISCONNECTED'}.
+          {caps.aiProviderMode === 'REAL'
+            ? ` Connected to ${activeProviderLabel}${activeModelLabel ? ` (${activeModelLabel})` : ''} (${caps.aiStatus || 'CONNECTED'}).`
+            : caps.aiProviderMode === 'MOCK'
+              ? ' The development mock provider is active; its output is not real AI.'
+              : ` The real provider is unavailable${caps.aiStatusMessage ? ` (${caps.aiStatusMessage})` : ''}.`}
           {' '}No keys are stored in this frontend.
           {!caps.visionAvailable
             ? ' Visual semantic understanding is unavailable until a real VisionProvider is configured.'

@@ -55,7 +55,7 @@ describe('NativeAgentRpc default fetch binding (browser Illegal invocation regre
     // default MUST be a bound copy of the global fetch — never the bare function
     // (this is the exact bug that made every native probe fail in the real browser
     // while the same providers succeeded under Node).
-    const rpc = new NativeAgentRpc({ token: '' })
+    const rpc = new NativeAgentRpc()
     const impl: unknown = (rpc as unknown as { fetchImpl: unknown }).fetchImpl
     expect(typeof impl).toBe('function')
     expect(impl).not.toBe(globalThis.fetch)

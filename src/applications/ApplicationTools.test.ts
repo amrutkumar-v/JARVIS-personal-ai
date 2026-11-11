@@ -122,6 +122,7 @@ describe('C — app.launch', () => {
 
     const verify = await tools.get('app.launch')!.verify!({ query: '', params: { application_id: 'calculator' } }, out, { requestId: 'u' })
     expect(verify.ok).toBe(false)
+    expect(verify.status).toBe('unverified')
     expect(verify.message).toMatch(/cannot confirm|unavailable/i)
   })
 

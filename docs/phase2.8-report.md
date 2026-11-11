@@ -46,8 +46,10 @@ not actually reported in.
   page (`?device=<trusted id>` claim flow), honestly reporting `online` only
   while their bridge heartbeats. The optional typed Android bridge/notify
   service is declared REQUIRES CONFIGURATION, not built.
-- No public internet exposure and no TLS termination (LAN-only; auth via a
-  shared bearer token). Every `/api/*` POST requires the token.
+- No public internet exposure and no TLS termination. The backend is
+  loopback-bound; browser APIs use an HttpOnly SameSite session and exact
+  trusted origins, while non-browser API clients use the server-side bearer.
+  Public `/health` is reduced to service identity and aggregate status.
 - No arbitrary command execution in the backend — same bounded-native-agent
   contract as Phases 1.2–2.6.
 - Hand gestures / media device control are NOT implemented and are never faked.
@@ -223,9 +225,9 @@ platform/role/trusted/telemetry). Native + frontend protocols unchanged
 - The companion bridge is a LAN Web page: it claims a TRUSTED id and heartbeats
   only while open and on the same network (or via the PC's LAN IP). Off-LAN
   devices honestly show offline.
-- Without `JARVIS_BACKEND_TOKEN` (backend) + `VITE_JARVIS_BACKEND_TOKEN`
-  (frontend/phone), endpoints run token-less on the LAN — configure the token
-  for anything beyond a trusted home network.
+- `JARVIS_BACKEND_TOKEN` is required by the loopback backend for non-browser
+  clients. Browser pages use an HttpOnly SameSite session cookie; no bearer
+  token is embedded in the frontend or companion page.
 - SSE + gecko/long-poll absent: very old browsers without `EventSource` will
   show the honest disconnection state via the CORE chip.
 - The backend does not do TLS; do not expose it to the public internet.

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { ExecutionTracer } from './trace'
+import { classifyTaskStep } from '../goal/evidence'
 import type { AgentObservation, AgentVerification } from './types'
 
 const verification: AgentVerification = {
@@ -98,7 +99,7 @@ describe('ExecutionTracer', () => {
       status: 'COMPLETED',
       observation: { kind: 'success', toolId: 'clipboard.read', summary: 'contains hi', data: { text: 'hi' }, attempts: 1, durationMs: 3 },
     })
-    const upgraded = tracer.updateStepVerification('type_text', 'COMPLETED', {
+    const upgraded = tracer.updateStepVerification('type_text', {
       status: 'verified',
       message: 'clipboard contained the typed text',
     })
@@ -115,7 +116,7 @@ describe('ExecutionTracer', () => {
     tracer.begin('goal')
     tracer.addStep({ toolId: 'a', action: 'A', arguments: {}, status: 'COMPLETED' })
     expect(
-      tracer.updateStepVerification('a', 'COMPLETED', { status: 'verified', message: 'x' }),
+      tracer.updateStepVerification('a', { status: 'verified', message: 'x' }),
     ).toBe(false)
     expect(tracer.snapshot().steps[0].verification).toBeUndefined()
   })
@@ -123,7 +124,27 @@ describe('ExecutionTracer', () => {
   it('updateStepVerification is a no-op when no run is active', () => {
     const tracer = new ExecutionTracer()
     expect(
-      tracer.updateStepVerification('a', 'COMPLETED', { status: 'verified', message: 'x' }),
+      tracer.updateStepVerification('a', { status: 'verified', message: 'x' }),
     ).toBe(false)
+  })
+
+  it('records a post-action refutation as failed/refuted evidence, never as unverified', () => {
+    const tracer = new ExecutionTracer()
+    tracer.begin('goal')
+    tracer.addStep({
+      toolId: 'app.launch',
+      action: 'Launch app',
+      arguments: { applicationId: 'notepad' },
+      status: 'COMPLETED',
+      observation: { kind: 'partial', toolId: 'app.launch', summary: 'launch reported success, state unknown', attempts: 1, durationMs: 3 },
+      verification: { status: 'unverified', message: 'running state was not observable', durationMs: 3 },
+    })
+
+    expect(tracer.updateStepVerification('app.launch', { status: 'failed', message: 'verified not running' })).toBe(true)
+    const step = tracer.snapshot().steps[0]!
+    expect(step.status).toBe('FAILED')
+    expect(step.observation?.kind).toBe('verification')
+    expect(step.verification?.status).toBe('failed')
+    expect(classifyTaskStep(step)).toBe('refuted')
   })
 })

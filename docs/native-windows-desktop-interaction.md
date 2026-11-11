@@ -141,8 +141,9 @@ deterministic `MemoryDesktopBackend` (`native/src/testingDesktop.ts`,
 ## 5. Running
 
 Identical to Phases 1.2–1.4 (`npm run native:build` + `npm run native:agent`,
-or the same loopback port), then set `VITE_NATIVE_AGENT_URL`/
-`VITE_NATIVE_AGENT_TOKEN` in the web app. The banner says `desktop interaction
+or the same loopback port), then set `VITE_NATIVE_AGENT_URL` in the web app.
+The native bearer credential remains server-side and calls pass through the
+allow-listed backend broker. The banner says `desktop interaction
 mouse/keyboard/focus (bounded, injected)` only on win32.
 
 ## 6. Testing

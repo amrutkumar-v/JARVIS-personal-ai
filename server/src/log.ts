@@ -64,7 +64,12 @@ export function createLogger(opts: LoggerOptions = {}): Logger {
     if (opts.file) {
       pending = pending
         .then(() => appendFile(opts.file as string, line + '\n', 'utf8'))
-        .catch(() => undefined)
+        .catch((error: unknown) => {
+          // A full disk, a locked file or a bad path must not silently stop
+          // the log: say so once on stderr, then carry on.
+          const message = error instanceof Error ? error.message : String(error)
+          process.stderr.write(`[jarvis-log] write failed: ${message}\n`)
+        })
     }
   }
 

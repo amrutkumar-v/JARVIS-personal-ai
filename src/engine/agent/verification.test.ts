@@ -51,6 +51,13 @@ describe('runToolVerification', () => {
     expect(verification.message).toContain('Destination is missing.')
   })
 
+  it('preserves an explicit unverified result instead of collapsing it into failure', async () => {
+    const tool = mockTool(async () => ({ ok: false, status: 'unverified', message: 'Process state is not observable.' }))
+    const verification = await runToolVerification(tool, { query: 'q', params: {} }, success(), ctx)
+    expect(verification.status).toBe('unverified')
+    expect(verification.message).toContain('not observable')
+  })
+
   it('degrades to unverified when the verifier throws', async () => {
     const spy = vi.fn(async () => {
       throw new Error('verifier crashed')

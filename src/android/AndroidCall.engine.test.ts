@@ -2,7 +2,7 @@ import { describe, expect, it, beforeEach } from 'vitest'
 import { AssistantEngine } from '../engine/AssistantEngine'
 import type { AIProvider, AIRequest, AIResponse } from '../engine/provider'
 import type { EngineOutMessage, ToolConfirmationRequest } from '../engine/contracts'
-import type { AndroidCallOutcome, AndroidCapabilities, AndroidCallStateInput, AndroidProvider } from './provider'
+import type { ActiveCall, AndroidCallOutcome, AndroidCapabilities, AndroidCallStateInput, AndroidProvider } from './provider'
 import type { CallAction, CallEventData, CallResultLookup, DeviceRecord } from '../backend/types'
 import { useConversationStore } from '../state/conversation.store'
 import { useJarvisStore } from '../state/jarvis.store'
@@ -75,12 +75,17 @@ class FakeAndroidProvider implements AndroidProvider {
       deviceName: "Amrut's S26 Ultra",
       online: true,
       call: true,
+      speak: true,
       dialPermission: true,
       callControlPermission: true,
     },
   }
   requests: CallAction[] = []
   events: CallEventData[] = []
+  /** The exact words the phone was asked to say, in order. */
+  speaks: string[] = []
+  /** The call state the phone reports right after the dial. */
+  connectState: 'CALLING' | 'CONNECTED' = 'CALLING'
   outcome: AndroidCallOutcome = {
     ok: true,
     state: 'CALL_REQUESTED',
@@ -98,18 +103,24 @@ class FakeAndroidProvider implements AndroidProvider {
     return Promise.resolve([])
   }
 
-  requestCall(action: CallAction, input: { target?: string }): Promise<AndroidCallOutcome> {
+  requestCall(action: CallAction, input: { target?: string; text?: string }): Promise<AndroidCallOutcome> {
     this.requests.push(action)
+    if (action === 'speak' && input.text) this.speaks.push(input.text)
     if (this.outcome.ok) {
-      // The real phone pushes the OS-observed state right after the ack.
-      this.events.unshift({
-        deviceId: 's26-ultra',
-        state: 'CALLING',
-        direction: 'outgoing',
-        commandId: this.outcome.commandId,
-        contactName: input.target,
-        at: Date.now(),
-      })
+      if (action === 'dial') {
+        // The real phone pushes the OS-observed state right after the ack.
+        this.events.unshift({
+          deviceId: 's26-ultra',
+          state: this.connectState,
+          direction: 'outgoing',
+          commandId: this.outcome.commandId,
+          contactName: input.target,
+          at: Date.now(),
+        })
+      }
+      if (action === 'hangup') {
+        this.events.unshift({ deviceId: 's26-ultra', state: 'ENDED', at: Date.now() })
+      }
     }
     return Promise.resolve(this.outcome)
   }
@@ -120,6 +131,26 @@ class FakeAndroidProvider implements AndroidProvider {
 
   recentCallEvents(limit = 10): CallEventData[] {
     return this.events.slice(0, limit)
+  }
+
+  activeCall(): ActiveCall | null {
+    // Same semantics as the real provider: the newest meaningful state wins,
+    // and a terminal state ends the call.
+    const terminal = ['ENDED', 'REJECTED', 'CANCELLED', 'FAILED']
+    for (const e of this.events) {
+      if (['CALLING', 'RINGING', 'CONNECTED'].includes(e.state)) {
+        return {
+          deviceId: e.deviceId,
+          state: e.state,
+          direction: e.direction,
+          contactName: e.contactName,
+          number: e.number,
+          at: e.at,
+        }
+      }
+      if (terminal.includes(e.state)) return null
+    }
+    return null
   }
 
   awaitCallState(input: AndroidCallStateInput): Promise<CallEventData | null> {
@@ -165,11 +196,18 @@ describe('Phase 10 — Android calling through the engine', () => {
     expect(engine.tools.get('call.reject')).toBeDefined()
     expect(engine.tools.get('call.end')).toBeDefined()
     expect(engine.tools.get('call.status')).toBeDefined()
+    // The conversational call surface: open a call and ask, close it, read it back.
+    expect(engine.tools.get('call.converse')).toBeDefined()
+    expect(engine.tools.get('call.conclude')).toBeDefined()
+    expect(engine.tools.get('call.summarize')).toBeDefined()
     const ids = engine.capabilityCatalog().map((c) => c.id)
     expect(ids).toContain('phone_call_dial')
     expect(ids).toContain('phone_call_answer')
+    expect(ids).toContain('phone_call_converse')
+    expect(ids).toContain('phone_call_conclude')
+    // `phone_call_summarize` is now backed by a REAL tool.
+    expect(ids).toContain('phone_call_summarize')
     // Declared-but-unimplemented call capabilities stay absent (honest).
-    expect(ids).not.toContain('phone_call_summarize')
     expect(ids).not.toContain('phone_sms_send')
   })
 
@@ -238,5 +276,72 @@ describe('Phase 10 — Android calling through the engine', () => {
 
     engine.attachAndroid(undefined)
     expect(useJarvisStore.getState().capabilities.callingEnabled).toBe(false)
+  })
+})
+
+describe('the conversational call through the engine', () => {
+  beforeEach(() => {
+    stubBrowserStorage()
+    resetProviders()
+    useJarvisStore.getState().resetRun()
+    useConversationStore.getState().clearConversation()
+  })
+
+  it('plans and executes: dials, introduces itself, asks the question, and leaves the call open', async () => {
+    const android = new FakeAndroidProvider()
+    android.connectState = 'CONNECTED'
+    const provider = new ScriptedProvider([
+      req('call.converse', { target: 'Dad', brief: 'whether he can come at 5 pm today' }, 'phone_call_converse'),
+      text('I called Dad and asked him. The call is still open — what did he say?'),
+    ])
+    const engine = new AssistantEngine({ providers: [provider], android })
+    const events: EngineOutMessage[] = []
+    engine.on((m) => events.push(m))
+
+    const pending = engine.process('call Dad and ask whether he can come at 5 pm today')
+    const request = await waitForToolConfirmRequest(events)
+    // A real call is never auto-approved: the user confirms it.
+    expect(request.toolId).toBe('call.converse')
+    await request.onConfirm()
+    await pending
+
+    // The phone really dialled, and really said both lines.
+    expect(android.requests).toContain('dial')
+    expect(android.requests.filter((a) => a === 'speak')).toHaveLength(2)
+    expect(android.speaks[0]).toContain('personal assistant')
+    // The operator's name comes from the real memory profile; with no name on
+    // file JARVIS says "the user" rather than inventing one.
+    expect(android.speaks[0]).toMatch(/calling on (the user|Amrut)'s behalf/)
+    expect(android.speaks[1]).toContain('whether he can come at 5 pm today')
+    // The step is VERIFIED from the real call-state observation.
+    const step = engine.goalPlan().steps[0]
+    expect(step?.toolId).toBe('call.converse')
+    expect(step?.state).toBe('verified')
+  })
+
+  it('closes the call and records what was communicated', async () => {
+    const android = new FakeAndroidProvider()
+    android.connectState = 'CONNECTED'
+    const provider = new ScriptedProvider([
+      req('call.conclude', { reply: 'he said yes, come at 5 pm' }, 'phone_call_conclude'),
+      text('Done — I closed the call and saved the summary.'),
+    ])
+    const engine = new AssistantEngine({ providers: [provider], android })
+    const events: EngineOutMessage[] = []
+    engine.on((m) => events.push(m))
+
+    // The call is already open when the closing step runs.
+    android.events.unshift({ deviceId: 's26-ultra', state: 'CONNECTED', direction: 'outgoing', at: Date.now() })
+
+    const pending = engine.process('he said yes, hang up now')
+    const request = await waitForToolConfirmRequest(events)
+    await request.onConfirm()
+    await pending
+
+    expect(android.requests).toContain('speak')
+    expect(android.requests).toContain('hangup')
+    const step = engine.goalPlan().steps[0]
+    expect(step?.toolId).toBe('call.conclude')
+    expect(step?.state).toBe('verified')
   })
 })

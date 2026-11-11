@@ -78,7 +78,9 @@ const HEALTH_CACHE_TTL_MS = 30_000
  */
 export function resolveDefaultEmbeddingProvider(): EmbeddingProvider {
   if (isEmbeddingEndpointExplicitlyConfigured()) {
-    return openAIEmbeddingProvider.isConfigured() ? openAIEmbeddingProvider : defaultDeterministicProvider
+    // Explicit intent must not silently fall back to deterministic output if
+    // the embedding endpoint is incomplete or unavailable.
+    return openAIEmbeddingProvider
   }
   return defaultDeterministicProvider
 }
@@ -158,7 +160,7 @@ export class EmbeddingManager {
     const providerHealth = this.provider.getHealth()
     const health: ProviderHealth = {
       ...providerHealth,
-      fallbackActive: this.provider.id === 'deterministic-test',
+      fallbackActive: !this.skipEmbeddings && this.provider.id === 'deterministic-test',
     }
     this.healthCache = health
     this.healthCacheExpiry = now + HEALTH_CACHE_TTL_MS
@@ -176,7 +178,9 @@ export class EmbeddingManager {
     if (!trimmed) return undefined
     try {
       const vector = await this.provider.embed(trimmed)
-      return this.sanitizeVector(vector.values)
+      const sanitized = this.sanitizeVector(vector.values)
+      this.invalidateHealthCache()
+      return sanitized
     } catch (error) {
       console.warn('[embedding] Failed to generate embedding:', error)
       this.invalidateHealthCache()
@@ -325,7 +329,7 @@ export class EmbeddingManager {
    */
   async checkSemanticDuplicate(
     newContent: string,
-    existingItems: Array<{ id: string; content: string; embedding?: number[] }>,
+    existingItems: Array<{ id: string; content: string; embedding?: number[]; metadata?: Record<string, unknown> }>,
   ): Promise<DeduplicationResult> {
     if (!this.hasRealEmbeddings() || existingItems.length === 0) {
       return { isDuplicate: false }
@@ -337,7 +341,11 @@ export class EmbeddingManager {
     }
 
     const candidates = existingItems
-      .filter((item) => item.embedding && item.embedding.length > 0)
+      .filter((item) =>
+        item.embedding && item.embedding.length === this.provider.dimensions &&
+        item.metadata?.embeddingProvider === this.provider.id &&
+        Number(item.metadata.embeddingDimensions) === this.provider.dimensions,
+      )
       .map((item) => item.embedding!)
 
     if (candidates.length === 0) {
@@ -347,7 +355,10 @@ export class EmbeddingManager {
     const { index, similarity } = findMostSimilar(newEmbedding, candidates)
     if (index >= 0 && similarity >= this.deduplicationThreshold) {
       const match = existingItems.filter(
-        (item) => item.embedding && item.embedding.length > 0,
+        (item) =>
+          item.embedding && item.embedding.length === this.provider.dimensions &&
+          item.metadata?.embeddingProvider === this.provider.id &&
+          Number(item.metadata.embeddingDimensions) === this.provider.dimensions,
       )[index]
       return { isDuplicate: true, existingId: match?.id, similarity }
     }

@@ -1,7 +1,14 @@
 import type { BackendClient } from '../backend/BackendClient'
 import type { CallAction, CallEventData, CallResultLookup, CallState, DeviceRecord } from '../backend/types'
-import type { AndroidCallOutcome, AndroidCallStateInput, AndroidCapabilities, AndroidPhoneCapability, AndroidProvider } from './provider'
-import { callActionPermission, phoneSupportsAction } from './provider'
+import type {
+  ActiveCall,
+  AndroidCallOutcome,
+  AndroidCallStateInput,
+  AndroidCapabilities,
+  AndroidPhoneCapability,
+  AndroidProvider,
+} from './provider'
+import { callActionPermission, LIVE_CALL_STATES, phoneSupportsAction, TERMINAL_CALL_STATES } from './provider'
 
 /**
  * BackendAndroidProvider — the real implementation of the Android telephony
@@ -56,6 +63,45 @@ export class BackendAndroidProvider implements AndroidProvider {
     return this.events.slice(0, Math.max(0, limit))
   }
 
+  /**
+   * The live call, derived only from real OS observations.
+   *
+   * The log is newest-first. For each device the newest MEANINGFUL state
+   * decides: a live state (CALLING/RINGING/CONNECTED) means a call is up, a
+   * terminal state (ENDED/REJECTED/CANCELLED/FAILED) means it is not. States
+   * that say nothing about a live call (the backend's synthetic
+   * CALL_REQUESTED, or a permission refusal) are inconclusive and the scan
+   * continues to the next observation.
+   */
+  activeCall(): ActiveCall | null {
+    const byDevice = new Map<string, CallEventData[]>()
+    for (const event of this.events) {
+      const list = byDevice.get(event.deviceId) ?? []
+      list.push(event)
+      byDevice.set(event.deviceId, list)
+    }
+    for (const list of byDevice.values()) {
+      for (const event of list) {
+        if (LIVE_CALL_STATES.includes(event.state)) {
+          return {
+            deviceId: event.deviceId,
+            state: event.state,
+            direction: event.direction,
+            contactName: event.contactName,
+            number: event.number,
+            at: event.at,
+          }
+        }
+        // A terminal state means this device's call is definitively over.
+        if (TERMINAL_CALL_STATES.includes(event.state)) break
+        // Anything else (the backend's synthetic CALL_REQUESTED, a permission
+        // refusal) says nothing about a live call — keep looking at this
+        // device's older observations.
+      }
+    }
+    return null
+  }
+
   capabilities(): AndroidCapabilities {
     if (!this.reachable()) {
       return {
@@ -78,7 +124,7 @@ export class BackendAndroidProvider implements AndroidProvider {
 
   async requestCall(
     action: CallAction,
-    input: { target?: string; number?: string; reason?: string },
+    input: { target?: string; number?: string; reason?: string; text?: string },
   ): Promise<AndroidCallOutcome> {
     if (!this.reachable()) {
       return {
@@ -103,10 +149,13 @@ export class BackendAndroidProvider implements AndroidProvider {
       const permission = callActionPermission(action)
       return {
         ok: false,
-        state: phone.call ? 'PERMISSION_REQUIRED' : 'NOT_SUPPORTED',
-        message: phone.call
-          ? `${phone.deviceName} has not granted the ${permission} permission, so JARVIS cannot ${action} a call.`
-          : `${phone.deviceName} reports no telephony capability, so JARVIS cannot ${action} a call.`,
+        state: phone.call || action === 'speak' ? 'PERMISSION_REQUIRED' : 'NOT_SUPPORTED',
+        message:
+          action === 'speak'
+            ? `${phone.deviceName} does not advertise the call.speak capability, so JARVIS cannot speak on that phone yet.`
+            : phone.call
+              ? `${phone.deviceName} has not granted the ${permission} permission, so JARVIS cannot ${action} a call.`
+              : `${phone.deviceName} reports no telephony capability, so JARVIS cannot ${action} a call.`,
         deviceId: phone.deviceId,
       }
     }
@@ -117,6 +166,7 @@ export class BackendAndroidProvider implements AndroidProvider {
       ...(input.target ? { contact: input.target } : {}),
       ...(input.number ? { number: input.number } : {}),
       ...(input.reason ? { reason: input.reason } : {}),
+      ...(input.text ? { text: input.text } : {}),
     })
 
     return {
@@ -174,6 +224,7 @@ function capabilityOf(record: DeviceRecord): AndroidPhoneCapability {
     deviceName: record.name,
     online: record.online === true,
     call: record.capabilities.includes('call'),
+    speak: record.capabilities.includes('call.speak'),
     dialPermission: record.permissions.includes('CALL_PHONE'),
     callControlPermission: record.permissions.includes('ANSWER_PHONE_CALLS'),
   }
@@ -197,6 +248,9 @@ function describeDispatch(
   }
   if (state !== 'CALL_REQUESTED') {
     return `The ${action} action was not accepted (${state}).${reason ? ` ${reason}` : ''}`
+  }
+  if (action === 'speak') {
+    return `Sent the text to ${phone.deviceName} to speak on the phone's loudspeaker. Waiting for the phone to confirm it played.`
   }
   const who = input.target ?? input.number ?? 'the caller'
   switch (action) {

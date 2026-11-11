@@ -44,8 +44,15 @@ export interface PostActionObservation {
 }
 
 export interface PostActionVerification {
+  /** `unverified` means the observation could not answer the question. */
+  status: 'verified' | 'failed' | 'unverified'
+  /** Compatibility projection: true only for verified success. */
   passed: boolean
   message: string
+}
+
+function result(status: PostActionVerification['status'], message: string): PostActionVerification {
+  return { status, passed: status === 'verified', message }
 }
 
 export interface ActionResult {
@@ -100,21 +107,12 @@ function planAppLaunchObservation(
       const running = data?.running === true
       const runningVerified = data?.runningVerified === true
       if (runningVerified && running) {
-        return {
-          passed: true,
-          message: `${appId || 'Application'} confirmed running.`,
-        }
+        return result('verified', `${appId || 'Application'} confirmed running.`)
       }
       if (runningVerified && !running) {
-        return {
-          passed: false,
-          message: `${appId || 'Application'} was not found running after launch (verified check).`,
-        }
+        return result('failed', `${appId || 'Application'} was not found running after launch (verified check).`)
       }
-      return {
-        passed: true,
-        message: `${appId || 'Application'} launch reported success, but the platform cannot confirm its running state (not observable).`,
-      }
+      return result('unverified', `${appId || 'Application'} launch reported success, but the platform cannot confirm its running state (not observable).`)
     },
   }
 }
@@ -130,13 +128,12 @@ function planAppCloseObservation(
     description: `Verify ${appId || 'application'} is not running after close`,
     verify: (obs) => {
       const data = obs as Record<string, unknown> | undefined
-      const running = data?.running === true
-      return {
-        passed: !running,
-        message: !running
-          ? `${appId || 'Application'} confirmed closed.`
-          : `${appId || 'Application'} may still be running.`,
+      if (data?.runningVerified !== true || typeof data.running !== 'boolean') {
+        return result('unverified', `${appId || 'Application'} close could not be verified because its running state was not observable.`)
       }
+      return data.running
+        ? result('failed', `${appId || 'Application'} may still be running.`)
+        : result('verified', `${appId || 'Application'} confirmed closed.`)
     },
   }
 }
@@ -152,14 +149,17 @@ function planClipboardWriteObservation(
     description: 'Verify clipboard contains the written text',
     verify: (obs) => {
       const data = obs as Record<string, unknown> | undefined
-      const clipText = String(data?.text ?? data?.content ?? '')
+      const observedText = typeof data?.text === 'string'
+        ? data.text
+        : typeof data?.content === 'string'
+          ? data.content
+          : undefined
+      if (observedText === undefined) return result('unverified', 'Clipboard read did not return text, so the write could not be verified.')
+      const clipText = observedText
       const match = clipText === text
-      return {
-        passed: match,
-        message: match
-          ? 'Clipboard matches expected text.'
-          : `Clipboard text does not match (got: "${clipText.slice(0, 60)}${clipText.length > 60 ? '...' : ''}").`,
-      }
+      return match
+        ? result('verified', 'Clipboard matches expected text.')
+        : result('failed', `Clipboard text does not match (got: "${clipText.slice(0, 60)}${clipText.length > 60 ? '...' : ''}").`)
     },
   }
 }
@@ -175,14 +175,14 @@ function planBrowserSearchObservation(): PostActionObservation {
     retryDelayMs: 1500,
     verify: (obs) => {
       const data = obs as Record<string, unknown> | undefined
-      const textLength = Number(data?.textLength ?? 0)
-      const hasContent = textLength > 50
-      return {
-        passed: hasContent,
-        message: hasContent
-          ? 'Browser page contains search results.'
-          : 'Browser page appears empty or has minimal content.',
+      if (typeof data?.textLength !== 'number' || !Number.isFinite(data.textLength)) {
+        return result('unverified', 'Browser observation did not report a readable text length.')
       }
+      const textLength = data.textLength
+      const hasContent = textLength > 50
+      return hasContent
+        ? result('verified', 'Browser page contains search results.')
+        : result('failed', 'Browser page appears empty or has minimal content.')
     },
   }
 }
@@ -201,14 +201,14 @@ function planBrowserNavigateObservation(
     retryDelayMs: 1200,
     verify: (obs) => {
       const data = obs as Record<string, unknown> | undefined
-      const textLength = Number(data?.textLength ?? 0)
-      const hasContent = textLength > 0
-      return {
-        passed: hasContent,
-        message: hasContent
-          ? `Browser page loaded successfully.`
-          : 'Browser page appears empty after navigation.',
+      if (typeof data?.textLength !== 'number' || !Number.isFinite(data.textLength)) {
+        return result('unverified', 'Browser observation did not report a readable text length.')
       }
+      const textLength = data.textLength
+      const hasContent = textLength > 0
+      return hasContent
+        ? result('verified', 'Browser page loaded successfully.')
+        : result('failed', 'Browser page appears empty after navigation.')
     },
   }
 }
@@ -232,18 +232,21 @@ function planDesktopTypeObservation(
     settleMs: 300,
     verify: (obs) => {
       const data = obs as Record<string, unknown> | undefined
-      const clipText = String(data?.text ?? data?.content ?? '')
+      const observedText = typeof data?.text === 'string'
+        ? data.text
+        : typeof data?.content === 'string'
+          ? data.content
+          : undefined
+      if (observedText === undefined) return result('unverified', 'Clipboard read did not return text, so typing could not be verified.')
+      const clipText = observedText
       // An EMPTY clipboard can never confirm typing (the pre-observe copy
       // failed or found nothing) — only a genuine match is evidence.
       const match = text.length > 0 && clipText.includes(text)
-      return {
-        passed: match,
-        message: match
-          ? 'Typed text confirmed by reading it back from the clipboard after select-all and copy.'
-          : clipText.length === 0
-            ? 'Select-all + copy produced an empty clipboard, so the typed text could not be confirmed.'
-            : `Typed text not found in clipboard (got: "${clipText.slice(0, 60)}${clipText.length > 60 ? '...' : ''}").`,
-      }
+      return match
+        ? result('verified', 'Typed text confirmed by reading it back from the clipboard after select-all and copy.')
+        : result('failed', clipText.length === 0
+          ? 'Select-all + copy produced an empty clipboard, so the typed text could not be confirmed.'
+          : `Typed text not found in clipboard (got: "${clipText.slice(0, 60)}${clipText.length > 60 ? '...' : ''}").`)
     },
   }
 }

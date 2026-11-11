@@ -33,6 +33,7 @@ import type {
 import type { Episode } from '../memory/episodes'
 import { useJarvisStore } from '../state/jarvis.store'
 import { useConversationStore } from '../state/conversation.store'
+import { deriveAiProviderMode } from '../types/capabilities'
 import { addUserMessage, addAssistantMessage } from '../conversation'
 import type { ConversationMessage } from '../conversation/types'
 import type { VoiceOutput } from '../voice/VoiceOutput'
@@ -71,7 +72,7 @@ import { createClipboardTools } from '../clipboard'
 import type { ClipboardProvider } from '../clipboard'
 import { createBrowserTools } from '../browser'
 import type { BrowserProvider } from '../browser'
-import { createSchedulerTools } from '../scheduling/schedulerTools'
+import { createSchedulerTools, planNaturalSchedulingRequest } from '../scheduling/schedulerTools'
 import type { SchedulerAdapter } from '../scheduling/scheduler'
 import { CapabilityRegistry, DEFAULT_CAPABILITIES, toCapabilityDefinition, recordReliability } from './capabilities'
 import type { CapabilityContext, CapabilityPreview, CapabilityReliabilityIndex } from './capabilities'
@@ -80,7 +81,7 @@ import { understandRequest, type RequestClass } from './orchestrator/goalUnderst
 import { extractEntitiesFromResult, TaskContextStore } from './orchestrator/taskContext'
 import { PersonalAICore } from './orchestrator/orchestrator'
 import { planRequest } from './orchestrator/planner'
-import { MOCK_PROVIDER_ID, checkAiHealth } from '../config/ai'
+import { MOCK_PROVIDER_ID, ROUTED_PROVIDER_IDS, checkAiHealth } from '../config/ai'
 import { planPostActionObservation } from './orchestrator/postActionVerify'
 import { applyResolutionToStepMeta } from './orchestrator/phase6/enrich'
 import type { Phase6StepMeta } from './orchestrator/phase6/planTypes'
@@ -204,6 +205,18 @@ import type {
   ExecutionOutcome,
   ExecutionRunFacts,
 } from './action'
+import { createDevTools } from './dev/DevTools'
+import {
+  buildDevelopmentPlan,
+  DevelopmentPlanError,
+  extractProjectPath,
+  projectNameFromPath,
+} from './dev/DevelopmentPlanner'
+import { PersistentTaskOrchestrator } from './tasks/PersistentTaskOrchestrator'
+import type { SubtaskExecutionResult } from './tasks/PersistentTaskOrchestrator'
+import type { PersistentTask, Subtask, TaskCheckpoint, TaskFilter, TaskStorage } from './tasks/types'
+import { ProjectContextStore } from '../memory/projectContext'
+import type { ProjectContextStorage } from '../memory/projectContext'
 
 /**
  * JARVIS 0.4 — Multi-step Agent Engine
@@ -432,8 +445,33 @@ export class AssistantEngine {
   private autonomyLevel: AutonomyLevel = defaultAutonomy()
   // Phase 3.0 — structured task-execution log (injectable for tests/future sync).
   private taskLog: TaskLog
+  // Phase 3.0C / Autonomous Agent Transformation — Persistent Task Orchestration & Project Context
+  private persistentOrchestrator: PersistentTaskOrchestrator
+  private projectContextStore: ProjectContextStore
 
-  constructor(options?: { providers?: AIProvider[]; fileSystem?: FileSystemProvider; applications?: ApplicationProvider; observation?: ObservationProvider; desktop?: DesktopProvider; vision?: VisionProvider; camera?: CameraController | null; device?: DeviceProvider; web?: WebProvider; clipboard?: ClipboardProvider; browser?: BrowserProvider; scheduling?: SchedulerAdapter; android?: AndroidProvider; goalLimits?: Partial<GoalLimits>; capabilities?: CapabilityDefinition[]; autonomyLevel?: AutonomyLevel; taskLog?: TaskLog }) {
+  constructor(options?: {
+    providers?: AIProvider[]
+    fileSystem?: FileSystemProvider
+    applications?: ApplicationProvider
+    observation?: ObservationProvider
+    desktop?: DesktopProvider
+    vision?: VisionProvider
+    camera?: CameraController | null
+    device?: DeviceProvider
+    web?: WebProvider
+    clipboard?: ClipboardProvider
+    browser?: BrowserProvider
+    scheduling?: SchedulerAdapter
+    android?: AndroidProvider
+    goalLimits?: Partial<GoalLimits>
+    capabilities?: CapabilityDefinition[]
+    autonomyLevel?: AutonomyLevel
+    taskLog?: TaskLog
+    taskStorage?: TaskStorage
+    persistentOrchestrator?: PersistentTaskOrchestrator
+    projectContextStorage?: ProjectContextStorage
+    projectContextStore?: ProjectContextStore
+  }) {
     // Phase 1.0 — provider injection seam: tests inject a scripted provider;
     // production defaults to the configured provider stack unchanged.
     const providers = options?.providers && options.providers.length ? [...options.providers] : createProviders()
@@ -522,8 +560,35 @@ export class AssistantEngine {
     // browser app (LocalScheduler); tools registered here so the model can
     // act on "remind me at 7 PM". Without a seam, scheduling tools vanish.
     this.syncScheduling(options?.scheduling)
+    // Autonomous Development Agent Tools (dev.*)
+    for (const tool of createDevTools()) {
+      this.registry.register(tool)
+    }
+
     // Phase 3.0 — task context store for follow-up resolution.
     this.taskContextStore = new TaskContextStore()
+    this.projectContextStore = options?.projectContextStore ?? new ProjectContextStore(options?.projectContextStorage)
+
+    this.persistentOrchestrator = options?.persistentOrchestrator ?? new PersistentTaskOrchestrator({
+      storage: options?.taskStorage,
+      executor: async (subtask: Subtask, task: PersistentTask): Promise<SubtaskExecutionResult> => {
+        return this.executePersistentSubtask(subtask, task)
+      },
+      onCheckpoint: async (checkpoint: TaskCheckpoint, task: PersistentTask) => {
+        const projId = (task.metadata?.projectId as string) || (task.metadata?.projectPath as string)
+        const projPath = (task.metadata?.projectPath as string) || ''
+        if (projId || projPath) {
+          this.projectContextStore.recordTaskRun({
+            projectIdOrName: projId || task.id,
+            rootPath: projPath,
+            taskId: task.id,
+            taskTitle: task.title,
+            status: task.state,
+            checkpointSummary: checkpoint.summary,
+          })
+        }
+      },
+    })
     // Phase 2.3 — register the default capability catalogue, but ONLY those
     // capabilities whose declared implementation tool actually registered here.
     // A capability with no real implementation is never exposed, so the model
@@ -931,6 +996,303 @@ export class AssistantEngine {
     } finally {
       this.orchestrationActive = false
     }
+  }
+
+  /* ------------------------------------------------ Persistent Task Orchestrator */
+
+  getPersistentOrchestrator(): PersistentTaskOrchestrator {
+    return this.persistentOrchestrator
+  }
+
+  getProjectContextStore(): ProjectContextStore {
+    return this.projectContextStore
+  }
+
+  async submitPersistentTask(options: {
+    title: string
+    objective: string
+    projectId?: string
+    projectPath?: string
+    priority?: number
+    subtasks?: Array<{
+      title: string
+      description?: string
+      capability: string
+      toolId?: string
+      dependencies?: string[]
+      payload?: Record<string, unknown>
+      priority?: number
+      maxRetries?: number
+    }>
+    tags?: string[]
+    metadata?: Record<string, unknown>
+  }): Promise<PersistentTask> {
+    const numericPriority = Math.min(100, Math.max(1, options.priority ?? 50))
+
+    const task = await this.persistentOrchestrator.createTask({
+      title: options.title,
+      objective: options.objective,
+      priority: numericPriority,
+      subtasks: options.subtasks?.map((s) => ({
+        title: s.title,
+        description: s.description ?? s.title,
+        capability: s.capability,
+        toolId: s.toolId ?? s.capability,
+        dependencies: s.dependencies ?? [],
+        payload: s.payload ?? {},
+        priority: s.priority ?? numericPriority,
+        maxRetries: s.maxRetries ?? 2,
+      })),
+      tags: options.tags ?? [],
+      metadata: {
+        projectId: options.projectId,
+        projectPath: options.projectPath,
+        ...options.metadata,
+      },
+    })
+    await this.persistentOrchestrator.queueTask(task.id)
+    this.persistentOrchestrator.start(100)
+    return (await this.persistentOrchestrator.getTask(task.id)) ?? task
+  }
+
+  async planAndSubmitAutonomousTask(
+    objective: string,
+    projectPathOrName?: string,
+  ): Promise<PersistentTask> {
+    // A concrete path in the objective always wins. The route's projectName
+    // extraction is only a fallback, so "Inspect D:\JARVIS-Test." can never be
+    // planned against the fallback project.
+    const explicitPath = extractProjectPath(objective)
+    let project = projectPathOrName
+      ? this.projectContextStore.find(projectPathOrName)
+      : this.projectContextStore.findLatestActiveProject()
+
+    let rawPath = explicitPath || project?.rootPath
+    if (!rawPath && projectPathOrName) {
+      if (projectPathOrName.includes('/') || projectPathOrName.includes('\\') || projectPathOrName.includes(':')) {
+        rawPath = projectPathOrName
+      } else {
+        // Established JARVIS convention for a named local project. The path is
+        // still validated by the backend before any file is touched.
+        rawPath = `D:/${projectPathOrName}`
+      }
+    }
+
+    if (!rawPath) {
+      throw new DevelopmentPlanError(
+        'missing_project',
+        'I need an explicit absolute project path (for example D:\\MyProject) before I can plan development work.',
+      )
+    }
+
+    const resolvedName =
+      project?.name ||
+      projectPathOrName ||
+      projectNameFromPath(rawPath)
+
+    const plan = buildDevelopmentPlan(objective, rawPath, resolvedName)
+
+    if (!project) {
+      project = {
+        projectId: plan.projectName,
+        name: plan.projectName,
+        rootPath: plan.projectPath,
+        lastInspectedAt: new Date().toISOString(),
+      }
+      this.projectContextStore.set(project)
+    }
+
+    return this.submitPersistentTask({
+      title: `Autonomous Task: ${objective.slice(0, 60)}`,
+      objective,
+      projectId: project.projectId || plan.projectName,
+      projectPath: plan.projectPath,
+      priority: 75,
+      subtasks: plan.subtasks,
+      metadata: {
+        developmentPlan: true,
+        requiredFiles: plan.requiredFiles,
+      },
+    })
+  }
+
+  async pausePersistentTask(taskId: string): Promise<boolean> {
+    return this.persistentOrchestrator.pauseTask(taskId)
+  }
+
+  async resumePersistentTask(taskId: string): Promise<boolean> {
+    return this.persistentOrchestrator.resumeTask(taskId)
+  }
+
+  async cancelPersistentTask(taskId: string): Promise<boolean> {
+    return this.persistentOrchestrator.cancelTask(taskId)
+  }
+
+  async approveTaskAction(taskId: string, approvalId: string): Promise<boolean> {
+    return this.persistentOrchestrator.approveAction(taskId, approvalId)
+  }
+
+  async rejectTaskAction(taskId: string, approvalId: string, reason?: string): Promise<boolean> {
+    return this.persistentOrchestrator.rejectAction(taskId, approvalId, reason)
+  }
+
+  async getPersistentTasks(filter?: TaskFilter): Promise<PersistentTask[]> {
+    return this.persistentOrchestrator.listTasks(filter)
+  }
+
+  async getPersistentTask(id: string): Promise<PersistentTask | null> {
+    return this.persistentOrchestrator.getTask(id)
+  }
+
+  async recoverPersistentTasks(): Promise<PersistentTask[]> {
+    return this.persistentOrchestrator.recoverUnfinishedTasks()
+  }
+
+  /**
+   * Execute one subtask within the PersistentTaskOrchestrator lifecycle.
+   * Runs through the canonical pipeline:
+   * Tool Resolution -> Input Validation -> Permission Check -> Execution -> Verification.
+   */
+  private async executePersistentSubtask(
+    subtask: Subtask,
+    task: PersistentTask,
+  ): Promise<SubtaskExecutionResult> {
+    let tool = this.registry.get(subtask.toolId) || this.registry.get(subtask.capability)
+    if (!tool) {
+      const capDef = this.capabilities.get(subtask.capability)
+      if (capDef && capDef.tools.length > 0) {
+        for (const tId of capDef.tools) {
+          const candidate = this.registry.get(tId)
+          if (candidate) {
+            tool = candidate
+            break
+          }
+        }
+      }
+    }
+
+    if (!tool) {
+      return {
+        success: false,
+        error: `Tool or capability "${subtask.capability}" not found in registry.`,
+      }
+    }
+
+    // Permission enforcement: Default-Deny on sensitive or confirmation-requiring actions
+    const isSensitive =
+      tool.requiresPermission ||
+      tool.permission === 'user_confirmation' ||
+      tool.permission === 'high_risk' ||
+      subtask.capability.includes('delete') ||
+      subtask.capability.includes('push') ||
+      subtask.capability.includes('destroy') ||
+      subtask.capability.includes('shell')
+
+    if (isSensitive) {
+      const hasApproval = task.requiredApprovals?.some(
+        (a) => (a.action === subtask.capability || a.toolId === tool?.id) && a.granted === true,
+      )
+      if (!hasApproval) {
+        return {
+          success: false,
+          requiresPermission: {
+            action: subtask.capability,
+            description: subtask.description || `Execute ${tool.name}`,
+            impact: `Execution of ${tool.name} requires explicit user approval.`,
+            toolId: tool.id,
+            payload: subtask.payload,
+          },
+        }
+      }
+    }
+
+    const toolInput: ToolInput = {
+      query: subtask.title,
+      params: this.buildSubtaskParams(subtask, task),
+    }
+
+    const toolCtx: ToolContext = {
+      requestId: `subtask-${task.id}-${subtask.id}`,
+    }
+
+    try {
+      const res = await tool.execute(toolInput, toolCtx)
+
+      let verified = res.ok
+      let evidence = res.message
+      if (tool.verifiable && tool.verify) {
+        const v = await tool.verify(toolInput, res, toolCtx)
+        verified = v.ok
+        evidence = v.message || evidence
+      }
+
+      return {
+        success: res.ok && verified,
+        output: res.data,
+        error: res.ok && verified ? undefined : res.message,
+        observation: {
+          kind: 'tool_output',
+          summary: res.message,
+          data: res.data,
+        },
+        verification: {
+          passed: verified,
+          evidence,
+        },
+      }
+    } catch (err) {
+      return {
+        success: false,
+        error: err instanceof Error ? err.message : String(err),
+      }
+    }
+  }
+
+  /**
+   * Attach observed evidence from already verified subtasks to the final
+   * report step. The report must be written from real outputs, never from a
+   * hardcoded "tests passed" claim.
+   */
+  private buildSubtaskParams(subtask: Subtask, task: PersistentTask): Record<string, unknown> {
+    const params = { ...(subtask.payload || {}) }
+    const isReport = subtask.toolId === 'dev.generateReport' || subtask.capability === 'dev.generateReport'
+    if (!isReport) return params
+
+    const metadata = (task.metadata || {}) as Record<string, unknown>
+    if (typeof params.projectPath !== 'string' && typeof metadata.projectPath === 'string') {
+      params.projectPath = metadata.projectPath
+    }
+    if (!Array.isArray(params.requiredFiles) && Array.isArray(metadata.requiredFiles)) {
+      params.requiredFiles = metadata.requiredFiles
+    }
+
+    const outputs = task.subtasks
+      .filter((s) => s.result?.output !== undefined)
+      .map((s) => ({
+        capability: s.capability,
+        toolId: s.toolId,
+        output: s.result?.output as Record<string, unknown>,
+      }))
+    const reversed = [...outputs].reverse()
+    const testResults = reversed.find(
+      (o) => o.toolId === 'dev.runTests' || o.capability === 'dev.runTests',
+    )?.output
+    const checkpoint = reversed.find(
+      (o) => o.toolId === 'dev.gitCheckpoint' || o.capability === 'dev.gitCheckpoint',
+    )?.output
+    const fileChanges = outputs
+      .filter((o) => o.toolId === 'dev.patchFile' || o.capability === 'dev.patchFile')
+      .map((o) => o.output)
+
+    params.evidence = {
+      ...(params.evidence && typeof params.evidence === 'object'
+        ? (params.evidence as Record<string, unknown>)
+        : {}),
+      testResults,
+      checkpoint,
+      fileChanges,
+    }
+    return params
   }
 
   /**
@@ -1796,6 +2158,7 @@ export class AssistantEngine {
       // an AI service, so it must never count as "AI configured/connected".
       // `aiConfigured`/`aiConnected` are true ONLY for a real configured provider.
       aiConfigured: this.provider.isConfigured() && this.provider.id !== 'mock',
+      aiProviderMode: deriveAiProviderMode(this.provider.id, false),
       memoryEnabled: true,
       toolsEnabled: this.registry.size > 0,
       callingEnabled: this.android?.capabilities().available === true,
@@ -1830,16 +2193,45 @@ export class AssistantEngine {
     let reachable = false
     let healthStatus: 'CONNECTED' | 'MISCONFIGURED' | 'AUTHENTICATION_FAILED' | 'MODEL_UNAVAILABLE' | 'NETWORK_ERROR' | 'RATE_LIMITED' | 'DISCONNECTED' = 'DISCONNECTED'
     let healthMessage = ''
+    let activeProvider: string | undefined
+    let activeModel: string | undefined
+    let fallbackProvider: string | undefined
 
     if (this.provider.id !== 'mock') {
       try {
-        const health = await checkAiHealth()
+        const preferredProvider = useJarvisStore.getState().preferences?.providerId
+        const pinnedProvider = preferredProvider && (ROUTED_PROVIDER_IDS as readonly string[]).includes(preferredProvider)
+          ? preferredProvider
+          : null
+        const health = await checkAiHealth(
+          this.provider.listModels ? () => this.provider.listModels!() : undefined,
+          pinnedProvider,
+        )
         healthStatus = health.status
         healthMessage = health.message || ''
         reachable = health.status === 'CONNECTED'
+        activeProvider = health.provider
+        activeModel = health.model
+        fallbackProvider = health.fallbackProvider
       } catch {
         reachable = await this.provider.isReachable()
         healthStatus = reachable ? 'CONNECTED' : 'NETWORK_ERROR'
+      }
+      // Health endpoint answered but the status is not CONNECTED — probe the
+      // endpoint's REAL model list (Ollama /api/tags, OpenAI-compatible
+      // /models). A genuinely discovered model turns an opaque failure into a
+      // truthful, actionable message; an empty discovery stays silent ([] means
+      // "not verified", and inventing "no models" would be a lie).
+      if (!reachable && typeof this.provider.listModels === 'function') {
+        try {
+          const models = await this.provider.listModels()
+          if (models.length > 0) {
+            healthStatus = 'MODEL_UNAVAILABLE'
+            healthMessage = `Endpoint reachable with discovered models (${models.slice(0, 3).join(', ')}${models.length > 3 ? ', …' : ''}), but the configured model is not available or the router is unreachable.`
+          }
+        } catch {
+          // Discovery is best-effort; the base health status stands.
+        }
       }
     } else {
       healthStatus = 'MISCONFIGURED'
@@ -1848,8 +2240,12 @@ export class AssistantEngine {
 
     useJarvisStore.getState().setCapabilities({
       aiConnected: reachable && this.provider.id !== 'mock',
+      aiProviderMode: deriveAiProviderMode(this.provider.id, reachable),
       aiStatus: healthStatus,
       aiStatusMessage: healthMessage,
+      aiActiveProvider: activeProvider,
+      aiActiveModel: activeModel,
+      aiFallbackProvider: fallbackProvider,
     })
     this.emit({ type: 'status', status: 'idle' })
 
@@ -2200,6 +2596,106 @@ export class AssistantEngine {
         return
       }
 
+      // ================ Autonomous Agent & Continuity Routing ================
+      // 1. Continuity: "continue where you stopped", "resume previous task"
+      const lower = clean.toLowerCase()
+      if (
+        lower.includes('continue where you stopped') ||
+        lower.includes('resume where you left off') ||
+        lower.includes('continue previous task') ||
+        lower.includes('what were you working on')
+      ) {
+        const latestProject = this.projectContextStore.findLatestActiveProject()
+        const tasks = await this.persistentOrchestrator.listTasks()
+        const latestTask = tasks.length > 0 ? tasks[0] : null
+
+        let reply: string
+        if (latestTask) {
+          const checkpointSummary = latestTask.checkpoints.length > 0
+            ? latestTask.checkpoints[latestTask.checkpoints.length - 1].summary
+            : 'No checkpoint recorded.'
+
+          if (latestTask.state === 'PAUSED' || latestTask.state === 'RECOVERY_REQUIRED') {
+            await this.persistentOrchestrator.resumeTask(latestTask.id)
+            reply = `Resuming task "${latestTask.title}" (${latestTask.id}).\nStatus: Resumed from state ${latestTask.state}.\nLatest verified checkpoint: ${checkpointSummary}`
+          } else {
+            reply = `Previous task is in state "${latestTask.state}": "${latestTask.title}" (${latestTask.id}).\nObjective: ${latestTask.objective}\nLatest verified checkpoint: ${checkpointSummary}`
+          }
+        } else if (latestProject) {
+          reply = `Most recent active project was "${latestProject.name}" at ${latestProject.rootPath}.\nLast checkpoint: ${latestProject.lastCheckpointSummary || 'None'}.\nNo paused tasks pending.`
+        } else {
+          reply = 'No prior active tasks or project context found to continue from.'
+        }
+
+        addAssistantMessage(reply)
+        this.emit({ type: 'transcript', speaker: 'assistant', text: reply })
+        this.fireActivity({ step: 'Continuity Resolved', kind: 'output', detail: reply })
+        this.runState.finish('completed')
+        this.tracer.end('completed')
+        this.applyResponse(reply)
+        return
+      }
+
+      // 2. Autonomous project development commands ("JARVIS, fix my ProjectHub...", "Inspect my ProjectHub repository...", "Inspect D:\JARVIS-Test...", etc.)
+      //
+      // A bare "inspect ..." lead-in is deliberately NOT enough: "inspect the
+      // window", "inspect window 0x1A2B", and "inspect then click" are live
+      // desktop questions, not software-development objectives. They must keep
+      // flowing to the normal agent loop.
+      const hasDrivePath = /[a-z]:[\\/][\w.-]+/i.test(clean)
+      const mentionsDevTarget = /\b(repository|repo|project|codebase)\b/i.test(lower)
+      const inspectLead = /^(?:jarvis,\s*)?inspect\b/i.test(lower)
+      const isAutonomousDev =
+        lower.startsWith('jarvis, fix ') ||
+        lower.startsWith('jarvis, audit ') ||
+        (inspectLead && (mentionsDevTarget || hasDrivePath)) ||
+        lower.startsWith('fix my ') ||
+        lower.startsWith('audit my ') ||
+        lower.startsWith('inspect my ') ||
+        lower.includes('projecthub') ||
+        (lower.includes('autonomous') && (lower.includes('task') || lower.includes('project') || lower.includes('goal'))) ||
+        (lower.includes('inspect') && (lower.includes('repository') || lower.includes('project') || hasDrivePath)) ||
+        (hasDrivePath && (lower.includes('python') || lower.includes('program') || lower.includes('test') || lower.includes('report') || lower.includes('create') || lower.includes('inspect')))
+
+      if (isAutonomousDev) {
+        let projectName: string | undefined = extractProjectPath(clean)
+        if (!projectName) {
+          const match = clean.match(/(?:fix|audit|improve|inspect)\s+(?:my\s+)?([a-zA-Z0-9_./\\:-]+)(?:\s+(?:project|repository|repo))?/i)
+          if (match && match[1]) {
+            projectName = match[1].replace(/[.,;:!?]+$/, '').replace(/(?:project|repository|repo)$/i, '').trim()
+          }
+        }
+        if (!projectName && lower.includes('projecthub')) {
+          projectName = 'ProjectHub'
+        }
+
+        let task: PersistentTask
+        try {
+          task = await this.planAndSubmitAutonomousTask(clean, projectName)
+        } catch (err) {
+          if (!(err instanceof DevelopmentPlanError)) throw err
+          const reply = `I could not start that development task: ${err.message}`
+          addAssistantMessage(reply)
+          this.emit({ type: 'transcript', speaker: 'assistant', text: reply })
+          this.fireActivity({ step: 'Autonomous Plan Rejected', kind: 'output', detail: reply })
+          this.runState.finish('failed')
+          this.tracer.end('failed')
+          this.applyResponse(reply)
+          return
+        }
+
+        const subtaskSummary = task.subtasks.map((s, i) => `${i + 1}. [${s.priority ?? 'NORMAL'}] ${s.title}`).join('\n')
+        const reply = `Autonomous development task initialized:\n\n**Task ID:** \`${task.id}\`\n**Status:** ${task.state}\n**Objective:** ${task.objective}\n\n**Structured Execution Plan:**\n${subtaskSummary}\n\nTask is actively tracked by the Persistent Task Orchestrator with verified checkpoints and honest test assertions.`
+
+        addAssistantMessage(reply)
+        this.emit({ type: 'transcript', speaker: 'assistant', text: reply })
+        this.fireActivity({ step: 'Autonomous Task Planned', kind: 'output', detail: reply })
+        this.runState.finish('completed')
+        this.tracer.end('completed')
+        this.applyResponse(reply)
+        return
+      }
+
       // ================ Phase 2.6 — deterministic real-action layer =========
       // Classifies the request into informational / executable / unsupported /
       // ambiguous / follow-up, resolves deictic follow-ups ("do it", "now open
@@ -2257,6 +2753,16 @@ export class AssistantEngine {
       // Actionable route: give the provider the engine-selected mechanism hints
       // (registered tools/capabilities matched by the deterministic selector).
       this.actionHint = actionHintMessage(decision.matchedTools, decision.matchedCapabilities)
+
+      // Reminder phrases with an explicit relative duration or clock time are
+      // unambiguous enough to plan from the registered scheduling schema. This
+      // avoids asking the model to invent parameters for scheduling.list or to
+      // guess how a natural-language time maps to scheduling.create.
+      const schedulingPlan = planNaturalSchedulingRequest(clean)
+      if (schedulingPlan && this.registry.get(schedulingPlan.toolId)) {
+        await this.executeNaturalSchedulingPlan(clean, schedulingPlan)
+        return
+      }
 
       // Phase 5 — when no real AI is configured (mock provider active), route
       // executable requests through the deterministic orchestrator IF the planner
@@ -2391,6 +2897,51 @@ export class AssistantEngine {
       this.memory.endEpisode()
       if (!this.hasPendingConfirmation) this.clearTask()
     }
+  }
+
+  /** Plan and execute a parsed reminder through the same schema and tool rails. */
+  private async executeNaturalSchedulingPlan(
+    requestText: string,
+    plan: NonNullable<ReturnType<typeof planNaturalSchedulingRequest>>,
+  ): Promise<void> {
+    this.planTracker.start(requestText)
+    this.runState.transition('planning')
+    this.setStatus('planning')
+    this.fireActivity({ step: 'Preparing reminder', kind: 'think', detail: 'Checking the registered scheduling action.' })
+    this.runState.transition('executing')
+
+    const { toolResults, failures } = await this.executeToolSteps(requestText, [
+      { toolId: plan.toolId, payload: plan.params },
+    ])
+    this.runState.transition('observing')
+    this.runState.transition('verifying')
+    this.setStatus('verifying')
+
+    const toolResult = toolResults[0]
+    const succeeded = toolResult?.ok === true && failures.length === 0
+    const detail = toolResult?.message || failures[0]?.summary || 'The scheduling tool returned no result.'
+    const reply = succeeded
+      ? detail
+      : plan.toolId === 'scheduling.list'
+        ? `I could not read the reminder schedule: ${detail}`
+        : `I could not schedule that reminder: ${detail}`
+
+    this.planTracker.finish(succeeded ? 'COMPLETED' : 'FAILED')
+    this.runState.finish(succeeded ? 'completed' : 'failed')
+    this.tracer.end(succeeded ? 'completed' : 'failed')
+    if (this.actionRun) {
+      this.actionRun.outcome = succeeded ? 'completed' : 'failed'
+      this.actionRun.executedSteps = toolResults.length
+      this.actionRun.verifiedSteps = succeeded && plan.toolId === 'scheduling.create' ? 1 : 0
+      this.actionRun.refutedSteps = failures.length
+      this.actionRun.unverifiedSteps = 0
+      this.actionRun.terminalStatus = this.actionRun.outcome
+    }
+    addAssistantMessage(reply)
+    this.emit({ type: 'transcript', speaker: 'assistant', text: reply })
+    this.fireActivity({ step: 'Replied', kind: 'output', detail: reply })
+    this.emitTaskSnapshot()
+    this.applyResponse(reply)
   }
 
   /**
@@ -3698,12 +4249,15 @@ export class AssistantEngine {
             // observation (the plan's verification step, NOT a recovery unit).
             const wantsPostAction =
               meta?.verification === 'post_action' || meta?.verification === 'tool_owned_then_post_action'
-            const confirmed = wantsPostAction
+            const postActionStatus = wantsPostAction
               ? await this.phase6Observe(planned, resolvedToolId, payload, roundResult, meta)
-              : false
-            if (confirmed) {
+              : 'unverified'
+            if (postActionStatus === 'verified') {
               outcomes[i] = { state: 'verified' }
               this.setPhase6StepState(state, i, 'verified', planned)
+            } else if (postActionStatus === 'failed') {
+              outcomes[i] = { state: 'failed', note: 'post-action observation refuted the expected effect' }
+              this.setPhase6StepState(state, i, 'verification_failed', planned)
             } else {
               outcomes[i] = { state: 'executed' }
               this.setPhase6StepState(state, i, 'executed', planned)
@@ -3763,14 +4317,14 @@ export class AssistantEngine {
           // A refuted step cannot be silently upgraded: re-observe to check a
           // stale view. If the observation confirms the effect, the trace step
           // is upgraded in place with real cross-tool evidence.
-          const confirmed = await this.phase6Observe(
+          const postActionStatus = await this.phase6Observe(
             planned,
             resolutions.get(i)?.toolId ?? planned.capability,
             payload,
             roundResult,
             meta,
           )
-          if (confirmed) {
+          if (postActionStatus === 'verified') {
             planStep.error = undefined
             updateStepState(planStep, 'verified')
             outcomes[i] = { state: 'verified', note: 'confirmed by post-action observation after a refuted tool verifier' }
@@ -3824,16 +4378,19 @@ export class AssistantEngine {
             // effect of the CORRECTED step, not the failed original.
             ctx.record(i, altRound.toolResults[0]?.data)
             const resolvedToolId = altRound.toolResults[0]?.toolId ?? corrected.capability
-            const confirmed = await this.phase6Observe(
+            const postActionStatus = await this.phase6Observe(
               { ...planned, capability: corrected.capability, payload: corrected.payload },
               resolvedToolId,
               corrected.payload,
               altRound.toolResults[0],
               meta,
             )
-            if (confirmed) {
+            if (postActionStatus === 'verified') {
               updateStepState(planStep, 'verified')
               outcomes[i] = { state: 'verified', note: replan.reason }
+            } else if (postActionStatus === 'failed') {
+              updateStepState(planStep, 'verification_failed')
+              outcomes[i] = { state: 'failed', note: 'post-action observation refuted the expected effect' }
             } else {
               outcomes[i] = { state: 'executed', note: replan.reason }
             }
@@ -3952,28 +4509,28 @@ export class AssistantEngine {
     payload: Record<string, unknown>,
     roundResult: ToolResultRecord | undefined,
     _meta: Phase6StepMeta | undefined,
-  ): Promise<boolean> {
+  ): Promise<'verified' | 'failed' | 'unverified'> {
     const observation = planPostActionObservation(resolvedToolId, payload, {
       success: Boolean(roundResult?.ok),
       output: roundResult?.ok ? roundResult.data : null,
       summary: roundResult?.message ?? 'step executed',
     })
-    if (!observation) return false
+    if (!observation) return 'unverified'
     const observeTool = this.registry.get(observation.observeToolId)
-    if (!observeTool) return false
+    if (!observeTool) return 'unverified'
     // Pre-observe actions: run any real registered tools the observation plan
     // needs BEFORE reading the evidence (e.g. select-all + copy before reading
     // the clipboard as typing evidence). A failed pre-observe action leaves the
     // observation to run and honestly fail — never fabricated as verified.
     for (const pre of observation.preObserve ?? []) {
       const preTool = this.registry.get(pre.toolId)
-      if (!preTool) return false
+      if (!preTool) return 'unverified'
       // NOTE: only `toolId` is set — these are REGISTERED TOOLS, not
       // capabilities, so the validator must resolve them as plain tools.
       const preRound = await this.executeToolSteps(pre.reason, [
         { toolId: pre.toolId, payload: pre.params },
       ])
-      if (preRound.toolResults[0]?.ok !== true) return false
+      if (preRound.toolResults[0]?.ok !== true) return 'unverified'
     }
     if (observation.settleMs && observation.settleMs > 0) {
       await new Promise((resolve) => setTimeout(resolve, observation.settleMs))
@@ -3981,6 +4538,7 @@ export class AssistantEngine {
 
     const retries = Math.min(Math.max(0, Math.floor(observation.retries ?? 0)), 2)
     let lastFailed: string | null = null
+    let sawRefutation = false
     for (let attempt = 0; attempt <= retries; attempt += 1) {
       const obsRound = await this.executeToolSteps(planned.description, [
         // NOTE: only `toolId` — the observation tool is a REGISTERED TOOL, not
@@ -3995,17 +4553,22 @@ export class AssistantEngine {
       }
       const verification = observation.verify(obsResult.data)
       if (verification.passed) {
-        this.tracer.updateStepVerification(resolvedToolId, 'COMPLETED', {
+        this.tracer.updateStepVerification(resolvedToolId, {
           status: 'verified',
           message: verification.message,
         })
-        return true
+        return 'verified'
       }
       lastFailed = null
-      // Honest note on the trace step: the observation RAN and REFUTED the
-      // effect. Never an upgrade; the real verifier message is kept so the
-      // user-facing result can state the actual observed cause.
-      this.tracer.noteStepVerification(resolvedToolId, verification.message)
+      if (verification.status === 'failed') {
+        sawRefutation = true
+        this.tracer.updateStepVerification(resolvedToolId, {
+          status: 'failed',
+          message: verification.message,
+        })
+      } else {
+        this.tracer.noteStepVerification(resolvedToolId, verification.message)
+      }
       if (observation.retryDelayMs && observation.retryDelayMs > 0) {
         await new Promise((resolve) => setTimeout(resolve, observation.retryDelayMs))
       }
@@ -4021,8 +4584,10 @@ export class AssistantEngine {
         reason: lastFailed,
         at: Date.now(),
       })
+      this.tracer.noteStepVerification(resolvedToolId, `The post-action observation could not run: ${lastFailed}.`)
+      return 'unverified'
     }
-    return false
+    return sawRefutation ? 'failed' : 'unverified'
   }
   /* ------------------------------------------------ execution helpers */
 

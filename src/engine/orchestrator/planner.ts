@@ -95,7 +95,10 @@ const READ_OPEN_APPS =
 
 /** "is chrome running?" / "are notepad and calc open?" — read-only app-status questions. */
 const STATUS_IS_APP = /\b(?:is|are)\s+(?:the\s+)?([a-z0-9][\w .-]{0,48}?)\s+(?:running|open|started|launched|active)$/i
-const STATUS_CHECK_APP = /\b(?:check|verify|confirm|status\s+of)\s+(?:the\s+)?([a-z0-9][\w .-]{0,48})\b/i
+const STATUS_CHECK_APP =
+  /^(?:please\s+|hey\s+|ok\s+)?(?:jarvis[,\s]+)?(?:check|verify|confirm|status\s+of)\s+(?:the\s+)?([a-z0-9][\w .-]{0,48}?)(?:\s+(?:app|application|program|running|open))?$/i
+const STATUS_CHECK_IF_RUNNING =
+  /\b(?:check|verify|confirm)\s+(?:if|whether)\s+(?:the\s+)?([a-z0-9][\w .-]{0,48}?)\s+(?:is\s+)?(?:running|open|started|launched|active)\b/i
 
 /** Well-known user folders the native agent may open inside Explorer (bounded, curated). */
 const FOLDER_TARGETS: ReadonlyArray<readonly [string, string]> = [
@@ -115,6 +118,15 @@ const FOLDER_TARGETS: ReadonlyArray<readonly [string, string]> = [
 /** Nouns that must NEVER be flattened into an application id by the planner. */
 const FILE_OR_FOLDER_NOUN = /\b(folder|directory|file|downloads?|documents?|desktop|pictures?|music|videos?|workspace|temp|report|pdf|sheet|slides|notes|backup|archive)\b/i
 
+/**
+ * Registered application names that legitimately contain a file/folder word.
+ * "File Explorer" is the Windows shell application, not a folder the user is
+ * asking to be listed, so the folder guard must not swallow it and refuse the
+ * launch. Only unambiguous application names are listed here; a bare "files" or
+ * "downloads" keeps its folder meaning.
+ */
+const APP_NAME_CONTAINING_FILE_WORD = /^(?:file[\s-]?explorer|explorer)$/i
+
 /** Resolve "open my downloads folder" to a curated, native-expandable folder
  * token (never a raw path, never user-text forwarded as a path). */
 export function extractFolderTarget(text: string): { name: string; folder: string } | undefined {
@@ -131,6 +143,7 @@ export function extractFolderTarget(text: string): { name: string; folder: strin
 
 /** True when a phrase refers to a file/folder target that must not become an app id. */
 export function isFileOrFolderTarget(phrase: string): boolean {
+  if (APP_NAME_CONTAINING_FILE_WORD.test(phrase.trim())) return false
   return FILE_OR_FOLDER_NOUN.test(phrase)
 }
 
@@ -138,11 +151,15 @@ export function isFileOrFolderTarget(phrase: string): boolean {
 export function extractStatusTarget(text: string): string | undefined {
   const t = (text ?? '').replace(/[.!?]+$/g, '').trim()
   const isMatch = t.match(STATUS_IS_APP)
+  const checkIfMatch = t.match(STATUS_CHECK_IF_RUNNING)
   const checkMatch = t.match(STATUS_CHECK_APP)
-  const phrase = (isMatch?.[1] ?? checkMatch?.[1] ?? '').trim()
+  const phrase = (isMatch?.[1] ?? checkIfMatch?.[1] ?? checkMatch?.[1] ?? '').trim()
   if (phrase.length === 0 || isFileOrFolderTarget(phrase) || NOT_AN_APP.test(phrase)) return undefined
   return phrase.toLowerCase()
 }
+
+const DEV_ACTION_VERBS =
+  /\b(create|make|write|implement|build|develop|inspect|audit|execute|run|fix|patch|repair|calculate|test)\b/i
 
 /** True when the request also carries an ACTION verb — those are compound
  * requests (launch X and verify, check the battery, type to clipboard) that the
@@ -156,18 +173,20 @@ function hasStatusBlockingIntent(text: string): boolean {
     SEARCH_VERBS.test(text) ||
     DOWNLOAD_VERBS.test(text) ||
     BATTERY_INTENT.test(text) ||
-    CLIPBOARD_VERBS.test(text)
+    CLIPBOARD_VERBS.test(text) ||
+    DEV_ACTION_VERBS.test(text)
   )
 }
 
 /** Words that are NOT application names, even after a check/verify lead-in. */
-const NOT_AN_APP = /^(it|this|that|them|those|these|you|me|its|there|something|anything)$/i
+const NOT_AN_APP =
+  /^(it|this|that|them|those|these|you|me|its|there|something|anything|result|results|output|outputs|test|tests|file|files|code|changes|data|log|logs|progress|status|state|report|reports|program|work|everything|solution)$/i
 
 /** True when the request is a read-only "is X running/status" question. */
 export function isStatusRequest(text: string): boolean {
   const t = (text ?? '').replace(/[.!?]+$/g, '').trim()
   if (hasStatusBlockingIntent(t)) return false
-  return STATUS_IS_APP.test(t) || STATUS_CHECK_APP.test(t)
+  return STATUS_IS_APP.test(t) || STATUS_CHECK_APP.test(t) || STATUS_CHECK_IF_RUNNING.test(t)
 }
 
 /**
@@ -705,9 +724,9 @@ function planRequestCore(
     // Phase 5 — Compound: "open X, type Y, copy, verify clipboard"
     // Optionally appends a trailing browser.search (mixed multi-capability flow).
     if (OPEN_VERBS.test(text) && hasWriteIntent(text) && CLIPBOARD_VERBS.test(text) && can('open_application') && can('type_text') && can('clipboard_read')) {
-      const app = extractAppName(text) ?? 'notepad'
+      const app = extractAppName(text)
       const typeText = extractWriteText(text)
-      if (typeText) {
+      if (app && typeText) {
         const steps: OrchestrationPlanStep[] = [
           { id: 'step-1', capability: 'open_application', description: `Launch ${app}.`, payload: { application_id: toAppId(app) } },
           { id: 'step-2', capability: 'type_text', description: `Type ${typeDescription(typeText)}.`, payload: { text: typeText }, dependsOn: [0] },
@@ -738,9 +757,9 @@ function planRequestCore(
 
     // Phase 5 — Compound: "open X, type Y" (without clipboard)
     if (OPEN_VERBS.test(text) && hasWriteIntent(text) && can('open_application') && can('type_text')) {
-      const app = extractAppName(text) ?? 'notepad'
+      const app = extractAppName(text)
       const typeText = extractWriteText(text)
-      if (typeText) {
+      if (app && typeText) {
         return {
           goal,
           verdict: 'ok',

@@ -112,6 +112,17 @@ export const PANEL_DEFINITIONS: readonly PanelDefinition[] = [
     keepMounted: false,
     order: 9,
   },
+  {
+    id: 'tasks',
+    title: 'Task Monitor',
+    icon: '\u29bf',
+    defaultOpen: true,
+    defaultPlacement: 'floating',
+    defaultSize: { w: 380, h: 460 },
+    minSize: { w: 300, h: 260 },
+    keepMounted: false,
+    order: 10,
+  },
 ] as const
 
 export const PANEL_BY_ID = new Map<PanelId, PanelDefinition>(
@@ -130,6 +141,7 @@ export const TASKBAR_ITEMS: readonly TaskbarEntry[] = [
   { id: 'camera', label: 'Camera', icon: '\u25ce', kind: 'module' },
   { id: 'conversation', label: 'Session', icon: '\u25a4', kind: 'module' },
   { id: 'activity', label: 'Activity', icon: '\u26a1', kind: 'module' },
+  { id: 'tasks', label: 'Tasks', icon: '\u29bf', kind: 'module' },
   { id: 'vision', label: 'Vision', icon: '\u25c3', kind: 'capability' },
   { id: 'devices', label: 'Devices', icon: '\u2b22', kind: 'capability' },
   { id: 'files', label: 'Files', icon: '\u2b1a', kind: 'capability' },

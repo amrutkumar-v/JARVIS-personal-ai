@@ -156,6 +156,7 @@ export type BackendEventType =
   | 'assistant'
   | 'wake'
   | 'call'
+  | 'task'
 
 export interface BackendEvent {
   type: BackendEventType

@@ -5,7 +5,7 @@
  * The Android companion reaches JARVIS Core over the home Wi-Fi through this
  * SEPARATE, narrow listener. The main backend keeps binding `127.0.0.1` and is
  * never exposed to the LAN; this listener is the ONLY surface a phone talks to
- * and it exposes exactly six allow-listed endpoints:
+ * and it exposes exactly seven allow-listed endpoints:
  *
  *   POST /phone/pair       — exchange a short-lived pairing code for a device
  *                            credential (the ONLY unauthenticated endpoint)
@@ -111,8 +111,12 @@ function numberBattery(value: unknown): number | undefined {
   return Math.min(100, Math.max(0, value))
 }
 
-function stringArray(value: unknown, itemLimit = 64): string[] {
-  if (!Array.isArray(value)) return []
+/**
+ * A list of strings the client reported, or `undefined` when the field was
+ * ABSENT. "Not reported" must never erase what the device can do.
+ */
+function stringArray(value: unknown, itemLimit = 64): string[] | undefined {
+  if (!Array.isArray(value)) return undefined
   return value
     .filter((v): v is string => typeof v === 'string' && v.trim().length > 0)
     .slice(0, 40)

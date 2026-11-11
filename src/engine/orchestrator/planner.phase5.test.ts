@@ -312,6 +312,15 @@ describe('Phase 5 — planner extensions', () => {
       expect(plan.steps[1].dependsOn).toEqual([0])
     })
 
+    it('autonomous development task with "verify the results" NEVER plans application_status for "results"', () => {
+      const task =
+        'Inspect D:\\JARVIS-Test. Create a simple Python program that calculates the area of a circle. Create an appropriate test file, execute the tests, verify the results, and generate a completion report.'
+      const plan = planRequest(
+        makeRequest(task, ['application_status', 'open_application'], 'multi_step_goal'),
+      )
+      expect(plan.steps.map((s) => s.capability)).not.toContain('application_status')
+    })
+
     it('"open my downloads folder" → File Explorer on a CURATED folder token, never an app id', () => {
       const plan = planRequest(makeRequest('open my downloads folder', ['open_application']))
       expect(plan.verdict).toBe('ok')

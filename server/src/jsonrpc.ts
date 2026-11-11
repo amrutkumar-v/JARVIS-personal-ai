@@ -12,6 +12,7 @@ export interface ProbeResult {
   protocol?: string
   version?: string
   platform?: string
+  tokenRequired?: boolean
   error?: string
 }
 
@@ -76,16 +77,16 @@ export async function probeNativeAgent(
       }
     }
     const envelope = result.envelope as {
-      result?: { protocol?: string; version?: string; platform?: string; connected?: boolean }
+      result?: { protocol?: string; version?: string; platform?: string; connected?: boolean; tokenRequired?: boolean }
       error?: { code?: string; message?: string }
     }
     const identity = envelope?.result
-    if (!identity || identity.connected !== true) {
+    if (!identity || identity.connected !== true || typeof identity.tokenRequired !== 'boolean') {
       return {
         ok: false,
         connected: false,
         reachable: true,
-        error: envelope?.error?.message ?? 'Native agent did not report a connected identity.',
+        error: envelope?.error?.message ?? 'Native agent did not report a complete authenticated identity.',
       }
     }
     return {
@@ -95,6 +96,7 @@ export async function probeNativeAgent(
       protocol: identity.protocol,
       version: identity.version,
       platform: identity.platform,
+      tokenRequired: identity.tokenRequired,
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)

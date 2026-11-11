@@ -24,6 +24,31 @@ import {
 const DEFAULT_TTL_MS = 40_000
 const HOST_DEVICE_ID = 'victus-5050'
 
+/**
+ * Capabilities ACCUMULATE.
+ *
+ * Two bridges can report for the same device (the Android companion and the
+ * browser companion page), and they use different vocabularies. A capability
+ * list is what the device CAN do, so the union is the honest answer — and a
+ * reporter that omits the field must never erase what another bridge can do.
+ */
+function mergeCapabilities(...lists: Array<string[] | undefined>): string[] {
+  return [...new Set(lists.flatMap((list) => list ?? []))]
+}
+
+/**
+ * Permissions REPLACE when a reporter states them.
+ *
+ * Permissions are the real gate on a sensitive action, and only the device
+ * itself knows the current grant state — so the latest report wins, including
+ * an empty list (a revoked permission must actually disappear). A reporter
+ * that does not state permissions at all leaves them untouched.
+ */
+function replacePermissions(current: string[] | undefined, reported: string[] | undefined): string[] {
+  if (reported === undefined) return [...new Set(current ?? [])]
+  return [...new Set(reported)]
+}
+
 export interface DeviceRegistryOptions {
   persistFile?: string
   ttlMs?: number
@@ -98,8 +123,8 @@ export class DeviceRegistry {
       role: def.role,
       trusted: true,
       connection: input.connection?.trim() || existing?.connection || 'lan-bridge',
-      capabilities: [...new Set([...(input.capabilities ?? existing?.capabilities ?? def.capabilities)])],
-      permissions: [...new Set([...(input.permissions ?? existing?.permissions ?? [])])],
+      capabilities: mergeCapabilities(def.capabilities, existing?.capabilities, input.capabilities),
+      permissions: replacePermissions(existing?.permissions, input.permissions),
       online: true,
       health: 'ok',
       lastHeartbeatAt: at,
@@ -130,8 +155,8 @@ export class DeviceRegistry {
     if (extra.network) existing.network = extra.network
     if (extra.activity) existing.activity = extra.activity
     if (extra.connection) existing.connection = extra.connection
-    if (extra.capabilities) existing.capabilities = [...new Set(extra.capabilities)]
-    if (extra.permissions) existing.permissions = [...new Set(extra.permissions)]
+    if (extra.capabilities) existing.capabilities = mergeCapabilities(existing.capabilities, extra.capabilities)
+    if (extra.permissions) existing.permissions = replacePermissions(existing.permissions, extra.permissions)
     void this.persist()
     return true
   }

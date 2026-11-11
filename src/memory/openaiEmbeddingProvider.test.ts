@@ -38,6 +38,10 @@ function mockEmbeddingResponse(status: number, body: unknown): void {
   } as Response)
 }
 
+function setThreeDimensionalTestModel(): void {
+  ENV.VITE_JARVIS_EMBEDDING_DIMENSIONS = '3'
+}
+
 function embedTrace(): unknown[] {
   return (globalThis.fetch as unknown as ReturnType<typeof vi.fn>).mock.calls
 }
@@ -74,6 +78,7 @@ describe('OpenAIEmbeddingProvider', () => {
     ENV.VITE_JARVIS_EMBEDDING_BASE_URL = 'https://emb.example.com/v1'
     ENV.VITE_JARVIS_EMBEDDING_MODEL = 'text-embedding-3-small'
     ENV.JARVIS_API_KEY = 'test-key'
+    setThreeDimensionalTestModel()
     mockEmbeddingResponse(200, vectorReply([0.1, 0.2, 0.3]))
     const provider = new OpenAIEmbeddingProvider()
     const vector = await provider.embed('hello')
@@ -88,6 +93,7 @@ describe('OpenAIEmbeddingProvider', () => {
     ENV.VITE_JARVIS_EMBEDDING_PROXY_URL = '/api/ai'
     ENV.VITE_JARVIS_EMBEDDING_MODEL = 'text-embedding-3-small'
     ENV.JARVIS_API_KEY = 'test-key'
+    setThreeDimensionalTestModel()
     mockEmbeddingResponse(200, vectorReply([0.1, 0.2, 0.3]))
     const provider = new OpenAIEmbeddingProvider()
     const vector = await provider.embed('hello')
@@ -116,10 +122,32 @@ describe('OpenAIEmbeddingProvider', () => {
   it('domain sanity: only posts to the allow-listed embeddings subpath', async () => {
     ENV.VITE_JARVIS_EMBEDDING_BASE_URL = 'https://emb.example.com/v1/sub'
     ENV.VITE_JARVIS_EMBEDDING_MODEL = 'text-embedding-3-small'
+    setThreeDimensionalTestModel()
     mockEmbeddingResponse(200, vectorReply([0.1, 0.2, 0.3]))
     const provider = new OpenAIEmbeddingProvider()
     await provider.embed('x')
     const [url] = embedTrace()[0] as [string, RequestInit]
     expect(url).toBe('https://emb.example.com/v1/sub/embeddings')
+  })
+
+  it('does not report semantic embeddings as healthy until a valid vector was returned', async () => {
+    ENV.VITE_JARVIS_EMBEDDING_BASE_URL = 'http://127.0.0.1:11434/v1'
+    ENV.VITE_JARVIS_EMBEDDING_MODEL = 'embeddinggemma'
+    ENV.VITE_JARVIS_EMBEDDING_DIMENSIONS = '3'
+    const provider = new OpenAIEmbeddingProvider()
+    expect(provider.getHealth().status).toBe('unknown')
+    mockEmbeddingResponse(200, vectorReply([0.1, 0.2, 0.3]))
+    await provider.embed('hello')
+    expect(provider.getHealth().status).toBe('healthy')
+  })
+
+  it('keeps embedding health unhealthy when configured dimensions do not match the response', async () => {
+    ENV.VITE_JARVIS_EMBEDDING_BASE_URL = 'http://127.0.0.1:11434/v1'
+    ENV.VITE_JARVIS_EMBEDDING_MODEL = 'embeddinggemma'
+    ENV.VITE_JARVIS_EMBEDDING_DIMENSIONS = '768'
+    mockEmbeddingResponse(200, vectorReply([0.1, 0.2, 0.3]))
+    const provider = new OpenAIEmbeddingProvider()
+    await expect(provider.embed('hello')).rejects.toThrow(/expected 768/)
+    expect(provider.getHealth().status).toBe('unhealthy')
   })
 })

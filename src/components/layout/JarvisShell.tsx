@@ -30,6 +30,7 @@ import { GestureHud } from '../gesture/GestureHud'
 import { EnvironmentPanel } from '../panel/EnvironmentPanel'
 import { CapabilityPanel } from '../panel/CapabilityPanel'
 import { ApplicationCatalogue } from '../panel/ApplicationCatalogue'
+import { TaskMonitorPanel } from '../panel/TaskMonitorPanel'
 import type { ApplicationProvider } from '../../applications'
 import {
   visionRows,
@@ -69,6 +70,12 @@ interface AssistantAPI {
   applicationProvider: () => ApplicationProvider | undefined
   onStopSpeaking: () => void
   onInterrupt: () => void
+  backendClient?: any
+  onPauseTask?: (taskId: string) => Promise<boolean>
+  onResumeTask?: (taskId: string) => Promise<boolean>
+  onCancelTask?: (taskId: string) => Promise<boolean>
+  onApproveTaskAction?: (taskId: string, approvalId: string) => Promise<boolean>
+  onRejectTaskAction?: (taskId: string, approvalId: string, reason?: string) => Promise<boolean>
 }
 
 interface Props {
@@ -194,6 +201,17 @@ export function JarvisShell({
             <ApplicationCatalogue provider={assistant.applicationProvider()} />
           </>
         )
+      case 'tasks':
+        return (
+          <TaskMonitorPanel
+            backendClient={assistant.backendClient}
+            onPauseTask={assistant.onPauseTask}
+            onResumeTask={assistant.onResumeTask}
+            onCancelTask={assistant.onCancelTask}
+            onApproveAction={assistant.onApproveTaskAction}
+            onRejectAction={assistant.onRejectTaskAction}
+          />
+        )
       default:
         return null
     }
@@ -282,6 +300,9 @@ export function JarvisShell({
         modelLabel={assistant.modelLabel}
         endpointLabel={assistant.endpointLabel}
         memory={memory}
+        // The live gesture mirror. Without this the panel always rendered
+        // "Off / unknown / 0 hands" even while gestures were tracking.
+        gesture={assistant.gesture}
       />
     </div>
   )

@@ -11,6 +11,7 @@ export type PanelId =
   | 'devices'
   | 'files'
   | 'applications'
+  | 'tasks'
 
 export interface PanelDefinition {
   id: PanelId

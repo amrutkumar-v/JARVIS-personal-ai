@@ -84,8 +84,14 @@ export interface ToolRetryPolicy {
  * verifier confirmed it.
  */
 export interface ToolVerification {
-  /** True when the effect was confirmed (e.g. destination exists). */
+  /**
+   * Compatibility projection: true only when the effect was confirmed.
+   * `false` can mean either a refutation or an unavailable observation; use
+   * `status` to distinguish those outcomes.
+   */
   ok: boolean
+  /** Explicit outcome when the verifier can distinguish unknown from false. */
+  status?: 'verified' | 'failed' | 'unverified'
   /** Provider-safe reason; shown to the model when `ok` is false. */
   message?: string
   /** Optional named checks performed (future audits / UI). */

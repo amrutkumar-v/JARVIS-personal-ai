@@ -22,10 +22,9 @@ import { readNativeAgentEnv } from './nativeAgentEnv'
  * Web-side app bootstrap (Phase 1.2/1.3/1.4/1.5).
  *
  * Chooses the capability surfaces for the live app:
- *  - when `VITE_NATIVE_AGENT_URL` is set, the app talks to the REAL local
- *    native Windows agent (real OS filesystem + approved application control
- *    + read-only Windows observation + bounded desktop input injection, typed
- *    allow-listed operations over one shared RPC transport);
+ *  - when `VITE_NATIVE_AGENT_URL` is set, the app selects REAL native Windows
+ *    providers and sends their typed, allow-listed RPC calls through the
+ *    backend broker (the privileged native bearer token remains server-side);
  *  - otherwise the filesystem uses the browser File System Access provider
  *    unchanged, and application control / observation / desktop interaction
  *    yield NO provider (hence NO app/observation/desktop tools), because the

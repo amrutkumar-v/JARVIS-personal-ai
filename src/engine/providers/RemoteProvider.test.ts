@@ -1,4 +1,4 @@
-import { describe, expect, it, vi, beforeEach } from 'vitest'
+import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
 import { RemoteProvider } from '../providers/RemoteProvider'
 import { ProviderError } from '../providers/ProviderError'
 import { resetAiConfigCache } from '../../config/ai'
@@ -182,5 +182,105 @@ describe('RemoteProvider', () => {
   it('exposes describe() info for the settings panel', () => {
     setRemoteConfig()
     expect(new RemoteProvider().describe()).toMatchObject({ model: 'test-model', baseUrl: 'https://ai.example.com/v1' })
+  })
+})
+
+describe('RemoteProvider — real local model discovery (listModels / isModelAvailable)', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  /** Advance past the bounded discovery window without hanging the run. */
+  async function settle(): Promise<void> {
+    await vi.advanceTimersByTimeAsync(5_000)
+  }
+
+  it('discovers REAL models from a reachable Ollama /api/tags route', async () => {
+    setRemoteConfig({ VITE_JARVIS_AI_BASE_URL: 'http://127.0.0.1:11434/v1' })
+    const fetchMock = globalThis.fetch as unknown as ReturnType<typeof vi.fn>
+    fetchMock.mockImplementation(async (url: string | URL | Request) => {
+      if (String(url).endsWith('/api/tags')) {
+        return { ok: true, status: 200, json: async () => ({ models: [{ name: 'qwen3:8b' }, { name: 'llama3.2:latest' }] }) } as Response
+      }
+      throw new TypeError('unexpected route')
+    })
+    const pending = new RemoteProvider().listModels()
+    const promise = Promise.race([pending, settle().then(() => pending)])
+    await expect(promise).resolves.toEqual(['llama3.2:latest', 'qwen3:8b'])
+    const [url, init] = callTrace()[0] as [string, RequestInit]
+    expect(url).toBe('http://127.0.0.1:11434/api/tags')
+    expect(new Headers(init.headers as HeadersInit).has('Authorization')).toBe(false)
+  })
+
+  it('discovers REAL models from LM Studio via the OpenAI /models route', async () => {
+    setRemoteConfig({ VITE_JARVIS_AI_BASE_URL: 'http://127.0.0.1:1234/v1' })
+    const fetchMock = globalThis.fetch as unknown as ReturnType<typeof vi.fn>
+    fetchMock.mockImplementation(async (url: string | URL | Request) => {
+      if (String(url).endsWith('/api/tags')) return { ok: false, status: 404 } as Response
+      if (String(url).endsWith('/models')) {
+        return { ok: true, status: 200, json: async () => ({ data: [{ id: 'qwen2.5-7b-instruct' }] }) } as Response
+      }
+      throw new TypeError('unexpected route')
+    })
+    const pending = new RemoteProvider().listModels()
+    await expect(Promise.race([pending, settle().then(() => pending)])).resolves.toEqual(['qwen2.5-7b-instruct'])
+  })
+
+  it('returns [] when both routes answer 200 with NO models (empty is honest, not fabricated)', async () => {
+    setRemoteConfig()
+    mockFetchResponse(200, { data: [] })
+    const pending = new RemoteProvider().listModels()
+    await expect(Promise.race([pending, settle().then(() => pending)])).resolves.toEqual([])
+  })
+
+  it('returns [] when the endpoint is unreachable (never throws, never fakes)', async () => {
+    setRemoteConfig()
+    ;(globalThis.fetch as unknown as ReturnType<typeof vi.fn>).mockRejectedValue(new TypeError('failed to connect'))
+    const pending = new RemoteProvider().listModels()
+    await expect(Promise.race([pending, settle().then(() => pending)])).resolves.toEqual([])
+  })
+
+  it('returns [] when the endpoint answers with a malformed payload', async () => {
+    setRemoteConfig()
+    mockFetchResponse(200, { unexpected: 'shape' })
+    const pending = new RemoteProvider().listModels()
+    await expect(Promise.race([pending, settle().then(() => pending)])).resolves.toEqual([])
+  })
+
+  it('returns [] in proxy mode — the client cannot truthfully inspect models through the proxy', async () => {
+    setRemoteConfig({ VITE_JARVIS_AI_BASE_URL: undefined, VITE_JARVIS_AI_PROXY_URL: '/api/ai', JARVIS_API_KEY: undefined })
+    const pending = new RemoteProvider().listModels()
+    await expect(pending).resolves.toEqual([])
+    expect(callTrace()).toHaveLength(0)
+  })
+
+  it('isModelAvailable is TRUE only when a real probe saw the model', async () => {
+    setRemoteConfig({ VITE_JARVIS_AI_BASE_URL: 'http://127.0.0.1:11434' })
+    const fetchMock = globalThis.fetch as unknown as ReturnType<typeof vi.fn>
+    fetchMock.mockImplementation(async (url: string | URL | Request) => {
+      if (String(url).endsWith('/api/tags')) {
+        return { ok: true, status: 200, json: async () => ({ models: ['qwen3:8b'] }) } as Response
+      }
+      throw new TypeError('unexpected route')
+    })
+    const pending = new RemoteProvider().isModelAvailable('qwen3:8b')
+    await expect(Promise.race([pending, settle().then(() => pending)])).resolves.toBe(true)
+  })
+
+  it('isModelAvailable is FALSE when the probe ran but the model was absent (or nothing was verified)', async () => {
+    setRemoteConfig({ VITE_JARVIS_AI_BASE_URL: 'http://127.0.0.1:11434' })
+    const fetchMock = globalThis.fetch as unknown as ReturnType<typeof vi.fn>
+    fetchMock.mockImplementation(async (url: string | URL | Request) => {
+      if (String(url).endsWith('/api/tags')) {
+        return { ok: true, status: 200, json: async () => ({ models: ['llama3.2:latest'] }) } as Response
+      }
+      throw new TypeError('unexpected route')
+    })
+    const pending = new RemoteProvider().isModelAvailable('qwen3:8b')
+    await expect(Promise.race([pending, settle().then(() => pending)])).resolves.toBe(false)
   })
 })

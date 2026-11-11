@@ -21,6 +21,12 @@ import androidx.core.content.ContextCompat
  */
 object TelephonyCapability {
 
+    /** Capability labels reported to the backend. */
+    const val CALL = "call"
+
+    /** The phone can speak text on its loudspeaker during a live call. */
+    const val SPEAK = "call.speak"
+
     /** Labels reported to the backend (they mirror the Android permission names). */
     const val CALL_PHONE = "CALL_PHONE"
     const val ANSWER_PHONE_CALLS = "ANSWER_PHONE_CALLS"
@@ -35,7 +41,15 @@ object TelephonyCapability {
 
     /** The capability labels this device really offers (telephony only with hardware). */
     fun callCapabilities(context: Context): List<String> =
-        if (hasTelephonyHardware(context)) listOf("call") else emptyList()
+        if (hasTelephonyHardware(context)) listOf(CALL) else emptyList()
+
+    /**
+     * `call.speak` is advertised ONLY when this device's own text-to-speech
+     * engine is genuinely usable — the phone must be able to really play the
+     * audio before JARVIS is allowed to ask it to speak on a call.
+     */
+    fun speakCapabilities(speakReady: Boolean): List<String> =
+        if (speakReady) listOf(SPEAK) else emptyList()
 
     fun isGranted(context: Context, permission: String): Boolean {
         val androidPermission = when (permission) {

@@ -92,9 +92,9 @@ data class PingResponse(
  * Command the core queued for this phone to pick up via /phone/poll.
  *
  * `kind` is one of the backend's closed allow-list: `ping`, `call.dial`,
- * `call.hangup`, `call.answer`, `call.reject`. `payload` carries only the
- * fields that kind declares (e.g. `number`/`contactName` for `call.dial`) and
- * is absent for payload-free kinds.
+ * `call.hangup`, `call.answer`, `call.reject`, `call.speak`. `payload` carries
+ * only the fields that kind declares (e.g. `number`/`contactName` for
+ * `call.dial`, `text` for `call.speak`) and is absent for payload-free kinds.
  */
 data class PollCommand(
     val commandId: String,

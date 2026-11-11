@@ -3,6 +3,7 @@ import { startAgent } from './agent.js'
 import { MemoryFsBackend } from './testingBackend.js'
 import { NativeWindowsFileSystemProvider } from '../../src/native/NativeWindowsFileSystemProvider'
 import type { NativeBridgeOptions } from '../../src/native/NativeWindowsFileSystemProvider'
+import { startNativeBroker } from '../test-support/startNativeBroker.js'
 
 /**
  * Phase 1.2 — the WEB bridge provider against a LIVE local agent.
@@ -19,21 +20,24 @@ const TOKEN = 'bridge-token'
 
 describe('web bridge provider — live local agent (deterministic in-memory backend)', () => {
   let agent: Awaited<ReturnType<typeof startAgent>>
+  let broker: Awaited<ReturnType<typeof startNativeBroker>>
   let memory: MemoryFsBackend
   let provider: NativeWindowsFileSystemProvider
 
   beforeAll(async () => {
     memory = new MemoryFsBackend()
     agent = await startAgent({ roots: [ROOT], token: TOKEN, backend: memory, port: 0 })
+    broker = await startNativeBroker(agent.baseUrl, TOKEN)
     provider = new NativeWindowsFileSystemProvider({
-      baseUrl: agent.baseUrl,
-      token: TOKEN,
+      baseUrl: broker.baseUrl,
+      fetchImpl: broker.fetchImpl,
       requestTimeoutMs: 2000,
     })
     await provider.refreshNativeStatus()
   })
 
   afterAll(async () => {
+    await broker.close()
     await agent.close()
   })
 

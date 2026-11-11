@@ -14,6 +14,7 @@ import { FileSystemAccessProvider, createFileSystemProvider } from '../../src/fi
 import { startAgent } from './agent.js'
 import { MemoryFsBackend } from './testingBackend.js'
 import { NativeWindowsFileSystemProvider } from '../../src/native/NativeWindowsFileSystemProvider'
+import { startNativeBroker } from '../test-support/startNativeBroker.js'
 
 /**
  * Phase 1.2 — the native Windows bridge through the REAL engine loop (Phase
@@ -101,14 +102,17 @@ const TOKEN = 'engine-token'
 
 describe('native engine integration — live agent + real filesystem (isolated temp)', () => {
   let agent: Awaited<ReturnType<typeof startAgent>>
+  let broker: Awaited<ReturnType<typeof startNativeBroker>>
   let live: NativeWindowsFileSystemProvider
 
   beforeAll(async () => {
     agent = await startAgent({ roots: [ROOT], token: TOKEN, backend: new MemoryFsBackend(), port: 0 })
-    live = new NativeWindowsFileSystemProvider({ baseUrl: agent.baseUrl, token: TOKEN })
+    broker = await startNativeBroker(agent.baseUrl, TOKEN)
+    live = new NativeWindowsFileSystemProvider({ baseUrl: broker.baseUrl, fetchImpl: broker.fetchImpl })
   })
 
   afterAll(async () => {
+    await broker.close()
     await agent.close()
   })
 
@@ -172,23 +176,28 @@ describe('native engine integration — offline agent is honest, never fake', ()
     stubBrowserStorage()
     useConversationStore.getState().clearConversation()
     const dead = await deadPort()
-    const offline = new NativeWindowsFileSystemProvider({ baseUrl: `http://127.0.0.1:${dead}`, token: TOKEN, probeTimeoutMs: 500 })
+    const broker = await startNativeBroker(`http://127.0.0.1:${dead}`, TOKEN)
+    const offline = new NativeWindowsFileSystemProvider({ baseUrl: broker.baseUrl, fetchImpl: broker.fetchImpl, probeTimeoutMs: 500 })
     const provider = new ScriptedProvider([req('file.mkdir', { path: 'notes' }), text("It's not available.")])
     const engine = new AssistantEngine({ providers: [provider], fileSystem: offline })
 
-    await engine.start()
-    const caps = useJarvisStore.getState().capabilities
-    expect(caps.fileSystemAvailable).toBe(false)
-    expect(caps.nativeAgentAvailable).toBe(false)
+    try {
+      await engine.start()
+      const caps = useJarvisStore.getState().capabilities
+      expect(caps.fileSystemAvailable).toBe(false)
+      expect(caps.nativeAgentAvailable).toBe(false)
 
-    engine.on(() => undefined)
-    await engine.process('create a notes folder')
+      engine.on(() => undefined)
+      await engine.process('create a notes folder')
 
-    const trace = engine.lastRunTrace()
-    expect(trace.finalState).toBe('completed')
-    expect(trace.steps[0].status).toBe('FAILED')
-    expect(trace.steps[0].observation?.errorKind).toBe('tool_failure')
-    expect(lastToolMessage(provider, 'file.mkdir')).toMatch(/not reachable/i)
+      const trace = engine.lastRunTrace()
+      expect(trace.finalState).toBe('completed')
+      expect(trace.steps[0].status).toBe('FAILED')
+      expect(trace.steps[0].observation?.errorKind).toBe('tool_failure')
+      expect(lastToolMessage(provider, 'file.mkdir')).toMatch(/not reachable/i)
+    } finally {
+      await broker.close()
+    }
   })
 
   it('PROOF — production wiring never ships fakes', async () => {
@@ -202,13 +211,15 @@ describe('native engine integration — offline agent is honest, never fake', ()
     const tmp = mkdtempSync(join(tmpdir(), 'jarvis-native-prod-'))
     try {
       const realAgent = await startAgent({ roots: [tmp], token: TOKEN, port: 0 })
+      const broker = await startNativeBroker(realAgent.baseUrl, TOKEN)
       try {
-        const bridge = new NativeWindowsFileSystemProvider({ baseUrl: realAgent.baseUrl, token: TOKEN })
+        const bridge = new NativeWindowsFileSystemProvider({ baseUrl: broker.baseUrl, fetchImpl: broker.fetchImpl })
         await bridge.refreshNativeStatus()
         await bridge.writeText('real.txt', 'on the real disk')
         const onDisk = await fsp.readFile(join(tmp, 'real.txt'), 'utf8')
         expect(onDisk).toBe('on the real disk')
       } finally {
+        await broker.close()
         await realAgent.close()
       }
     } finally {

@@ -69,13 +69,12 @@ export interface AgentOptions {
   port?: number
   /** Bearer token; empty string means no token is required. */
   token?: string
+  /** Explicit opt-in for tokenless local development. Never enabled by default. */
+  allowInsecureNoToken?: boolean
   /**
    * Browser origins allowed to reach the agent. Defaults to loopback
-   * origins (http://localhost:*, http://127.0.0.1:*, http://[::1]:*) plus
-   * `null` (file:// pages). Requests WITHOUT an Origin header (non-browser
-   * clients such as the backend supervisor probe) are always allowed; the
-   * gate closes the cross-site drive-by vector where an arbitrary website
-   * would otherwise POST to the loopback agent.
+   * origins (http://localhost:*, http://127.0.0.1:*, http://[::1]:*).
+   * `null` and missing Origin are not trusted by default.
    */
   allowedOrigins?: string[]
   requestTimeoutMs?: number
@@ -113,15 +112,27 @@ const CORS_METHODS = 'POST, OPTIONS'
 const LOCAL_ORIGIN_RE = /^http:\/\/(?:localhost|127\.0\.0\.1)(?::\d+)?$/i
 const IPV6_LOOPBACK_ORIGIN_RE = /^http:\/\/(?:\[::1\]|::1)(?::\d+)?$/i
 
+/** Allowed Host headers for DNS rebinding defense. Only loopback hosts. */
+const ALLOWED_HOST_RE = /^(?:localhost|127\.0\.0\.1|\[::1\]|::1)(?::\d+)?$/i
+
+export function isHostAllowed(host: string | undefined): boolean {
+  if (!host) return false
+  const raw = host.trim().toLowerCase()
+  // Handle IPv6 literal in brackets: [::1]:8765 -> ::1:8765
+  const normalized = raw.startsWith('[')
+    ? raw.replace(/^\[([^\]]+)\](?::(\d+))?$/, (_, addr, port) => port ? `${addr}:${port}` : addr)
+    : raw
+  return ALLOWED_HOST_RE.test(normalized)
+}
+
 function normalizeOrigin(origin: string): string {
   return origin.trim().replace(/\/+$/, '').toLowerCase()
 }
 
 /** Is a browser `Origin` header allowed to reach the agent? */
 export function isOriginAllowed(origin: string | undefined, explicit: readonly string[] | undefined): boolean {
-  if (origin === undefined) return true
+  if (origin === undefined) return false
   const normalized = normalizeOrigin(origin)
-  if (normalized === 'null') return true
   if (explicit !== undefined && explicit.length > 0) {
     const list = explicit.map(normalizeOrigin)
     if (list.includes('*')) return true
@@ -391,6 +402,7 @@ function createHandler(options: AgentOptions): (req: IncomingMessage, res: Serve
   const maxBodyBytes = options.maxBodyBytes ?? NATIVE_LIMITS.MAX_BODY_BYTES
   const roots = options.roots
   const log = options.log ?? (() => undefined)
+  const tokenless = token.length === 0
 
   const dispatch = async (method: string, id: string | number, params?: Record<string, unknown>): Promise<NativeResponse> => {
     if (!NATIVE_METHODS.includes(method as NativeMethod)) {
@@ -696,14 +708,19 @@ function createHandler(options: AgentOptions): (req: IncomingMessage, res: Serve
   }
 
   return (req, res) => {
-    const origin = typeof req.headers.origin === 'string' ? req.headers.origin : undefined
+    const rawOrigin = req.headers.origin
+    const origin = typeof rawOrigin === 'string' ? rawOrigin : undefined
     const setCors = (): boolean => {
+      // Non-browser clients such as the backend probe commonly omit Origin.
+      // Authentication is still enforced below, and no wildcard CORS grant
+      // is emitted for these requests.
+      if (origin === undefined) return rawOrigin === undefined
       if (!isOriginAllowed(origin, allowedOrigins)) {
         // Never issue a permissive CORS header for a blocked origin — the
         // browser must not learn anything about the agent's presence.
         return false
       }
-      res.setHeader('Access-Control-Allow-Origin', origin ?? '*')
+      res.setHeader('Access-Control-Allow-Origin', origin)
       res.setHeader('Access-Control-Allow-Methods', CORS_METHODS)
       res.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type')
       return true
@@ -714,6 +731,17 @@ function createHandler(options: AgentOptions): (req: IncomingMessage, res: Serve
       res.end(JSON.stringify(failure(null, 'origin_denied', 'Request origin is not allowed to reach the native agent.')))
       return
     }
+
+    // DNS rebinding defense: validate Host header against allowed loopback hosts.
+    // Runs before the preflight early return so OPTIONS cannot be used to probe
+    // for the agent's presence from a rebound host.
+    const host = req.headers.host
+    if (!isHostAllowed(host)) {
+      res.writeHead(403, { 'content-type': 'application/json' })
+      res.end(JSON.stringify(failure(null, 'host_denied', 'Request host is not allowed to reach the native agent.')))
+      return
+    }
+
     if (req.method === 'OPTIONS') {
       res.writeHead(204)
       res.end()
@@ -727,6 +755,12 @@ function createHandler(options: AgentOptions): (req: IncomingMessage, res: Serve
     }
 
     res.setHeader('content-type', 'application/json')
+    if (tokenless && !isLoopbackAddress(req.socket.remoteAddress)) {
+      const body = JSON.stringify(failure(null, 'permission_denied', 'Tokenless native agent accepts loopback clients only.'))
+      res.writeHead(403, { 'content-type': 'application/json', 'content-length': Buffer.byteLength(body) })
+      res.end(body)
+      return
+    }
     if (!isBearerToken(token, req.headers.authorization)) {
       const body = JSON.stringify(failure(null, 'permission_denied', 'Unauthorized: missing or invalid native agent token.'))
       res.writeHead(401, { 'content-type': 'application/json', 'content-length': Buffer.byteLength(body) })
@@ -772,6 +806,17 @@ function createHandler(options: AgentOptions): (req: IncomingMessage, res: Serve
   }
 }
 
+function isLoopbackHost(host: string): boolean {
+  const normalized = host.trim().toLowerCase().replace(/^\[|\]$/g, '')
+  return normalized === 'localhost' || normalized === '127.0.0.1' || normalized === '::1'
+}
+
+function isLoopbackAddress(address: string | undefined): boolean {
+  if (!address) return false
+  const normalized = address.toLowerCase().replace(/^::ffff:/, '')
+  return normalized === '::1' || normalized === '127.0.0.1'
+}
+
 function isStructured(error: unknown): boolean {
   return error instanceof Error && error.name === 'NativeError'
 }
@@ -786,6 +831,12 @@ export async function startAgent(options: AgentOptions): Promise<RunningAgent> {
   const token = options.token ?? ''
   const port = options.port ?? NATIVE_DEFAULT_PORT
   const host = options.host ?? NATIVE_DEFAULT_HOST
+  if (!token && options.allowInsecureNoToken !== true) {
+    throw new Error('Refusing to start the native agent without a token. Set allowInsecureNoToken only for explicit local development.')
+  }
+  if (!token && !isLoopbackHost(host)) {
+    throw new Error('Tokenless native agent must bind to localhost, 127.0.0.1, or ::1.')
+  }
   const server = createServer(createHandler({ ...options, token, port, host }))
   await new Promise<void>((resolve, reject) => {
     server.once('error', reject)

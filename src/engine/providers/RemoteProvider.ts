@@ -75,6 +75,76 @@ export function resolveEndpoint(baseUrl: string): string {
   return `${baseUrl.replace(/\/+$/, '')}/chat/completions`
 }
 
+/** Bounded discovery window; local engines can be cold but /models routes are cheap. */
+const MODEL_DISCOVERY_TIMEOUT_MS = 5000
+/** Upper bound on models kept from one probe (mirrors the backend router). */
+const MAX_DISCOVERED_MODELS = 20
+
+/**
+ * Parse the REAL model list out of an Ollama (`{ models: [...] }`) or
+ * OpenAI-compatible (`{ data: [...] }`) payload. Accepts either string entries
+ * or objects carrying `name`/`id`/`model`. Returns a deduped, sorted list.
+ */
+function parseModelIds(payload: unknown): string[] {
+  if (!payload || typeof payload !== 'object') return []
+  const record = payload as Record<string, unknown>
+  const list = Array.isArray(record.models) ? record.models : Array.isArray(record.data) ? record.data : []
+  const out: string[] = []
+  for (const item of list) {
+    if (typeof item === 'string') {
+      if (item.trim()) out.push(item.trim())
+      continue
+    }
+    if (!item || typeof item !== 'object') continue
+    const entry = item as Record<string, unknown>
+    const name = entry.name ?? entry.id ?? entry.model
+    if (typeof name === 'string' && name.trim()) out.push(name.trim())
+  }
+  return [...new Set(out)].sort().slice(0, MAX_DISCOVERED_MODELS)
+}
+
+/**
+ * REAL client-side model discovery for a keyless local engine endpoint.
+ *
+ * Ollama lists installed models on its NATIVE `/api/tags` route (never under
+ * the `/v1` OpenAI prefix); LM Studio and generic OpenAI-compatible local
+ * servers expose the OpenAI `/models` route. Both are probed with FIXED paths
+ * derived only from the configured base URL — no user/model text ever becomes
+ * part of a URL, and no API key is ever attached (local engines are keyless).
+ *
+ * Honest failure semantics: unreachable, non-OK, malformed or empty responses
+ * all return `[]` — callers read `[]` as "not verified", never "zero models".
+ * Never throws; never fabricates a model list; never logs the endpoint beyond
+ * nothing at all (a probe failure is not worth console noise).
+ */
+export async function discoverLocalModels(baseUrl: string): Promise<string[]> {
+  const base = (baseUrl ?? '').replace(/\/+$/, '')
+  if (!base) return []
+  // Ollama base URLs are frequently written as `http://host:11434/v1`; its
+  // native tags route lives at the server root, so strip a trailing /v<N>.
+  const ollamaUrl = `${base.replace(/\/v\d+$/, '')}/api/tags`
+  const openAiUrl = `${base}/models`
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), MODEL_DISCOVERY_TIMEOUT_MS)
+  try {
+    for (const url of [ollamaUrl, openAiUrl]) {
+      try {
+        const res = await fetch(url, { method: 'GET', signal: controller.signal })
+        if (!res.ok) continue
+        const payload = (await res.json().catch(() => undefined)) as unknown
+        if (!payload || typeof payload !== 'object') continue
+        const models = parseModelIds(payload)
+        if (models.length > 0) return models
+      } catch {
+        // Route unreachable/aborted — try the next candidate route.
+      }
+    }
+    return []
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
 interface OpenAIToolCall {
   id?: string
   function?: { name?: string; arguments?: string }
@@ -148,6 +218,40 @@ export class RemoteProvider implements AIProvider {
     } catch {
       return false
     }
+  }
+
+  /**
+   * Real model discovery for keyless local engines (Ollama / LM Studio).
+   *
+   * Returns the models the endpoint REALLY serves right now (Ollama native
+   * `GET /api/tags`, or the OpenAI-compatible `GET /v1/models`) as a deduped,
+   * sorted list. Never throws: discovery is best-effort.
+   *
+   * Honest semantics for the caller:
+   *   - `['…']`  → a REAL probe found these models this process.
+   *   - `[]`     → nothing could be verified. For an Ollama/LM-Studio endpoint
+   *                we specifically searched their native / OpenAI-compatible
+   *                model list routes and found them unreachable/empty; for the
+   *                proxy transport the client cannot enumerate the server's
+   *                models, so discovery is impossible client-side by design.
+   *
+   * Callers MUST NOT read `[]` as "zero models"; read it as "not verified".
+   */
+  async listModels(): Promise<string[]> {
+    const cfg = resolveRemoteConfig()
+    if (!cfg.baseUrl || cfg.proxyMode) return []
+    return discoverLocalModels(cfg.baseUrl)
+  }
+
+  /**
+   * Whether a configured model is genuinely served by the endpoint.
+   * `true` only when a REAL probe saw the model. `false` when the probe ran
+   * but the model was absent, OR when discovery could not verify anything
+   * (false → "not verified / not found", never "definitely missing").
+   */
+  async isModelAvailable(model: string): Promise<boolean> {
+    const models = await this.listModels()
+    return models.length > 0 && models.includes(model)
   }
 
   async isReachable(): Promise<boolean> {

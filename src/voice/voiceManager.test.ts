@@ -16,7 +16,11 @@ interface Harness {
   notices: Array<{ kind: 'info' | 'warning' | 'error'; text: string }>
 }
 
-function setup(wakeOverride: Partial<ConstructorParameters<typeof FakeWakeWordProvider>[0]> = {}, sttOverride = {}): Harness {
+function setup(
+  wakeOverride: Partial<ConstructorParameters<typeof FakeWakeWordProvider>[0]> = {},
+  sttOverride = {},
+  userName?: () => string | undefined,
+): Harness {
   const wake = new FakeWakeWordProvider(wakeOverride)
   const stt = new FakeSpeechToTextProvider(sttOverride)
   const tts = new FakeTextToSpeechProvider()
@@ -29,6 +33,7 @@ function setup(wakeOverride: Partial<ConstructorParameters<typeof FakeWakeWordPr
     wake,
     stt,
     tts,
+    ...(userName ? { userName } : {}),
     callbacks: {
       submitCommand: submit,
       cancelCurrent: cancel,
@@ -75,15 +80,37 @@ describe('VoiceManager — arming and wake (Phase 1.6)', () => {
     expect(h.notices[0]?.text).toMatch(/permission/i)
   })
 
-  it('wake phrase → AWAKE → spoken ack → command listening', () => {
+  it('wake phrase → AWAKE → spoken greeting → command listening', () => {
     const h = setup()
     h.manager.arm()
     h.wake.emitWake({ phrase: 'Wake up, JARVIS' })
     expect(h.manager.state).toBe('AWAKE')
-    expect(h.tts.lastText).toBe("I'm awake. What can I do for you?")
+    expect(h.tts.lastText).toBe("I'm here. How can I help?")
     h.tts.finishLast()
     expect(h.manager.state).toBe('LISTENING_FOR_COMMAND')
     expect(h.stt.listening).toBe(true)
+  })
+
+  it('the greeting is personalised with the operator name', () => {
+    const h = setup({}, {}, () => 'Amrut')
+    h.manager.arm()
+    h.wake.emitWake({ phrase: 'Wake up, JARVIS' })
+    expect(h.tts.lastText).toBe("I'm here, Amrut. How can I help?")
+  })
+
+  it('the default profile name is never spoken aloud', () => {
+    const h = setup({}, {}, () => 'Operator')
+    h.manager.arm()
+    h.wake.emitWake({ phrase: 'Wake up, JARVIS' })
+    expect(h.tts.lastText).toBe("I'm here. How can I help?")
+  })
+
+  it('greets exactly once per wake, even if the provider fires twice', () => {
+    const h = setup()
+    h.manager.arm()
+    h.wake.emitWake({ phrase: 'Wake up, JARVIS' })
+    h.wake.emitWake({ phrase: 'Wake up, JARVIS' })
+    expect(h.tts.spoken.filter((s) => s.text.includes('How can I help'))).toHaveLength(1)
   })
 
   it('direct form "wake up jarvis open chrome" skips the ack and submits immediately', () => {
@@ -343,5 +370,63 @@ describe('VoiceManager — errors, permissions and teardown (Phase 1.6)', () => 
     h.wake.emitWake({ phrase: 'wake up jarvis' })
     h.stt.emitTranscript('open Chrome')
     expect(h.submit).not.toHaveBeenCalled()
+  })
+})
+
+describe('VoiceManager — wake listening survives a session (regression)', () => {
+  beforeEach(() => vi.useFakeTimers())
+  afterEach(() => vi.useRealTimers())
+
+  it('re-arms the wake provider when the session times out, so the NEXT wake works', () => {
+    const h = setup()
+    h.manager.arm()
+    expect(h.wake.startModes).toEqual(['wake'])
+
+    wakeToCommandListening(h)
+    vi.advanceTimersByTime(WAKE_COMMAND_TIMEOUT_MS)
+    h.tts.finishLast()
+
+    // The provider was stopped when the session opened; it must be listening
+    // again now that the session ended.
+    expect(h.wake.active).toBe(true)
+    expect(h.wake.startModes).toEqual(['wake', 'wake'])
+
+    // ...and a second wake really does start a new session.
+    h.wake.emitWake({ phrase: 'wake up jarvis' })
+    expect(h.manager.state).toBe('AWAKE')
+    expect(h.tts.lastText).toBe("I'm here. How can I help?")
+  })
+
+  it('a wake arriving while the session is SLEEPING is accepted', () => {
+    const h = setup()
+    h.manager.arm()
+    wakeToCommandListening(h)
+    vi.advanceTimersByTime(WAKE_COMMAND_TIMEOUT_MS)
+    h.tts.finishLast()
+    expect(h.manager.state).toBe('SLEEPING')
+
+    h.wake.emitWake({ phrase: 'wake up jarvis' })
+    expect(h.manager.state).toBe('AWAKE')
+  })
+
+  it('an explicit "go to sleep" does NOT re-arm the wake provider', () => {
+    const h = setup()
+    h.manager.arm()
+    wakeToCommandListening(h)
+    h.stt.emitTranscript('go to sleep')
+    expect(h.manager.state).toBe('SLEEPING')
+    expect(h.wake.active).toBe(false)
+    expect(h.wake.startModes).toEqual(['wake'])
+  })
+
+  it('arm() succeeds while the provider is already listening', () => {
+    const h = setup()
+    h.manager.arm()
+    wakeToCommandListening(h)
+    vi.advanceTimersByTime(WAKE_COMMAND_TIMEOUT_MS)
+    h.tts.finishLast()
+    expect(h.wake.active).toBe(true)
+    expect(h.manager.arm()).toBe(true)
+    expect(h.manager.state).toBe('LISTENING_FOR_WAKE')
   })
 })

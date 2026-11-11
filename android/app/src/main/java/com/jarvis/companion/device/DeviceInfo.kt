@@ -58,18 +58,21 @@ object DeviceInfo {
      *
      * Capabilities and permissions are computed from the REAL device and
      * runtime-permission state every heartbeat: `call` only appears when the
-     * hardware exists, and the permission list contains only granted
+     * hardware exists, `call.speak` only when this device's speech engine is
+     * genuinely usable, and the permission list contains only granted
      * permissions. JARVIS Core therefore refuses a call with
      * PERMISSION_REQUIRED / NOT_SUPPORTED instead of pretending.
      */
-    fun heartbeatMeta(context: Context): HeartbeatMeta = HeartbeatMeta(
+    fun heartbeatMeta(context: Context, speakReady: Boolean = false): HeartbeatMeta = HeartbeatMeta(
         name = modelName(),
         version = appVersion(),
         battery = batteryPercent(context),
         charging = isCharging(context),
         network = networkLabel(context),
         connection = "lan",
-        capabilities = CompanionIdentity.CAPABILITIES + TelephonyCapability.callCapabilities(context),
+        capabilities = CompanionIdentity.CAPABILITIES +
+            TelephonyCapability.callCapabilities(context) +
+            TelephonyCapability.speakCapabilities(speakReady),
         permissions = TelephonyCapability.grantedPermissions(context),
     )
 

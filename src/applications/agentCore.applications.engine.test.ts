@@ -144,7 +144,7 @@ describe('Applications agent (engine-level, scripted provider)', () => {
     expect(engine.memoryState.items()).toHaveLength(0)
   })
 
-  it('honestly marks an unverified launch as verification-FAILED, never fake-success', async () => {
+  it('preserves an unobservable launch as unverified, never fake-success or verified failure', async () => {
     const apps = new FakeApplicationProvider([
       { applicationId: 'calculator', name: 'Calculator', launchOutcome: 'unverified' },
     ])
@@ -159,12 +159,15 @@ describe('Applications agent (engine-level, scripted provider)', () => {
 
     const trace = engine.lastRunTrace()
     expect(trace.finalState).toBe('completed')
-    expect(trace.steps[0].status).toBe('FAILED')
-    // The verifier ran but could not confirm a real running state → failed.
-    expect(trace.steps[0].verification?.status).toBe('failed')
+    expect(trace.steps[0].status).toBe('COMPLETED')
+    // The verifier ran but could not observe the process: this is distinct
+    // from both a verified launch and an observed non-running process.
+    expect(trace.steps[0].verification?.status).toBe('unverified')
+    expect(trace.steps[0].observation?.kind).toBe('partial')
+    expect(trace.task?.status).toBe('unverified')
     expect(trace.steps[0].verification?.message).toMatch(/cannot confirm/i)
     const msg = lastToolMessage(provider, 'app.launch')
-    expect(msg).toContain('verification failed')
+    expect(msg).toContain('[unverified]')
     expect(msg).not.toContain('[verified]')
   })
 

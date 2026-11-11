@@ -40,11 +40,26 @@ files for shell words, raw-audio capture, dependency on `localStorage`/
   Normalization lowercases, strips punctuation, collapses whitespace, and
   resolves "jarvis"/"compare" spelling variants deterministically. Bare
   "Jarvis", "wake up", or "hello jarvis" do **not** match.
-- If the transcription is exactly the wake phrase, the manager speaks an ack
-  ("I'm awake. What can I do for you?") and enters command listening.
+- If the transcription is exactly the wake phrase, the manager speaks a
+  greeting and enters command listening. The greeting is **"I'm here, {name}.
+  How can I help?"**, where `{name}` is the operator's name from the real
+  memory profile. With no name on file the placeholder is dropped cleanly
+  ("I'm here. How can I help?") so JARVIS never greets an anonymous
+  "Operator".
+- **Wake listening survives the session.** The wake provider is stopped when a
+  session OPENS (so the microphone is closed while JARVIS speaks), and it is
+  **re-armed when the session ends** — on the command timeout, the session
+  ceiling, a cancel, or an input error. Without that re-arm the first wake
+  would work and every later one would be ignored. A wake event arriving while
+  the session is `SLEEPING` is accepted, because "sleeping" describes the
+  *voice session*, not the always-on wake listener. An explicit "go to sleep"
+  deliberately does **not** re-arm it.
+- **Exactly one greeting.** A duplicate wake event is dropped by the state
+  machine (a wake is only accepted from `LISTENING_FOR_WAKE`/`SLEEPING`), so a
+  provider that fires twice cannot produce two greetings.
 - **Direct form** — "Wake up, JARVIS, open Chrome." — is split deterministically
   (the same normalization used everywhere): the trailing text is submitted as
-  the first command, **skipping the ack**.
+  the first command, **skipping the greeting**.
 - The session cycle: `AWAKE → LISTENING_FOR_COMMAND → PROCESSING →
   SPEAKING → LISTENING_FOR_COMMAND`. A spoken command during `SPEAKING`
   **interrupts the shared TTS and starts the new command** (barge-in).
@@ -74,6 +89,14 @@ files for shell words, raw-audio capture, dependency on `localStorage`/
   `BrowserTextToSpeechProvider`, and the **same instance** is attached to the
   engine through `VoiceOutput` (`src/voice/VoiceOutput.ts`). Engine lifecycle
   phrases and the final assistant response can therefore never overlap.
+- **No microphone/TTS conflict.** The wake recognizer is hard-aborted before
+  the command recognizer starts, and the command recognizer is hard-aborted
+  before the wake recognizer starts, so only one recognizer ever holds the
+  microphone. Holding-to-speak hard-aborts the wake session before opening its
+  own recognizer. Chrome ends a `continuous` recognizer on its own after a
+  stretch of silence, so the command listener resumes itself while the session
+  is still open — otherwise the session would go deaf for the rest of its
+  bounded lifetime.
 - A spoken command reaches the engine through `engine.process(text)` — the same
   entry point and the same user-turn format a typed message would produce. The
   engine test asserts voice and typed input are indistinguishable in the
@@ -102,12 +125,15 @@ files for shell words, raw-audio capture, dependency on `localStorage`/
 - `src/voice/voiceManager.test.ts` — arming/wake, direct form, single-slot
   newest-wins queue, sleep/cancel control phrases, command timeout, the 30 s
   session ceiling under continuous chatter, barge-in during speech, engine
-  status feed, permission-denied handling, dispose. (24 tests.)
+  status feed, permission-denied handling, dispose, the personalised greeting,
+  single-greeting suppression, and the wake re-arm after a session. (32 tests.)
 - `src/voice/agentCore.voice.engine.test.ts` — voice == typed entry, capability
-  flags reported honestly per environment, the shared TTS seam, and a
+  flags reported honestly per environment, the shared TTS seam, a
   voice-driven closed-loop desktop run (`window.list → window.focus →
-  desktop.move → desktop.click`) with verified / honestly-unconfirmed steps.
-  (6 tests.)
+  desktop.move → desktop.click`) with verified / honestly-unconfirmed steps,
+  and the full acceptance path **wake → one spoken greeting → the microphone
+  listens → the AI answers out loud → the session can be woken again**.
+  (8 tests.)
 - `src/voice/security.test.ts` — static boundary scan: no shell words, no raw
   audio capture or persistence, no LLM in wake detection, no `../engine`
   imports, fakes quarantined with exactly 3 `testsOnly` markers. (6 tests.)

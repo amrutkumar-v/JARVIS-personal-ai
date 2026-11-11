@@ -1,5 +1,6 @@
 import { describe, expect, it, beforeAll, afterAll, beforeEach } from 'vitest'
-import { startAgent } from './agent.js'
+import { request as httpRequest } from 'node:http'
+import { startAgent, isHostAllowed } from './agent.js'
 import { RealFsBackend } from './backend.js'
 import type { NativeResponse } from './protocol.js'
 import { NATIVE_LIMITS } from './limits.js'
@@ -33,6 +34,45 @@ async function asJson(res: Response): Promise<NativeResponse> {
 
 const errorCode = (body: NativeResponse): string | undefined =>
   'error' in body ? body.error.code : undefined
+
+interface RawResponse {
+  status: number
+  allowOrigin: string | undefined
+  body: string
+}
+
+/**
+ * Raw HTTP request so the Host header can be set explicitly — `fetch` forbids it.
+ * This is the only way to exercise DNS-rebinding defenses at the HTTP layer.
+ */
+function rawRpc(
+  baseUrl: string,
+  opts: { method: string; headers: Record<string, string>; body?: string },
+): Promise<RawResponse> {
+  const url = new URL(baseUrl)
+  return new Promise((resolve, reject) => {
+    const req = httpRequest(
+      { host: url.hostname, port: Number(url.port), path: '/rpc', method: opts.method, headers: opts.headers },
+      (res) => {
+        let body = ''
+        res.setEncoding('utf8')
+        res.on('data', (chunk: string) => {
+          body += chunk
+        })
+        res.on('end', () => {
+          resolve({
+            status: res.statusCode ?? 0,
+            allowOrigin: res.headers['access-control-allow-origin'] as string | undefined,
+            body,
+          })
+        })
+      },
+    )
+    req.on('error', reject)
+    if (opts.body !== undefined) req.write(opts.body)
+    req.end()
+  })
+}
 
 // Stub backend that hangs forever on `read` — exercises the server-side timeout.
 const hangingBackend: FsBackend = {
@@ -97,12 +137,162 @@ describe('native agent protocol — JSON-RPC over loopback HTTP (in-memory backe
     expect(res.status).toBe(401)
   })
 
-  it('sets CORS headers on responses and answers preflight', async () => {
+  // --- Security: Host header validation over real HTTP ---
+
+  describe('Host header enforcement (raw HTTP)', () => {
+    const PING = JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'system.ping' })
+
+    it('accepts a loopback Host on POST', async () => {
+      const res = await rawRpc(agent.baseUrl, {
+        method: 'POST',
+        headers: { host: 'localhost:8765', 'content-type': 'application/json', authorization: `Bearer ${TOKEN}` },
+        body: PING,
+      })
+      expect(res.status).toBe(200)
+      expect(JSON.parse(res.body)).toMatchObject({ result: { pong: true } })
+    })
+
+    it('rejects a rebound Host on POST (403 host_denied)', async () => {
+      const res = await rawRpc(agent.baseUrl, {
+        method: 'POST',
+        headers: { host: 'evil.example.com', 'content-type': 'application/json', authorization: `Bearer ${TOKEN}` },
+        body: PING,
+      })
+      expect(res.status).toBe(403)
+      expect(errorCode(JSON.parse(res.body) as NativeResponse)).toBe('host_denied')
+    })
+
+    // A preflight must not be a way around the rebinding check: it leaks agent
+    // presence and tells an attacker whether to keep probing.
+    it('rejects a rebound Host on OPTIONS preflight (403 host_denied)', async () => {
+      const res = await rawRpc(agent.baseUrl, {
+        method: 'OPTIONS',
+        headers: {
+          host: 'evil.example.com',
+          origin: 'http://localhost:5173',
+          'access-control-request-method': 'POST',
+        },
+      })
+      expect(res.status).toBe(403)
+      expect(errorCode(JSON.parse(res.body) as NativeResponse)).toBe('host_denied')
+    })
+
+    // The reordering must not break legitimate browsers.
+    it('still answers a loopback preflight with 204 and CORS headers', async () => {
+      const res = await rawRpc(agent.baseUrl, {
+        method: 'OPTIONS',
+        headers: { host: '127.0.0.1:8765', origin: 'http://localhost:5173', 'access-control-request-method': 'POST' },
+      })
+      expect(res.status).toBe(204)
+      expect(res.allowOrigin).toBe('http://localhost:5173')
+    })
+  })
+
+  it('does not grant wildcard CORS to requests without Origin and answers loopback preflight', async () => {
     const res = await rpc(agent.baseUrl, 'system.ping', undefined, TOKEN)
-    expect(res.headers.get('access-control-allow-origin')).toBe('*')
-    const opts = await fetch(`${agent.baseUrl}/rpc`, { method: 'OPTIONS' })
+    expect(res.headers.get('access-control-allow-origin')).toBeNull()
+    const opts = await fetch(`${agent.baseUrl}/rpc`, {
+      method: 'OPTIONS',
+      headers: { origin: 'http://localhost:5173', 'access-control-request-method': 'POST' },
+    })
     expect(opts.status).toBe(204)
+    expect(opts.headers.get('access-control-allow-origin')).toBe('http://localhost:5173')
     expect(opts.headers.get('access-control-allow-methods')).toContain('POST')
+  })
+
+  // --- Security: Origin/Host/Token validation ---
+
+  it('allows requests with absent Origin header when token is valid (non-browser clients)', async () => {
+    const res = await fetch(`${agent.baseUrl}/rpc`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${TOKEN}` },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'system.ping' }),
+    })
+    expect(res.status).toBe(200)
+    expect(await asJson(res)).toMatchObject({ result: { pong: true } })
+    // No CORS header should be granted for absent Origin
+    expect(res.headers.get('access-control-allow-origin')).toBeNull()
+  })
+
+  it('rejects requests with Origin: null (403 origin_denied)', async () => {
+    const res = await fetch(`${agent.baseUrl}/rpc`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${TOKEN}`, origin: 'null' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'system.ping' }),
+    })
+    expect(res.status).toBe(403)
+    expect(errorCode(await asJson(res))).toBe('origin_denied')
+  })
+
+  it('accepts valid localhost Origin with valid token', async () => {
+    const res = await fetch(`${agent.baseUrl}/rpc`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${TOKEN}`, origin: 'http://localhost:3000' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'system.ping' }),
+    })
+    expect(res.status).toBe(200)
+    expect(await asJson(res)).toMatchObject({ result: { pong: true } })
+  })
+
+  it('rejects invalid Origin (non-loopback) even with valid token', async () => {
+    const res = await fetch(`${agent.baseUrl}/rpc`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${TOKEN}`, origin: 'https://evil.com' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'system.ping' }),
+    })
+    expect(res.status).toBe(403)
+    expect(errorCode(await asJson(res))).toBe('origin_denied')
+  })
+
+  // Host header validation (tested via isHostAllowed since fetch forbids Host header)
+  describe('isHostAllowed — Host header validation', () => {
+    it('accepts localhost', () => {
+      expect(isHostAllowed('localhost')).toBe(true)
+      expect(isHostAllowed('localhost:8765')).toBe(true)
+    })
+    it('accepts 127.0.0.1', () => {
+      expect(isHostAllowed('127.0.0.1')).toBe(true)
+      expect(isHostAllowed('127.0.0.1:8765')).toBe(true)
+    })
+    it('accepts [::1] (IPv6 loopback)', () => {
+      // Host header always includes port in practice; normalized value is ::1:port
+      expect(isHostAllowed('[::1]:8765')).toBe(true)
+    })
+    it('rejects evil.com', () => {
+      expect(isHostAllowed('evil.com')).toBe(false)
+      expect(isHostAllowed('evil.com:80')).toBe(false)
+    })
+    it('rejects 192.168.1.1', () => {
+      expect(isHostAllowed('192.168.1.1')).toBe(false)
+    })
+    it('rejects empty/undefined', () => {
+      expect(isHostAllowed('')).toBe(false)
+      expect(isHostAllowed(undefined as any)).toBe(false)
+    })
+  })
+
+  it('valid token authenticates successfully', async () => {
+    const res = await rpc(agent.baseUrl, 'system.ping', undefined, TOKEN)
+    expect(res.status).toBe(200)
+    expect(await asJson(res)).toMatchObject({ result: { pong: true } })
+  })
+
+  it('rejects missing token (401)', async () => {
+    const res = await rpc(agent.baseUrl, 'system.ping')
+    expect(res.status).toBe(401)
+    expect(errorCode(await asJson(res))).toBe('permission_denied')
+  })
+
+  it('rejects invalid token (401)', async () => {
+    const res = await rpc(agent.baseUrl, 'system.ping', undefined, 'wrong-token')
+    expect(res.status).toBe(401)
+    expect(errorCode(await asJson(res))).toBe('permission_denied')
+  })
+
+  it('rejects empty token string (401)', async () => {
+    const res = await rpc(agent.baseUrl, 'system.ping', undefined, '')
+    expect(res.status).toBe(401)
+    expect(errorCode(await asJson(res))).toBe('permission_denied')
   })
 
   it('rejects non-POST requests', async () => {
@@ -193,8 +383,13 @@ describe('agent backend defaults', () => {
     expect((new RealFsBackend() as FsBackend).testsOnly).toBeUndefined()
   })
 
-  it('a blank token accepts un-authenticated calls on loopback (explicit opt-out)', async () => {
-    const noToken = await startAgent({ roots: [ROOT], token: '', port: 0 })
+  it('refuses tokenless startup unless local-development opt-in is explicit', async () => {
+    await expect(startAgent({ roots: [ROOT], token: '', port: 0 })).rejects.toThrow(/without a token/i)
+    await expect(startAgent({ roots: [ROOT], token: '', host: '0.0.0.0', allowInsecureNoToken: true, port: 0 })).rejects.toThrow(/must bind/i)
+  })
+
+  it('an explicitly opted-in tokenless agent accepts loopback calls and reports its auth state', async () => {
+    const noToken = await startAgent({ roots: [ROOT], token: '', allowInsecureNoToken: true, port: 0 })
     try {
       const res = await rpc(noToken.baseUrl, 'system.ping')
       expect(res.status).toBe(200)

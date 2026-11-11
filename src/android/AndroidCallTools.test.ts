@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest'
 import { createAndroidCallTools, normalizeDialNumber, deviceErrorForCallState } from './AndroidCallTools'
-import type { AndroidCallOutcome, AndroidCapabilities, AndroidCallStateInput, AndroidProvider } from './provider'
+import type {
+  ActiveCall,
+  AndroidCallOutcome,
+  AndroidCapabilities,
+  AndroidCallStateInput,
+  AndroidProvider,
+} from './provider'
 import type { CallAction, CallEventData, CallResultLookup, CallState, DeviceRecord } from '../backend/types'
 
 /**
@@ -23,11 +29,12 @@ class FakeAndroidProvider implements AndroidProvider {
       deviceName: "Amrut's S26 Ultra",
       online: true,
       call: true,
+      speak: true,
       dialPermission: true,
       callControlPermission: true,
     },
   }
-  requests: Array<{ action: CallAction; input: { target?: string; number?: string; reason?: string } }> = []
+  requests: Array<{ action: CallAction; input: { target?: string; number?: string; reason?: string; text?: string } }> = []
   outcome: AndroidCallOutcome = {
     ok: true,
     state: 'CALL_REQUESTED',
@@ -39,6 +46,8 @@ class FakeAndroidProvider implements AndroidProvider {
   events: CallEventData[] = []
   /** When true, `requestCall` pushes a confirming event like the real phone does. */
   emitEventOnRequest = true
+  /** The ack `callResult` reports (the phone's own confirmation). */
+  callResultValue: CallResultLookup = { ok: true, acknowledged: true, result: true }
 
   capabilities(): AndroidCapabilities {
     return this.capabilitiesResult
@@ -48,7 +57,10 @@ class FakeAndroidProvider implements AndroidProvider {
     return Promise.resolve([])
   }
 
-  requestCall(action: CallAction, input: { target?: string; number?: string; reason?: string }): Promise<AndroidCallOutcome> {
+  requestCall(
+    action: CallAction,
+    input: { target?: string; number?: string; reason?: string; text?: string },
+  ): Promise<AndroidCallOutcome> {
     this.requests.push({ action, input })
     if (this.outcome.ok && this.emitEventOnRequest && action === 'dial') {
       this.events.unshift({
@@ -65,11 +77,31 @@ class FakeAndroidProvider implements AndroidProvider {
   }
 
   callResult(): Promise<CallResultLookup> {
-    return Promise.resolve({ ok: true, acknowledged: true, result: true })
+    return Promise.resolve(this.callResultValue)
   }
 
   recentCallEvents(limit = 10): CallEventData[] {
     return this.events.slice(0, limit)
+  }
+
+  activeCall(): ActiveCall | null {
+    // Same semantics as the real provider: the newest meaningful state wins,
+    // and a terminal state ends the call.
+    const terminal = ['ENDED', 'REJECTED', 'CANCELLED', 'FAILED']
+    for (const e of this.events) {
+      if (['CALLING', 'RINGING', 'CONNECTED'].includes(e.state)) {
+        return {
+          deviceId: e.deviceId,
+          state: e.state,
+          direction: e.direction,
+          contactName: e.contactName,
+          number: e.number,
+          at: e.at,
+        }
+      }
+      if (terminal.includes(e.state)) return null
+    }
+    return null
   }
 
   awaitCallState(input: AndroidCallStateInput): Promise<CallEventData | null> {
@@ -92,9 +124,18 @@ const ctx = { requestId: 'r1' }
 describe('Phase 10 — Android call tools', () => {
   it('creates exactly the implemented telephony tools', () => {
     const ids = createAndroidCallTools(new FakeAndroidProvider()).map((t) => t.id)
-    expect(ids).toEqual(['call.dial', 'call.answer', 'call.reject', 'call.end', 'call.status'])
-    // Nothing is invented: no summary / contacts-copy / SMS tool exists here.
-    expect(ids).not.toContain('call.summarize')
+    expect(ids).toEqual([
+      'call.dial',
+      'call.answer',
+      'call.reject',
+      'call.end',
+      'call.speak',
+      'call.converse',
+      'call.conclude',
+      'call.summarize',
+      'call.status',
+    ])
+    // Nothing is invented: no contacts-copy / SMS tool exists here.
     expect(ids).not.toContain('phone.sms')
   })
 
@@ -197,7 +238,7 @@ describe('Phase 10 — Android call tools', () => {
     const provider = new FakeAndroidProvider()
     provider.capabilitiesResult = {
       available: true,
-      phone: { deviceId: 's26-ultra', deviceName: "Amrut's S26 Ultra", online: false, call: true, dialPermission: true, callControlPermission: true },
+      phone: { deviceId: 's26-ultra', deviceName: "Amrut's S26 Ultra", online: false, call: true, speak: true, dialPermission: true, callControlPermission: true },
     }
     const result = await tool(provider, 'call.dial').execute({ query: 'call Dad', params: { target: 'Dad' } }, ctx)
     expect(result.ok).toBe(false)
@@ -210,7 +251,7 @@ describe('Phase 10 — Android call tools', () => {
     const provider = new FakeAndroidProvider()
     provider.capabilitiesResult = {
       available: true,
-      phone: { deviceId: 's26-ultra', deviceName: "Amrut's S26 Ultra", online: true, call: false, dialPermission: false, callControlPermission: false },
+      phone: { deviceId: 's26-ultra', deviceName: "Amrut's S26 Ultra", online: true, call: false, speak: false, dialPermission: false, callControlPermission: false },
     }
     const result = await tool(provider, 'call.dial').execute({ query: 'call Dad', params: { target: 'Dad' } }, ctx)
     expect(result.ok).toBe(false)
@@ -223,7 +264,7 @@ describe('Phase 10 — Android call tools', () => {
     const provider = new FakeAndroidProvider()
     provider.capabilitiesResult = {
       available: true,
-      phone: { deviceId: 's26-ultra', deviceName: "Amrut's S26 Ultra", online: true, call: true, dialPermission: false, callControlPermission: true },
+      phone: { deviceId: 's26-ultra', deviceName: "Amrut's S26 Ultra", online: true, call: true, speak: true, dialPermission: false, callControlPermission: true },
     }
     const result = await tool(provider, 'call.dial').execute({ query: 'call Dad', params: { target: 'Dad' } }, ctx)
     expect(result.ok).toBe(false)
@@ -236,7 +277,7 @@ describe('Phase 10 — Android call tools', () => {
     const provider = new FakeAndroidProvider()
     provider.capabilitiesResult = {
       available: true,
-      phone: { deviceId: 's26-ultra', deviceName: "Amrut's S26 Ultra", online: true, call: true, dialPermission: true, callControlPermission: false },
+      phone: { deviceId: 's26-ultra', deviceName: "Amrut's S26 Ultra", online: true, call: true, speak: true, dialPermission: true, callControlPermission: false },
     }
     const result = await tool(provider, 'call.end').execute({ query: 'hang up', params: {} }, ctx)
     expect(result.ok).toBe(false)
@@ -268,5 +309,78 @@ describe('Phase 10 — Android call tools', () => {
     expect(deviceErrorForCallState('PERMISSION_REQUIRED')).toBe('device_permission_required')
     expect(deviceErrorForCallState('NOT_SUPPORTED')).toBe('device_unavailable')
     expect(deviceErrorForCallState('FAILED')).toBe('device_unavailable')
+  })
+})
+
+describe('call.speak — JARVIS talking on a live call', () => {
+  it('refuses to speak when there is no live call', async () => {
+    const provider = new FakeAndroidProvider()
+    const result = await tool(provider, 'call.speak').execute({ query: 'say hi on the call', params: { text: 'Hello' } }, ctx)
+    expect(result.ok).toBe(false)
+    expect(result.message).toContain('no live call')
+    expect(provider.requests).toHaveLength(0)
+  })
+
+  it('refuses to speak into a call that is only ringing, not connected', async () => {
+    const provider = new FakeAndroidProvider()
+    provider.events = [{ deviceId: 's26-ultra', state: 'RINGING', direction: 'outgoing', at: 5 }]
+    const result = await tool(provider, 'call.speak').execute({ query: 'say hi on the call', params: { text: 'Hello' } }, ctx)
+    expect(result.ok).toBe(false)
+    expect(result.message).toContain('RINGING')
+    expect(provider.requests).toHaveLength(0)
+  })
+
+  it('queues the text for the phone when a call is live', async () => {
+    const provider = new FakeAndroidProvider()
+    provider.events = [{ deviceId: 's26-ultra', state: 'CONNECTED', direction: 'outgoing', at: 5 }]
+    const result = await tool(provider, 'call.speak').execute({ query: 'say hi on the call', params: { text: 'Hello there' } }, ctx)
+    expect(result.ok).toBe(true)
+    expect(provider.requests[0]?.action).toBe('speak')
+    expect(provider.requests[0]?.input.text).toBe('Hello there')
+  })
+
+  it('refuses to speak without text', async () => {
+    const provider = new FakeAndroidProvider()
+    provider.events = [{ deviceId: 's26-ultra', state: 'CONNECTED', direction: 'outgoing', at: 5 }]
+    const result = await tool(provider, 'call.speak').execute({ query: 'say hi on the call', params: {} }, ctx)
+    expect(result.ok).toBe(false)
+    expect(provider.requests).toHaveLength(0)
+  })
+
+  it('is verified ONLY by the phone acknowledgement, never by assumption', async () => {
+    const provider = new FakeAndroidProvider()
+    provider.events = [{ deviceId: 's26-ultra', state: 'CONNECTED', direction: 'outgoing', at: 5 }]
+    const speak = tool(provider, 'call.speak')
+    const result = await speak.execute({ query: 'say hi on the call', params: { text: 'Hello there' } }, ctx)
+
+    provider.callResultValue = { ok: true, acknowledged: true, result: true, detail: 'SPOKEN: played on the loudspeaker' }
+    const good = await speak.verify!(  { query: 'say hi on the call', params: { text: 'Hello there' } }, result, ctx)
+    expect(good.ok).toBe(true)
+
+    provider.callResultValue = { ok: true, acknowledged: true, result: false, detail: 'FAILED: the call is on the earpiece' }
+    const bad = await speak.verify!({ query: 'say hi on the call', params: { text: 'Hello there' } }, result, ctx)
+    expect(bad.ok).toBe(false)
+    expect(bad.message).toContain('earpiece')
+  })
+
+  it('a phone without the call.speak capability cannot be asked to speak', async () => {
+    const provider = new FakeAndroidProvider()
+    provider.events = [{ deviceId: 's26-ultra', state: 'CONNECTED', direction: 'outgoing', at: 5 }]
+    provider.capabilitiesResult = {
+      available: true,
+      phone: {
+        deviceId: 's26-ultra',
+        deviceName: "Amrut's S26 Ultra",
+        online: true,
+        call: true,
+        speak: false,
+        dialPermission: true,
+        callControlPermission: true,
+      },
+    }
+    const result = await tool(provider, 'call.speak').execute({ query: 'say hi on the call', params: { text: 'Hello' } }, ctx)
+    expect(result.ok).toBe(false)
+    expect(result.message).toContain('call.speak')
+    expect(provider.requests).toHaveLength(0)
   })
 })

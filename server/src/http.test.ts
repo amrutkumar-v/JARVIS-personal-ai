@@ -10,6 +10,8 @@ import { buildHealth } from './health.js'
 import { startHttpServer, type RuntimeContext, type RunningHttp } from './http.js'
 import { BACKEND_NAME, BACKEND_PROTOCOL, BACKEND_VERSION } from './version.js'
 
+const TEST_TOKEN = 'backend-test-token'
+
 /** Minimal SSE test client (parses `event:` / `data:` blocks over node:http). */
 class SseClient {
   private buffer = ''
@@ -17,7 +19,7 @@ class SseClient {
   private req: ReturnType<typeof request> | null = null
   ready: Promise<void>
 
-  constructor(port: number, token = '') {
+  constructor(port: number, token = TEST_TOKEN) {
     this.ready = new Promise<void>((resolveReady, rejectReady) => {
       this.req = request(
         {
@@ -84,7 +86,7 @@ class SseClient {
   }
 }
 
-async function jsonPost(port: number, path: string, body: unknown, token = ''): Promise<{ status: number; body: unknown }> {
+async function jsonPost(port: number, path: string, body: unknown, token: string | null = TEST_TOKEN): Promise<{ status: number; body: unknown }> {
   const headers: Record<string, string> = { 'content-type': 'application/json' }
   if (token) headers.authorization = `Bearer ${token}`
   const res = await fetch(`http://127.0.0.1:${port}${path}`, {
@@ -103,11 +105,15 @@ describe('JARVIS Core HTTP server', () => {
   let files: FileStore
   let dataDir: string
   let nowValue: number
+  let nativeForwarded: Array<{ url: string; init: RequestInit }> = []
+  let nativeFetchError: Error | undefined
 
   beforeEach(async () => {
     dir = await mkdtemp(join(tmpdir(), 'jarvis-http-'))
     dataDir = join(dir, 'data')
     nowValue = 1000
+    nativeForwarded = []
+    nativeFetchError = undefined
     registry = new DeviceRegistry({ now: () => nowValue })
     bus = new EventBus()
     files = new FileStore({ dir: join(dir, 'files'), now: () => nowValue, generateId: () => `f-1` })
@@ -173,10 +179,25 @@ describe('JARVIS Core HTTP server', () => {
       context,
       staticDir: undefined,
       publicDir: join(dir, 'public'),
+      token: TEST_TOKEN,
+      trustedOrigins: ['http://jarvis.local', 'http://127.0.0.1:3000'],
+      nativeAgent: {
+        baseUrl: 'http://127.0.0.1:8765',
+        token: 'native-server-test-token',
+        fetchImpl: (async (input: string | URL, init?: RequestInit) => {
+          nativeForwarded.push({ url: String(input), init: init ?? {} })
+          if (nativeFetchError) throw nativeFetchError
+          const payload = JSON.parse(String(init?.body ?? '{}')) as { id?: unknown; method?: unknown }
+          return new Response(JSON.stringify({ jsonrpc: '2.0', id: payload.id, result: { method: payload.method, connected: true } }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          })
+        }) as typeof fetch,
+      },
     })
     const { writeFile } = await import('node:fs/promises')
     await (await import('node:fs/promises')).mkdir(join(dir, 'public'), { recursive: true })
-    await writeFile(join(dir, 'public', 'phone.html'), 'token=__JARVIS_BACKEND_TOKEN__')
+    await writeFile(join(dir, 'public', 'phone.html'), '<script>fetch("/api/session")</script>')
   })
 
   afterEach(async () => {
@@ -184,10 +205,20 @@ describe('JARVIS Core HTTP server', () => {
     await rm(dir, { recursive: true, force: true })
   })
 
-  it('GET /health reports the aggregate runtime state honestly', async () => {
+  it('public GET /health exposes only a safe summary; authenticated /api/health reports full state', async () => {
     const res = await fetch(`http://127.0.0.1:${running.port}/health`)
     expect(res.status).toBe(200)
-    const health = (await res.json()) as Record<string, unknown>
+    const publicHealth = (await res.json()) as Record<string, unknown>
+    expect(publicHealth).toMatchObject({ name: BACKEND_NAME, version: BACKEND_VERSION, protocol: BACKEND_PROTOCOL, status: 'degraded' })
+    expect(publicHealth).not.toHaveProperty('pid')
+    expect(publicHealth).not.toHaveProperty('devices')
+    expect(publicHealth).not.toHaveProperty('paths')
+
+    const detailsResponse = await fetch(`http://127.0.0.1:${running.port}/api/health`, {
+      headers: { authorization: `Bearer ${TEST_TOKEN}` },
+    })
+    expect(detailsResponse.status).toBe(200)
+    const health = (await detailsResponse.json()) as Record<string, unknown>
     expect(health.name).toBe(BACKEND_NAME)
     expect(health.version).toBe(BACKEND_VERSION)
     expect(health.protocol).toBe(BACKEND_PROTOCOL)
@@ -221,7 +252,9 @@ describe('JARVIS Core HTTP server', () => {
     const unknown = await jsonPost(running.port, '/api/device/heartbeat', { id: 'ghost' })
     expect((unknown.body as { ok: boolean }).ok).toBe(false)
 
-    const registryList = (await (await fetch(`http://127.0.0.1:${running.port}/api/device/registry`)).json()) as {
+    const registryList = (await (await fetch(`http://127.0.0.1:${running.port}/api/device/registry`, {
+      headers: { authorization: `Bearer ${TEST_TOKEN}` },
+    })).json()) as {
       devices: Array<{ id: string; online: boolean }>
       count: number
     }
@@ -234,7 +267,9 @@ describe('JARVIS Core HTTP server', () => {
     const claim = await jsonPost(running.port, '/api/device/claim', { device: 'some-randon-phone', meta: { name: 'Unknown' } })
     expect(claim.status).toBe(403)
     expect((claim.body as { error: string }).error).toBe('untrusted_device')
-    const list = (await (await fetch(`http://127.0.0.1:${running.port}/api/device/list`)).json()) as { devices: Array<{ id: string }> }
+    const list = (await (await fetch(`http://127.0.0.1:${running.port}/api/device/list`, {
+      headers: { authorization: `Bearer ${TEST_TOKEN}` },
+    })).json()) as { devices: Array<{ id: string }> }
     expect(list.devices.some((d) => d.id === 'some-randon-phone')).toBe(false)
     expect(list.devices.length).toBe(4)
   })
@@ -360,12 +395,12 @@ describe('JARVIS Core HTTP server', () => {
         token: 's3cret',
         publicDir: join(dir, 'public'),
       })
-      const bad = await jsonPost(running2.port, '/api/device/notify', { title: 'T', message: 'M' })
+    const bad = await jsonPost(running2.port, '/api/device/notify', { title: 'T', message: 'M' }, null)
       expect(bad.status).toBe(401)
       const good = await jsonPost(running2.port, '/api/device/notify', { title: 'T', message: 'M' }, 's3cret')
       expect(good.status).toBe(200)
       // pairing claim + heartbeat are protected too (no unrestricted endpoints).
-      const unauthedClaim = await jsonPost(running2.port, '/api/device/claim', { device: 's26-ultra' })
+      const unauthedClaim = await jsonPost(running2.port, '/api/device/claim', { device: 's26-ultra' }, null)
       expect(unauthedClaim.status).toBe(401)
       const claim = await jsonPost(running2.port, '/api/device/claim', { device: 's26-ultra', meta: { name: "Amrut's S26 Ultra" } }, 's3cret')
       expect(claim.status).toBe(200)
@@ -373,6 +408,98 @@ describe('JARVIS Core HTTP server', () => {
     } finally {
       await rm(dir2, { recursive: true, force: true })
     }
+  })
+
+  it('requires a bearer or HttpOnly browser session on privileged APIs and enforces exact origins', async () => {
+    const url = `http://127.0.0.1:${running.port}`
+    const missing = await fetch(`${url}/api/device/registry`)
+    expect(missing.status).toBe(401)
+
+    const wrong = await fetch(`${url}/api/device/registry`, { headers: { authorization: 'Bearer wrong' } })
+    expect(wrong.status).toBe(401)
+
+    const wrongOrigin = await fetch(`${url}/api/device/registry`, {
+      headers: { authorization: `Bearer ${TEST_TOKEN}`, origin: 'https://untrusted.example' },
+    })
+    expect(wrongOrigin.status).toBe(403)
+    expect(wrongOrigin.headers.get('access-control-allow-origin')).toBeNull()
+
+    const session = await fetch(`${url}/api/session`, { headers: { origin: 'http://jarvis.local' } })
+    expect(session.status).toBe(200)
+    expect(session.headers.get('access-control-allow-origin')).toBe('http://jarvis.local')
+    expect(session.headers.get('access-control-allow-credentials')).toBe('true')
+    const cookie = session.headers.get('set-cookie')?.split(';')[0]
+    expect(cookie).toMatch(/^jarvis_session=/)
+
+    const withSession = await fetch(`${url}/api/device/registry`, {
+      headers: { origin: 'http://jarvis.local', cookie: cookie! },
+    })
+    expect(withSession.status).toBe(200)
+
+    const allowedPreflight = await fetch(`${url}/api/native/rpc`, {
+      method: 'OPTIONS',
+      headers: { origin: 'http://jarvis.local', 'access-control-request-method': 'POST' },
+    })
+    expect(allowedPreflight.status).toBe(204)
+    expect(allowedPreflight.headers.get('access-control-allow-origin')).toBe('http://jarvis.local')
+    expect(allowedPreflight.headers.get('access-control-allow-credentials')).toBe('true')
+
+    const deniedPreflight = await fetch(`${url}/api/native/rpc`, {
+      method: 'OPTIONS',
+      headers: { origin: 'https://untrusted.example', 'access-control-request-method': 'POST' },
+    })
+    expect(deniedPreflight.status).toBe(403)
+    expect(deniedPreflight.headers.get('access-control-allow-origin')).toBeNull()
+  })
+
+  it('brokers only allow-listed native RPC methods and keeps the agent token server-side', async () => {
+    const url = `http://127.0.0.1:${running.port}/api/native/rpc`
+    const good = await fetch(url, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${TEST_TOKEN}` },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 7, method: 'system.ping', params: {} }),
+    })
+    expect(good.status).toBe(200)
+    expect(await good.json()).toMatchObject({ result: { method: 'system.ping', connected: true } })
+    expect(nativeForwarded).toHaveLength(1)
+    expect(nativeForwarded[0]!.url).toBe('http://127.0.0.1:8765/')
+    expect(nativeForwarded[0]!.init.headers).toMatchObject({ authorization: 'Bearer native-server-test-token' })
+
+    for (const method of ['exec', 'shell', 'cmd', 'powershell', 'command.run']) {
+      const denied = await fetch(url, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', authorization: `Bearer ${TEST_TOKEN}` },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 8, method, params: {} }),
+      })
+      expect(denied.status).toBe(400)
+    }
+    expect(nativeForwarded).toHaveLength(1)
+
+    nativeFetchError = new Error('connection refused')
+    const unavailable = await fetch(url, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${TEST_TOKEN}` },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 'offline', method: 'system.ping', params: {} }),
+    })
+    expect(unavailable.status).toBe(502)
+    expect(await unavailable.json()).toMatchObject({
+      jsonrpc: '2.0',
+      id: 'offline',
+      error: { code: 'native_unavailable' },
+    })
+
+    nativeFetchError = new DOMException('The native agent timed out.', 'AbortError')
+    const timedOut = await fetch(url, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${TEST_TOKEN}` },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 'timeout', method: 'system.ping', params: {} }),
+    })
+    expect(timedOut.status).toBe(504)
+    expect(await timedOut.json()).toMatchObject({
+      jsonrpc: '2.0',
+      id: 'timeout',
+      error: { code: 'timeout' },
+    })
   })
 
   it('file upload → list → download round trip', async () => {
@@ -384,10 +511,14 @@ describe('JARVIS Core HTTP server', () => {
     const file = (upload.body as { file: { id: string; url: string; size: number } }).file
     expect(file.size).toBe(5)
 
-    const list = (await (await fetch(`http://127.0.0.1:${running.port}/api/files`)).json()) as { files: Array<{ id: string }> }
+    const list = (await (await fetch(`http://127.0.0.1:${running.port}/api/files`, {
+      headers: { authorization: `Bearer ${TEST_TOKEN}` },
+    })).json()) as { files: Array<{ id: string }> }
     expect(list.files.some((f) => f.id === file.id)).toBe(true)
 
-    const download = await fetch(`http://127.0.0.1:${running.port}${file.url}`)
+    const download = await fetch(`http://127.0.0.1:${running.port}${file.url}`, {
+      headers: { authorization: `Bearer ${TEST_TOKEN}` },
+    })
     expect(download.status).toBe(200)
     expect(await download.text()).toBe('hello')
   })
@@ -410,7 +541,9 @@ describe('JARVIS Core HTTP server', () => {
     expect((await res1.json()) as { status: string }).toMatchObject({ status: 'degraded' })
 
     await jsonPost(running.port, '/api/assistant/state', { status: 'idle', isSpeaking: false, cameraActive: true })
-    const res2 = (await (await fetch(`http://127.0.0.1:${running.port}/health`)).json()) as {
+    const res2 = (await (await fetch(`http://127.0.0.1:${running.port}/api/health`, {
+      headers: { authorization: `Bearer ${TEST_TOKEN}` },
+    })).json()) as {
       status: string
       assistant: { status: string; cameraActive: boolean; lastSeenAt: number }
     }
@@ -421,15 +554,18 @@ describe('JARVIS Core HTTP server', () => {
 
   it('wake events register in /health', async () => {
     await jsonPost(running.port, '/api/wake', { event: 'arm' })
-    const health = (await (await fetch(`http://127.0.0.1:${running.port}/health`)).json()) as { wake: { armAt?: number; browserOnly: true } }
+    const health = (await (await fetch(`http://127.0.0.1:${running.port}/api/health`, {
+      headers: { authorization: `Bearer ${TEST_TOKEN}` },
+    })).json()) as { wake: { armAt?: number; browserOnly: true } }
     expect(health.wake.browserOnly).toBe(true)
     expect(health.wake.armAt).toBe(nowValue)
   })
 
-  it('serves the companion page with the token substituted', async () => {
+  it('serves the companion page without embedding a bearer token', async () => {
     const res = await fetch(`http://127.0.0.1:${running.port}/phone`)
     expect(res.status).toBe(200)
     const text = (await res.text()) as string
-    expect(text).not.toContain('__JARVIS_BACKEND_TOKEN__')
+    expect(text).not.toContain(TEST_TOKEN)
+    expect(res.headers.get('set-cookie')).toMatch(/HttpOnly; SameSite=Strict/)
   })
 })

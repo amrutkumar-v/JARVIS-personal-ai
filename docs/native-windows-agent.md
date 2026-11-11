@@ -35,10 +35,10 @@ System Access directory. For Phase 1.2 we added a **separate local Node.js
 process** (the "agent") that the web app talks to:
 
 ```
-JARVIS Web UI → Agent Core (Phase 1.0) → file.* tools → FileSystemProvider
-    → [browser] File System Access API (user-granted directory)
-    → [native] NativeWindowsFileSystemProvider
-             → JSON-RPC 2.0 over HTTP (127.0.0.1, bearer token)
+Browser → loopback JARVIS backend → authenticated native agent
+    → [browser-only filesystem mode] File System Access API (user-granted directory)
+    → [native] NativeWindowsFileSystemProvider → /api/native/rpc
+             → server-side bearer token → native JSON-RPC allow-list
              → native/src/agent.ts → RealFsBackend → REAL Windows fs
 ```
 
@@ -53,14 +53,16 @@ npm dependencies**. The web side keeps one injected provider class.
 The agent is intentionally **not** a shell or a "do anything" service:
 
 - **Typed allow-list only.** `NATIVE_METHODS` in `native/src/protocol.ts`
-  allows `system.identity`, `system.ping`, the eleven `filesystem.*`
-  operations and (Phase 1.3) `app.list` / `app.status` / `app.launch`. There
-  is **no** `system.execute`/shell endpoint — asking for one returns
-  `unsupported` (covered by a test).
-- **Bearer token by default.** Constant-time comparison; the agent refuses to
-  start without one unless `--no-token` is passed explicitly for loopback dev.
-  The token is sent only to `127.0.0.1`. `CORS *` is set on the agent so the
-  web app can call it, but the token is never exposed to other origins.
+  defines the 48 accepted operations. The backend RPC broker mirrors and
+  regression-checks that list before forwarding; there is **no** shell,
+  command, or arbitrary execution route.
+- **Bearer token by default.** Constant-time comparison. Tokenless startup is
+  refused unless the caller explicitly opts into local development; that mode
+  can bind only to `localhost`, `127.0.0.1`, or `::1`, and accepts peer
+  connections only from loopback. `Origin: null` is denied unless explicitly
+  allow-listed. Requests without an Origin receive no CORS grant; when bearer
+  auth is enabled they still need a valid token. CORS is never wildcarded for
+  absent Origin.
 - **Allowed roots only.** Roots are absolute paths from config/env/CLI. The
   **default root is the scratch dir `{temp}/jarvis/workspace`** (created at
   startup) — no hard-coded personal paths; personal folders must be granted
@@ -123,22 +125,26 @@ npm run native:build    # emit native/dist/
 npm run native:agent    # run the agent (first build it)
 ```
 
-Flags: `--port --host --token --no-token --root --config --print-identity
---help`. Env: `JARVIS_NATIVE_TOKEN`. Precedence: CLI → env → config file →
-`--no-token`. The agent prints its identity banner and shuts down on Ctrl+C.
+Flags: `--port --host --token --no-token --root --config --allowed-origins
+--print-identity --help`. Env: `JARVIS_NATIVE_TOKEN`. Precedence: CLI → env →
+config file → explicit `--no-token`. The tokenless banner is marked
+`INSECURE`, and startup refuses non-loopback hosts. The backend requires
+`JARVIS_BACKEND_ALLOW_INSECURE_NATIVE_NO_TOKEN=true` before it can spawn or
+adopt a tokenless agent.
 
-Web side (`.env`):
+Server side (`.env.local`, never a `VITE_*` variable):
 
 ```
-VITE_NATIVE_AGENT_URL=http://127.0.0.1:8765
-VITE_NATIVE_AGENT_TOKEN=<same token as the agent>
+JARVIS_BACKEND_NATIVE_TOKEN=<native-agent bearer token>
 ```
 
-When `VITE_NATIVE_AGENT_URL` is **unset** the app keeps using the browser
-File System Access provider — the native bridge is strictly opt-in. Capability
-reporting stays honest on both sides: `Settings` shows a **Native Windows
-agent: Connected/Unavailable** row and the file system row reads
-**Native (local agent)** / **Browser**.
+`VITE_NATIVE_AGENT_URL` is only a non-secret local opt-in that enables native
+capability providers. It contains no credential and does not establish a
+browser-to-agent connection. The backend holds `JARVIS_BACKEND_NATIVE_TOKEN`
+and forwards only methods present in the 48-method allow-list. The backend's
+own API bearer (`JARVIS_BACKEND_TOKEN`) is also server-side; browser pages use
+an HttpOnly, SameSite session cookie. When the opt-in is unset, native
+providers remain unavailable and the browser filesystem mode stays active.
 
 ## 6. Real verification
 

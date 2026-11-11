@@ -1,12 +1,28 @@
+export type AiProviderMode = 'REAL' | 'MOCK' | 'DISCONNECTED'
+
+/** Resolve the user-facing AI runtime state without optimistic inference. */
+export function deriveAiProviderMode(providerId: string, reachable: boolean): AiProviderMode {
+  if (providerId === 'mock') return 'MOCK'
+  return reachable ? 'REAL' : 'DISCONNECTED'
+}
+
 export interface Capabilities {
   /** Configured AI provider is reachable enough to answer. */
   aiConnected: boolean
   /** A configured REAL AI provider is dialled in (mock provider ≠ AI). */
   aiConfigured: boolean
+  /** Runtime truth: real provider reachable, development mock selected, or unavailable. */
+  aiProviderMode?: AiProviderMode
   /** Detailed AI connection status (CONNECTED, MISCONFIGURED, AUTHENTICATION_FAILED, etc.) */
   aiStatus?: 'CONNECTED' | 'MISCONFIGURED' | 'AUTHENTICATION_FAILED' | 'MODEL_UNAVAILABLE' | 'NETWORK_ERROR' | 'RATE_LIMITED' | 'DISCONNECTED'
   /** Detailed message accompanying the status */
   aiStatusMessage?: string
+  /** Provider the authenticated router can currently use for chat. */
+  aiActiveProvider?: string
+  /** Model reported by the active routed provider. */
+  aiActiveModel?: string
+  /** Healthy automatic fallback when the configured primary is unavailable. */
+  aiFallbackProvider?: string
   /** Real speech recognition surface is available. */
   speechRecognitionAvailable: boolean
   /** Real speech synthesis surface is available. */

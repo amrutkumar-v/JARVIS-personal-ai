@@ -42,3 +42,17 @@ The scheduler rejects invalid input with structured `{ reason }` results
 (`missing_text`, `invalid_when`, `scheduling_failed`, `reminder_not_found`).
 Cancelling an id that no longer exists is an honest failure, `{ reason:
 'reminder_not_found' }` — matches the high-risk-tool honesty policy.
+
+## Durable scheduling path
+
+`SchedulerAdapter` is the existing seam for replacing `LocalScheduler`; the
+smallest durable migration is a backend implementation of that interface,
+backed by a persistent schedule store and a backend timer worker. Creation and
+cancel operations would write through the backend API, with unique job ids and
+idempotent delivery records so a backend restart cannot execute a reminder
+twice. The worker can recover due jobs at startup and apply an explicit
+catch-up policy. A separate Windows startup/service integration would still be
+needed if reminders must run while the backend host is logged out or stopped.
+
+Until that exists, `localStorage` only preserves schedule data; it does not
+keep a timer alive after the browser tab closes.

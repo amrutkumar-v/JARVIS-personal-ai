@@ -143,6 +143,7 @@ export interface RememberResult {
 /** Lightweight embedding health summary for UI/debug panels. */
 export interface EmbeddingHealthSummary {
   enabled: boolean
+  mode: 'semantic' | 'deterministic_fallback' | 'unavailable'
   realEmbeddingsAvailable: boolean
   fallbackActive: boolean
   status: ProviderHealthStatus
@@ -548,7 +549,14 @@ export class MemoryManager {
   /** Update fields of an existing item. Returns the updated copy or null. */
   update(
     id: string,
-    patch: Partial<Pick<MemoryItem, 'content' | 'type' | 'importance' | 'source'>>,
+    patch: Partial<Pick<MemoryItem, 'content' | 'type' | 'importance' | 'source'>> & {
+      /**
+       * Metadata to MERGE into the item's existing metadata. Metadata is
+       * merged rather than replaced so a caller can advance one field (e.g. a
+       * call record's state) without dropping the rest.
+       */
+      metadata?: Record<string, unknown>
+    },
     opts: { skipEmbedding?: boolean } = {},
   ): MemoryItem | null {
     this.ensureLoaded()
@@ -563,6 +571,7 @@ export class MemoryManager {
     if (patch.type !== undefined) item.type = patch.type
     if (patch.importance !== undefined) item.importance = clampImportance(patch.importance)
     if (patch.source !== undefined) item.source = patch.source
+    if (patch.metadata !== undefined) item.metadata = { ...item.metadata, ...patch.metadata }
     if (item.content) item.updatedAt = new Date().toISOString()
     // Embeddings encode content. When content changes, drop the now-stale
     // vector immediately (before persisting) so a failed or skipped
@@ -849,6 +858,7 @@ export class MemoryManager {
     if (queryEmbedding) {
       try {
         const vectorResult = this.vectorStore.search(queryEmbedding, {
+          providerId: this.embeddingManager.getProviderId(),
           dimensions: queryEmbedding.length,
         })
         semanticByItem = new Map(
@@ -874,7 +884,9 @@ export class MemoryManager {
       } else if (
         queryEmbedding &&
         item.embedding &&
-        item.embedding.length === queryEmbedding.length
+        item.embedding.length === queryEmbedding.length &&
+        item.metadata.embeddingProvider === this.embeddingManager.getProviderId() &&
+        Number(item.metadata.embeddingDimensions) === queryEmbedding.length
       ) {
         semantic = semanticScore(item, queryEmbedding)
       }
@@ -926,7 +938,13 @@ export class MemoryManager {
       return result
     }
 
-    const pending = all.filter((m) => !isValidEmbedding(m.embedding))
+    const providerId = this.embeddingManager.getProviderId()
+    const dimensions = this.embeddingManager.getDimensions()
+    const pending = all.filter((m) =>
+      !isValidEmbedding(m.embedding) ||
+      m.metadata.embeddingProvider !== providerId ||
+      Number(m.metadata.embeddingDimensions) !== dimensions,
+    )
     result.alreadyEmbedded = all.length - pending.length
     if (pending.length === 0) {
       result.durationMs = Date.now() - start
@@ -964,9 +982,15 @@ export class MemoryManager {
   getEmbeddingHealth(): EmbeddingHealthSummary {
     const manager = this.embeddingManager
     const health = manager.getHealth()
+    const mode: EmbeddingHealthSummary['mode'] = health.providerId === 'deterministic-test' && manager.isEnabled()
+      ? 'deterministic_fallback'
+      : manager.isEnabled() && health.status === 'healthy'
+        ? 'semantic'
+        : 'unavailable'
     return {
       enabled: manager.isEnabled(),
-      realEmbeddingsAvailable: manager.hasRealEmbeddings(),
+      mode,
+      realEmbeddingsAvailable: mode === 'semantic',
       fallbackActive: health.fallbackActive,
       status: health.status,
       providerId: health.providerId,

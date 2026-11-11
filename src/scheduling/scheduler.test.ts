@@ -198,4 +198,33 @@ describe('LocalScheduler', () => {
     expect(fired).toEqual([])
     expect(s.status().running).toBe(false)
   })
+
+  // Tab-scoped limitation exposure
+  it('status() exposes localStorage persistence (tab-scoped, no background execution)', () => {
+    const storage = new MemoryStorage()
+    const now = new Date(2026, 8, 12, 12, 0, 0).getTime()
+    const s = new LocalScheduler({ storage, ...frozen(now) })
+    const status = s.status()
+    expect(status.persistence).toBe('local')
+    expect(status.running).toBe(false)
+    expect(status.itemCount).toBe(0)
+    // 'local' persistence means localStorage only — no background/service worker/native execution
+    expect(status.persistence).not.toBe('background')
+    expect(status.persistence).not.toBe('native')
+  })
+
+  it('status() reports degraded when storage write fails', () => {
+    const storage = new MemoryStorage()
+    storage.setItem('jarvis.scheduler.v1', '[]')
+    // Make storage fail writes
+    const failingStorage = {
+      getItem: () => storage.getItem('jarvis.scheduler.v1'),
+      setItem: () => { throw new Error('quota exceeded') },
+      removeItem: () => storage.removeItem('jarvis.scheduler.v1'),
+    }
+    const now = new Date(2026, 8, 12, 12, 0, 0).getTime()
+    const s = new LocalScheduler({ storage: failingStorage, ...frozen(now) })
+    s.scheduleOnce(now + 60_000, 'test')
+    expect(s.status().degraded).toBe(true)
+  })
 })

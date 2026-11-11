@@ -206,7 +206,7 @@ describe('EmbeddingManager (Phase 0.6C)', () => {
   it('detects a semantic duplicate with a real provider', async () => {
     const manager = new EmbeddingManager({ provider: new FakeProvider() })
     const result = await manager.checkSemanticDuplicate('a new phrasing', [
-      { id: 'a', content: 'an old phrasing', embedding: [1, 0, 0] },
+      { id: 'a', content: 'an old phrasing', embedding: [1, 0, 0], metadata: { embeddingProvider: 'fake-real', embeddingDimensions: 3 } },
     ])
     expect(result.isDuplicate).toBe(true)
     expect(result.existingId).toBe('a')
@@ -216,7 +216,7 @@ describe('EmbeddingManager (Phase 0.6C)', () => {
   it('is conservative below the threshold (distinct memories kept)', async () => {
     const manager = new EmbeddingManager({ provider: new FakeProvider() })
     const result = await manager.checkSemanticDuplicate('whatever', [
-      { id: 'b', content: 'something else', embedding: [1, 1, 0] },
+      { id: 'b', content: 'something else', embedding: [1, 1, 0], metadata: { embeddingProvider: 'fake-real', embeddingDimensions: 3 } },
     ])
     expect(result.isDuplicate).toBe(false)
   })
@@ -225,7 +225,7 @@ describe('EmbeddingManager (Phase 0.6C)', () => {
     const manager = new EmbeddingManager({ provider: new FakeProvider() })
     manager.setDeduplicationThreshold(0.5)
     const result = await manager.checkSemanticDuplicate('whatever', [
-      { id: 'c', content: 'something else', embedding: [1, 1, 0] },
+      { id: 'c', content: 'something else', embedding: [1, 1, 0], metadata: { embeddingProvider: 'fake-real', embeddingDimensions: 3 } },
     ])
     expect(result.isDuplicate).toBe(true)
     expect(result.existingId).toBe('c')
@@ -313,7 +313,16 @@ describe('default provider auto-resolution (Work 2)', () => {
     expect(resolveDefaultEmbeddingProvider().id).toBe('deterministic-test')
   })
 
-  it('a fresh manager is immediately enabled and real when declared', () => {
+  it('does not substitute the chat endpoint when embedding intent is incomplete', () => {
+    ENV.VITE_JARVIS_AI_BASE_URL = 'https://api.example.com/v1'
+    ENV.VITE_JARVIS_AI_MODEL = 'gpt-4o-mini'
+    ENV.VITE_JARVIS_EMBEDDING_MODEL = 'embeddinggemma'
+    const provider = resolveDefaultEmbeddingProvider()
+    expect(provider.id).toBe('openai-embeddings')
+    expect(provider.isConfigured()).toBe(false)
+  })
+
+  it('a fresh manager selects configured real embeddings but does not claim them verified yet', () => {
     ENV.VITE_JARVIS_EMBEDDING_PROXY_URL = '/api/ai'
     ENV.VITE_JARVIS_EMBEDDING_MODEL = 'text-embedding-3-small'
     const manager = new EmbeddingManager()
@@ -323,5 +332,6 @@ describe('default provider auto-resolution (Work 2)', () => {
     expect(health.providerId).toBe('openai-embeddings')
     expect(health.fallbackActive).toBe(false)
     expect(health.label).toBe('OpenAI-Compatible Embeddings')
+    expect(health.status).toBe('unknown')
   })
 })

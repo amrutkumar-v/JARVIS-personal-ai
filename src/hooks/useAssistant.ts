@@ -120,6 +120,39 @@ const engine = useMemo(
   const [confirmation, setConfirmation] = useState<ConfirmationRequest | null>(null)
   const [task, setTask] = useState<TaskSnapshot>({ active: false, label: '', step: 0, total: 0, status: 'COMPLETED' })
 
+  /**
+   * AI-assisted call — hand one reply to the phone so the other party hears
+   * JARVIS through the phone's loudspeaker.
+   *
+   * This is deliberately conservative and honest:
+   *   - it only runs when the phone's OS last reported a LIVE call;
+   *   - a failure is reported as a notice, never as a successful call;
+   *   - the far end only hears it when the call is on speakerphone.
+   *
+   * JARVIS still cannot LISTEN to the other party: Android 10+ refuses call
+   * audio capture to a normal app (`CAPTURE_AUDIO_OUTPUT` is privileged).
+   */
+  const speakIntoLiveCall = useCallback(async (text: string): Promise<void> => {
+    const provider = androidProviderRef.current
+    if (!provider) return
+    const live = provider.activeCall()
+    // Only a CONNECTED call has an established audio path — speaking into a
+    // ringing call would be heard by nobody.
+    if (!live || live.state !== 'CONNECTED') return
+    const spoken = text.trim()
+    if (!spoken) return
+    try {
+      const outcome = await provider.requestCall('speak', { text: spoken })
+      if (!outcome.ok) {
+        useJarvisStore.getState().pushNotice('warning', `Could not speak on the call: ${outcome.message}`)
+      }
+    } catch (error) {
+      useJarvisStore
+        .getState()
+        .pushNotice('warning', `Could not speak on the call: ${error instanceof Error ? error.message : 'unknown error'}`)
+    }
+  }, [])
+
   /* ---- wire engine messages → stores ---- */
   useEffect(() => {
     // Phase 2.1 — the Goal panel mirrors ONLY engine getters. Refreshed on
@@ -348,6 +381,15 @@ const engine = useMemo(
     const offWake = client.on('onWake', (event) => {
       useJarvisStore.getState().setBackend({ lastWake: { event: event.event, at: event.at } })
     })
+    // Persistent task orchestrator SSE subscription
+    const offTask = client.on('onTask', (task) => {
+      useJarvisStore.getState().updatePersistentTask(task)
+    })
+    void client.getTasks().then((tasks) => {
+      if (tasks.length > 0) {
+        useJarvisStore.getState().setPersistentTasks(tasks)
+      }
+    })
     const offLost = client.on('onDisconnected', () => {
       // The device bridge is detached the moment the stream drops: no device.*
       // or call.* tool may exist against a dead backend.
@@ -372,6 +414,7 @@ const engine = useMemo(
       offDevice()
       offInbound()
       offCall()
+      offTask()
       offLost()
       offGaveUp()
       client.stop()
@@ -444,7 +487,14 @@ const engine = useMemo(
     // speaks short session phrases through the same provider. No overlap.
     const tts = new BrowserTextToSpeechProvider()
     const adapter: VoiceOutput = {
-      speak: (text, onDone, volume) => tts.speak(text, { volume, onDone }),
+      speak: (text, onDone, volume) => {
+        // AI-assisted call: when the phone reports a LIVE call, the same
+        // reply is also handed to the phone, which plays it on its
+        // loudspeaker so the other party hears JARVIS. The PC still speaks
+        // it locally, so nothing is lost when the phone is unreachable.
+        void speakIntoLiveCall(text)
+        tts.speak(text, { volume, onDone })
+      },
       stop: () => tts.stop(),
       pickVoice: () => tts.pickVoice(),
       get speaking() {
@@ -462,6 +512,8 @@ const engine = useMemo(
       stt: new BrowserSpeechToTextProvider(),
       tts,
       diagnostics: voiceDiag,
+      // The spoken greeting is personalised from the REAL memory profile.
+      userName: () => useJarvisStore.getState().profile?.name,
       callbacks: {
         submitCommand: (text) => {
           // Phase 2.5 — the wake/voice session feeds the SAME engine entry.
@@ -502,7 +554,7 @@ const engine = useMemo(
       input.abort()
       manager.dispose()
     }
-  }, [engine])
+  }, [engine, speakIntoLiveCall])
 
   /* ---- public API ---- */
   const submit = useCallback(
@@ -559,8 +611,11 @@ const armWake = useCallback(() => {
   }
   const manager = voiceManagerRef.current
   if (!manager) return
-  // The wake session and hold-to-speak share one recognizer.
-  inputRef.current?.stop()
+  // The wake session and hold-to-speak share one recognizer. The hold-to-speak
+  // stream is HARD-aborted (not gracefully stopped) so the browser has fully
+  // released the microphone before the wake recognizer starts — otherwise the
+  // wake recognizer can fail to start and the wake session dies silently.
+  inputRef.current?.abort()
   s.setRecognizing(false)
   s.setStatus('idle')
   manager.arm()
@@ -670,5 +725,11 @@ const disarmWake = useCallback(() => {
     setCameraVideo,
     interrupt,
     task,
+    backendClient: backendClientRef.current,
+    onPauseTask: useCallback((id: string) => engine.pausePersistentTask(id), [engine]),
+    onResumeTask: useCallback((id: string) => engine.resumePersistentTask(id), [engine]),
+    onCancelTask: useCallback((id: string) => engine.cancelPersistentTask(id), [engine]),
+    onApproveTaskAction: useCallback((id: string, approvalId: string) => engine.approveTaskAction(id, approvalId), [engine]),
+    onRejectTaskAction: useCallback((id: string, approvalId: string, reason?: string) => engine.rejectTaskAction(id, approvalId, reason), [engine]),
   }
 }

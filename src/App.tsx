@@ -69,6 +69,12 @@ function App() {
           applicationProvider: () => assistant.engine.applicationProvider,
           onStopSpeaking: assistant.stopSpeaking,
           onInterrupt: assistant.interrupt,
+          backendClient: assistant.backendClient,
+          onPauseTask: assistant.onPauseTask,
+          onResumeTask: assistant.onResumeTask,
+          onCancelTask: assistant.onCancelTask,
+          onApproveTaskAction: assistant.onApproveTaskAction,
+          onRejectTaskAction: assistant.onRejectTaskAction,
         }}
         memory={{
           items: () => assistant.engine.memoryItems(),

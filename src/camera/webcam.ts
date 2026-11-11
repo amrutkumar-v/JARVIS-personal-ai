@@ -175,10 +175,10 @@ export class WebCameraController implements CameraController {
       const videoTrack = stream.getVideoTracks()[0]
       videoTrack?.addEventListener('ended', () => {
         // The OS or another app closed the camera — report the honest state.
+        // `set()` already assigns the permission, so the classification and
+        // its reason must not be overwritten afterwards.
         this.releaseStream()
         this.set(false, 'in-use', PERMISSION_REASON['in-use'])
-        this.permission = 'unknown'
-        this.set(false, 'unknown')
       })
       // Only a REAL acquired stream is ever reported as active.
       this.set(true, 'granted')

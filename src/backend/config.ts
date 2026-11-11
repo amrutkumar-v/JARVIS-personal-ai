@@ -9,13 +9,17 @@
 
 export interface BackendConfig {
   baseUrl: string
-  token: string
   /** SSE reconnect attempts before giving up (then UI reports disconnected). */
   maxReconnectAttempts: number
   /** Base retry delay in ms before the first reconnect. */
   reconnectBaseMs: number
   /** Mirror throttle for assistant/state posts. */
   mirrorThrottleMs: number
+  /**
+   * Hard bound on a single HTTP request (ms). A backend that accepts the
+   * connection but never answers must not leave a call pending forever.
+   */
+  requestTimeoutMs?: number
 }
 
 function envString(name: string): string | undefined {
@@ -35,10 +39,10 @@ function readConfig(): BackendConfig {
   const baseUrl = configured ?? `http://${fallbackHost}:8787`
   return {
     baseUrl: baseUrl.replace(/\/+$/, ''),
-    token: envString('VITE_JARVIS_BACKEND_TOKEN')?.trim() ?? '',
     maxReconnectAttempts: envNumber('VITE_JARVIS_BACKEND_MAX_RECONNECT_ATTEMPTS', 6),
     reconnectBaseMs: envNumber('VITE_JARVIS_BACKEND_RECONNECT_BASE_MS', 700),
     mirrorThrottleMs: envNumber('VITE_JARVIS_BACKEND_MIRROR_THROTTLE_MS', 1500),
+    requestTimeoutMs: envNumber('VITE_JARVIS_BACKEND_REQUEST_TIMEOUT_MS', 15_000),
   }
 }
 

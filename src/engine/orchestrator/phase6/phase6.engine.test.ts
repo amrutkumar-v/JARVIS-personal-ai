@@ -176,13 +176,10 @@ describe('Phase 6 — goal orchestration through the REAL engine (runPhase6Orche
     expect(run?.stoppedBy).toBe('completed')
   })
 
-  it('3 — an unconfirmed launch stays HONESTLY failed: reobserve consumes a recovery unit but never fabricates an upgrade', async () => {
-    // Launch reports started:true but the platform cannot confirm running —
-    // the tool's own verifier REFUTES it (ok:false → verification failed), so
-    // the round is not a success. Recovery maps verification failures to
-    // `reobserve`, but planPostActionObservation only plans an observation for
-    // a SUCCESSFUL round — a refuted effect is never silently upgraded. The
-    // step stays failed, exactly one status read happens (the verifier's).
+  it('3 — an unobservable launch remains unverified after independent re-observation', async () => {
+    // Launch reports started:true but both the tool-owned verifier and the
+    // independent status observation cannot establish whether it is running.
+    // This is neither success nor a refutation: the step remains unverified.
     const apps = new FakeApplicationProvider([{ ...NOTEPAD, launchOutcome: 'unverified' }])
     const statusSpy = vi.spyOn(apps, 'status')
     const engine = makeEngine({ applications: apps })
@@ -190,24 +187,23 @@ describe('Phase 6 — goal orchestration through the REAL engine (runPhase6Orche
     const result = await engine.executeOrchestrated(await engine.orchestrate('Open Notepad.'))
 
     expect(apps.launchCount('notepad')).toBe(1)
-    // Exactly ONE status read: the tool's own verifier. The reobserve CANNOT
-    // query status because the refuted round was not a success — no fabricated
-    // cross-tool evidence exists to upgrade the trace.
-    expect(statusSpy.mock.calls.length).toBe(1)
-    expect(result.status).toBe('failed')
+    // One tool-owned check plus the bounded independent observation and retry.
+    expect(statusSpy.mock.calls.length).toBe(3)
+    expect(result.status).toBe('partial')
     expect(result.verifiedSteps).toBe(0)
-    expect(result.steps[0]).toMatchObject({ capability: 'open_application', status: 'failed', verified: false })
+    expect(result.unverifiedSteps).toBe(1)
+    expect(result.steps[0]).toMatchObject({ capability: 'open_application', status: 'success', verified: false })
+    expect(result.verification[0]?.status).toBe('unverified')
 
     const run = lastRun(engine)
     expect(run?.verifiedSteps).toBe(0)
-    expect(run?.recoveryAttempts).toBe(1)
-  })
+    expect(run?.failedSteps).toBe(0)
+    expect(run?.recoveryAttempts).toBe(0)
+  }, 15000)
 
-  it('4 — even when status() reports the app is NOT running, the step stays honestly failed (no silent upgrade)', async () => {
-    // The tool's own verifier refutes the unconfirmed launch; the reobserve
-    // cannot run because the round was not a success. The step is honestly
-    // failed and verifiedSteps stays 0 — a refuted effect is never upgraded
-    // without real cross-tool evidence.
+  it('4 — a verified status showing the app is not running is a refutation', async () => {
+    // Here the provider can observe process state and confirms it is not
+    // running. That is a verified failure, distinct from unavailable state.
     const apps = new FakeApplicationProvider([{ ...NOTEPAD, launchOutcome: 'unverified' }])
     const statusSpy = vi
       .spyOn(apps, 'status')
@@ -217,7 +213,7 @@ describe('Phase 6 — goal orchestration through the REAL engine (runPhase6Orche
         displayName: 'Notepad',
         source: 'configured',
         running: false,
-        runningVerified: false,
+        runningVerified: true,
       } as AppStatus)
     const engine = makeEngine({ applications: apps })
 

@@ -117,6 +117,7 @@ async function loadConfigFile(
     applications?: Record<string, ConfigAppEntry>
     discovery?: boolean
     openFolders?: string[]
+    allowedOrigins?: string[]
   }
 > {
   const text = await readFile(path, 'utf8')
@@ -128,6 +129,7 @@ async function loadConfigFile(
     applications?: Record<string, ConfigAppEntry>
     discovery?: boolean
     openFolders?: string[]
+    allowedOrigins?: string[]
   }
   return {
     port: typeof parsed.port === 'number' ? parsed.port : undefined,
@@ -138,6 +140,9 @@ async function loadConfigFile(
     discovery: typeof parsed.discovery === 'boolean' ? parsed.discovery : undefined,
     openFolders: Array.isArray(parsed.openFolders)
       ? (parsed.openFolders as string[]).filter((f) => typeof f === 'string')
+      : undefined,
+    allowedOrigins: Array.isArray(parsed.allowedOrigins)
+      ? (parsed.allowedOrigins as string[]).filter((o) => typeof o === 'string')
       : undefined,
   }
 }
@@ -253,10 +258,10 @@ function helpText(): string {
     '  --port <n>          listen port (default 8765)',
     '  --host <addr>       bind host (default 127.0.0.1)',
     '  --token <secret>    require this bearer token from clients',
-    '  --no-token          loopback-only dev mode without a token (not recommended)',
+    '  --no-token          explicitly opt into tokenless loopback-only local development',
     '  --root <abs>        granted root (repeatable; tokens: {userprofile} {temp} {workspace}, ~)',
     '  --config <json>     JSON config alternative to flags (flag values win)',
-    '  --allowed-origins <csv>  browser origins allowed to POST (default: loopback + file pages)',
+    '  --allowed-origins <csv>  browser origins allowed to POST (default: loopback only)',
     '  --print-identity    exit after printing the resolved identity',
     '  --help              this help',
     '',
@@ -265,10 +270,11 @@ function helpText(): string {
     'These are the ONLY non-root folders open_application may pass to Explorer; they never',
     'extend the file-system roots.',
     '',
-    'Token precedence: --token > env JARVIS_NATIVE_TOKEN > config file > --no-token.',
+    'Token precedence: --token > env JARVIS_NATIVE_TOKEN > config file > explicit --no-token.',
     'If no token is configured and --no-token is not passed, startup fails (safe default).',
-    'Even with --no-token, browser requests are origin-gated: only loopback and',
-    'explicitly allowed origins can reach the agent, so a random website cannot.',
+    'Without a token, startup is limited to loopback binding and intended only',
+    'for local development. Missing Origin is not authentication; use a bearer',
+    'token for non-browser clients. Origin: null is denied unless allow-listed.',
   ].join('\n')
 }
 
@@ -344,7 +350,8 @@ async function main(): Promise<void> {
     applications,
     observation,
     desktop,
-    allowedOrigins: cli.allowedOrigins,
+    allowedOrigins: cli.allowedOrigins ?? config.allowedOrigins,
+    allowInsecureNoToken: token.length === 0 && cli.noToken === true,
   })
 
   process.stdout.write(
@@ -352,7 +359,7 @@ async function main(): Promise<void> {
       `JARVIS Native Windows Agent v${NATIVE_AGENT_VERSION} running`,
       `  url     ${agent.url}`,
       `  protocol ${NATIVE_PROTOCOL}`,
-      `  token   ${token ? 'required (bearer)' : 'NOT required (origin-gated loopback only)'}`,
+      `  token   ${token ? 'required (bearer)' : 'INSECURE: NOT required; loopback-only local development mode'}`,
       `  roots`,
       ...roots.map((r) => `    - ${r}`),
       `  open folders (Explorer only)`,
@@ -362,8 +369,8 @@ async function main(): Promise<void> {
       `  desktop interaction ${process.platform === 'win32' ? 'mouse/keyboard/focus (bounded, injected)' : 'unavailable (not Windows)'}`,
       `  web access ${'bounded fetch/search/download (public http(s), SSRF-locked)'}`,
       '',
-      `Point the web app at it with: VITE_NATIVE_AGENT_URL=${agent.url}`,
-      token ? `and: VITE_NATIVE_AGENT_TOKEN=<secret>` : 'and: VITE_NATIVE_AGENT_TOKEN unset',
+      `The browser reaches this agent through the JARVIS backend RPC broker.`,
+      token ? 'Configure the matching token as server-side JARVIS_BACKEND_NATIVE_TOKEN; never put it in VITE_* or browser storage.' : 'Tokenless mode is local development only; configure a token for backend use.',
       'Press Ctrl+C to stop.',
     ].join('\n') + '\n',
   )

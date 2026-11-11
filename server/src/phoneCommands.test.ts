@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   COMMAND_PAYLOAD_FIELDS,
+  COMMAND_TTL_MS,
   MAX_PAYLOAD_FIELD_CHARS,
   MAX_PENDING_PER_DEVICE,
   OUTBOUND_COMMAND_KINDS,
@@ -23,10 +24,55 @@ function queueAt(now: () => number): PhoneCommandQueue {
 
 describe('phone command queue', () => {
   it('exposes exactly the telephony + ping command vocabulary', () => {
-    expect(OUTBOUND_COMMAND_KINDS).toEqual(['ping', 'call.dial', 'call.hangup', 'call.answer', 'call.reject'])
+    expect(OUTBOUND_COMMAND_KINDS).toEqual([
+      'ping',
+      'call.dial',
+      'call.hangup',
+      'call.answer',
+      'call.reject',
+      'call.speak',
+    ])
     expect(COMMAND_PAYLOAD_FIELDS.ping).toEqual([])
     expect(COMMAND_PAYLOAD_FIELDS['call.dial']).toEqual(['target', 'number', 'contactName'])
     expect(COMMAND_PAYLOAD_FIELDS['call.hangup']).toEqual([])
+    expect(COMMAND_PAYLOAD_FIELDS['call.speak']).toEqual(['text'])
+  })
+
+  it('a speak command carries only the text, bounded to its own longer limit', () => {
+    const long = 'x'.repeat(500)
+    const payload = sanitizeCommandPayload('call.speak', { text: long, sneaky: 'rm -rf /' })
+    expect(payload?.text).toHaveLength(400)
+    expect(payload?.text).toBe(long.slice(0, 400))
+    expect(payload && 'sneaky' in payload).toBe(false)
+    expect(sanitizeCommandPayload('call.speak', { text: '   ' })).toBeUndefined()
+    expect(sanitizeCommandPayload('call.speak', undefined)).toBeUndefined()
+  })
+
+  it('a command is handed to the phone EXACTLY ONCE (a lost ack must not repeat the call)', () => {
+    let now = 1000
+    const queue = new PhoneCommandQueue({ now: () => now })
+    const queued = queue.enqueue({ deviceId: 's26-ultra', kind: 'call.dial', payload: { number: '+15550199' }, online: true })
+    expect(queued.command).toBeDefined()
+
+    // The phone polls and receives the command.
+    const first = queue.nextFor('s26-ultra')
+    expect(first).toHaveLength(1)
+    expect(first[0].kind).toBe('call.dial')
+
+    // The acknowledgement never arrives (a dropped socket). The phone polls
+    // again — it must NOT be handed the same dial command a second time,
+    // because that would place a SECOND real call.
+    const second = queue.nextFor('s26-ultra')
+    expect(second).toHaveLength(0)
+  })
+
+  it('a command that is never acknowledged simply expires', () => {
+    let now = 1000
+    const queue = new PhoneCommandQueue({ now: () => now })
+    queue.enqueue({ deviceId: 's26-ultra', kind: 'call.dial', payload: { number: '+1' }, online: true })
+    expect(queue.nextFor('s26-ultra')).toHaveLength(1)
+    now += COMMAND_TTL_MS + 1
+    expect(queue.nextFor('s26-ultra')).toHaveLength(0)
   })
 
   it('keeps ONLY the fields the kind declares', () => {

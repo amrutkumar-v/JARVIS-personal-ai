@@ -149,6 +149,8 @@ export class BrowserWakeWordProvider implements WakeWordProvider {
       this.activeFlag = false
       // Restart only when we explicitly want to keep listening (browser
       // recognizers stop on their own). Never auto-retry after an error.
+      // `stop()` clears activeFlag up front, so an explicit stop can never
+      // resurrect the recognizer here.
       if (wasActive && !this.stopping && !this.denied) {
         try {
           this.activeFlag = true

@@ -69,11 +69,33 @@ export class RealAppBackend implements ApplicationBackend {
   private readonly registry: AppRegistry
   private readonly probe: RunningProbe
   private readonly shellRouteRunner: ShellRouteRunner
+  /**
+   * Launch-window PID reconciler: given the set of pids the target image had
+   * BEFORE the launch and the image name, returns the pid of the NEW process
+   * that the launch actually produced (confirmed alive after the settle
+   * window) — or undefined when no stable new process could be identified.
+   * Injectable so tests can simulate hand-off without a real Windows session.
+   */
+  private readonly reconcile: ProcessReconciler
+  private readonly listImagePids: ImagePidLister
+  private readonly spawnExe: ExeLaunchSpawner
 
-  constructor(registry?: AppRegistry, probe?: RunningProbe, shellRouteRunner?: ShellRouteRunner) {
+  constructor(
+    registry?: AppRegistry,
+    probe?: RunningProbe,
+    shellRouteRunner?: ShellRouteRunner,
+    reconcile?: ProcessReconciler,
+    listPids: ImagePidLister = listImagePidsLive,
+    spawnApp: ExeLaunchSpawner = spawnDetached,
+  ) {
     this.registry = registry ?? new AppRegistry()
     this.probe = probe ?? observeRunning
     this.shellRouteRunner = shellRouteRunner ?? runShellRoute
+    this.reconcile = reconcile ?? ((prePids, image, settleMs, launchedPid) =>
+      reconcileLaunchPid(prePids, image, listImagePidsLive, isPidAliveLive, settleMs, launchedPid)
+    )
+    this.listImagePids = listPids
+    this.spawnExe = spawnApp
   }
 
   async list(): Promise<NativeAppSpec[]> {
@@ -147,19 +169,26 @@ export class RealAppBackend implements ApplicationBackend {
     switch (record.mechanism) {
       case 'aumid': {
         const route = 'shell:AppsFolder\\' + (record.aumid ?? '')
+        const image = imageName(record)
+        // Snapshot the image's pids BEFORE the activation so the shell-route
+        // report can attribute the observed application process to THIS launch
+        // instead of returning the short-lived ShellExec helper pid.
+        const prePids = await listImagePidsLive(image)
         const result = await this.shellRouteRunner(route, applicationId)
         classifyShellExecExit(applicationId, result.exitCode)
         result.child.unref()
-        const pid = result.child.pid
-        return this.reportShellLaunch(record, applicationId, pid)
+        const helperPid = result.child.pid
+        return this.reportShellLaunch(record, applicationId, prePids, helperPid)
       }
       case 'uri': {
         const uri = record.uri ?? ''
+        const image = imageName(record)
+        const prePids = await listImagePidsLive(image)
         const result = await this.shellRouteRunner(uri, applicationId)
         classifyShellExecExit(applicationId, result.exitCode)
         result.child.unref()
-        const pid = result.child.pid
-        return this.reportShellLaunch(record, applicationId, pid)
+        const helperPid = result.child.pid
+        return this.reportShellLaunch(record, applicationId, prePids, helperPid)
       }
       default: {
         const target = record.target
@@ -171,10 +200,14 @@ export class RealAppBackend implements ApplicationBackend {
             applicationId,
           )
         }
-        const child = await spawnDetached(target, folder ? [folder] : [], applicationId)
+        const image = imageName(record)
+        // Snapshot before launch so the spawned process and any hand-off
+        // replacement can be correlated with this particular request.
+        const prePids = image === '' ? null : await this.listImagePids(image)
+        const child = await this.spawnExe(target, folder ? [folder] : [], applicationId)
         child.unref()
         const pid = child.pid
-        return this.reportExeLaunch(record, target, pid)
+        return this.reportExeLaunch(record, target, pid, prePids)
       }
     }
   }
@@ -214,8 +247,40 @@ export class RealAppBackend implements ApplicationBackend {
     return folder
   }
 
-  private async reportExeLaunch(record: AppRecord, target: string, pid: number | undefined): Promise<NativeAppLaunchResult> {
-    const outcome = await verifyProcess(target, pid)
+  private async reportExeLaunch(
+    record: AppRecord,
+    target: string,
+    pid: number | undefined,
+    prePids: number[] | null,
+  ): Promise<NativeAppLaunchResult> {
+    const image = imageName(record)
+    // First: try to identify the ACTUAL application process this launch
+    // produced. The spawned pid may be a transient stub that hands off to a
+    // packaged app (e.g. System32\notepad.exe → WindowsApps Notepad.exe); a
+    // stub pid must never be reported as the application pid.
+    if (image !== '') {
+      const reconciled = await this.reconcile(prePids, image, APP_LIMITS.PROCESS_VERIFY_SETTLE_MS, pid)
+      if (reconciled !== undefined) {
+        return {
+          applicationId: record.applicationId,
+          started: true,
+          pid: reconciled.pid,
+          verified: true,
+          detail: reconciled.handoff
+            ? `Launcher handed off to the real application (pid ${reconciled.pid}); verified running after the settle window.`
+            : `Process launched and verified running (pid ${reconciled.pid}).`,
+          handoff: reconciled.handoff,
+          handoffFromPid: reconciled.handoffFromPid,
+          handoffToImage: reconciled.handoffToImage,
+          handoffToPid: reconciled.handoffToPid,
+        }
+      }
+      // A child pid is an application identity only when its image is the
+      // registered process image. A differently named launcher must reconcile
+      // to the real application; its transient pid is never the app identity.
+    }
+    const sameImageAsTarget = image.toLowerCase() === basename(target).toLowerCase()
+    const outcome = sameImageAsTarget ? await verifyProcess(target, pid) : 'unverified'
     switch (outcome) {
       case 'verified':
         return {
@@ -229,50 +294,55 @@ export class RealAppBackend implements ApplicationBackend {
         return {
           applicationId: record.applicationId,
           started: true,
-          pid,
+          pid: undefined,
           verified: false,
-          detail: `Process launched (pid ${pid}), but its state could not be verified in the observation window.`,
+          detail: 'Process launched, but its application identity or running state could not be verified in the observation window.',
         }
-      case 'refuted': {
-        // The spawned process may have handed off to an already-running
-        // single-instance app. Fall back to an honest image-level check that
-        // must survive the settle window (a stub that exits instantly is not a
-        // running app).
-        const image = imageName(record)
-        if (image !== '') {
-          const observed = await confirmRunning(this.probe, image)
-          if (observed.running && observed.observed) {
-            return {
-              applicationId: record.applicationId,
-              started: true,
-              pid,
-              verified: true,
-              detail: `Process launched and verified running by image (${image}).`,
-            }
-          }
-        }
+      case 'refuted':
         return {
           applicationId: record.applicationId,
           started: true,
-          pid,
+          pid: undefined,
           verified: false,
-          detail: `Process launched (pid ${pid}), but it was not observed running in the verification window.`,
+          detail: 'Process launched, but the application was not observed running in the verification window.',
         }
-      }
     }
   }
 
-  private async reportShellLaunch(record: AppRecord, applicationId: string, pid: number | undefined): Promise<NativeAppLaunchResult> {
+  private async reportShellLaunch(record: AppRecord, applicationId: string, prePids: number[] | null, helperPid?: number): Promise<NativeAppLaunchResult> {
     const image = imageName(record)
     if (image !== '') {
       const observed = await observeRunningStable(this.probe, image)
       if (observed.running && observed.observed) {
+        // Attribute the observed application process to THIS launch: only a
+        // pid that was NOT already present before the activation counts as the
+        // process this launch produced (a single-instance app that was already
+        // running must never be reported as this launch's process).
+        const reconciled = await this.reconcile(prePids, image, APP_LIMITS.PROCESS_VERIFY_SETTLE_MS, helperPid)
+        if (reconciled !== undefined) {
+          return {
+            applicationId,
+            started: true,
+            pid: reconciled.pid,
+            verified: true,
+            detail: reconciled.handoff
+              ? `Shell activation handed off to the real application (pid ${reconciled.pid}); verified running after the settle window.`
+              : `Launched via shell route and verified running (pid ${reconciled.pid}).`,
+            handoff: reconciled.handoff,
+            handoffFromPid: reconciled.handoffFromPid,
+            handoffToImage: reconciled.handoffToImage,
+            handoffToPid: reconciled.handoffToPid,
+          }
+        }
+        // The app is running by image, but the exact process this launch
+        // produced could not be pinned down (e.g. the app was already running
+        // and this was a re-activation) → honest, never a guessed pid.
         return {
           applicationId,
           started: true,
           pid: undefined,
-          verified: true,
-          detail: `Launched via shell route and verified running by image (${image}).`,
+          verified: false,
+          detail: `Launched via shell route and observed running by image (${image}), but the process identity produced by this launch could not be reconciled.`,
         }
       }
       if (observed.observed) {
@@ -285,10 +355,12 @@ export class RealAppBackend implements ApplicationBackend {
         }
       }
     }
+    // The ShellExec helper's own pid is a transient activation pid and is
+    // NEVER reported as the application pid.
     return {
       applicationId,
       started: true,
-      pid,
+      pid: undefined,
       verified: false,
       detail: 'Launched via shell route; its running state could not be verified.',
     }
@@ -337,7 +409,7 @@ async function safeAccess(target: string): Promise<boolean> {
   }
 }
 
-type RunningObservation = { running: boolean; observed: boolean }
+type RunningObservation = { running: boolean; observed: boolean; pid?: number }
 
 /** Run `tasklist` once with a bounded timeout; `null` when it failed. */
 function runTasklist(args: string[], timeoutMs: number): Promise<string | null> {
@@ -383,6 +455,35 @@ function parseCsvLine(line: string): string[] {
  */
 export type RunningProbe = (image: string) => Promise<RunningObservation>
 
+/** The real application process a launch produced, with hand-off evidence. */
+export type ReconciledProcess = {
+  pid: number
+  handoff: boolean
+  handoffFromPid?: number
+  handoffToImage?: string
+  handoffToPid?: number
+}
+
+/**
+ * Given the target image's pids BEFORE a launch and the image name, return the
+ * process THIS launch produced — a NEW pid (not in prePids) that is still alive
+ * after the settle window. Never returns a transient launcher pid: if the
+ * launched process exited during hand-off, only the surviving replacement
+ * process satisfies the contract. `prePids` is null when the pre-launch
+ * snapshot itself was unavailable — the answer is then honestly undefined.
+ * Returns undefined whenever no stable new process could be reliably
+ * attributed to the launch.
+ */
+export type ProcessReconciler = (
+  prePids: number[] | null,
+  image: string,
+  settleMs: number,
+  launchedPid?: number,
+) => Promise<ReconciledProcess | undefined>
+
+export type ImagePidLister = (image: string) => Promise<number[] | null>
+export type ExeLaunchSpawner = (target: string, args: string[], applicationId: string) => Promise<ChildProcess>
+
 /**
  * A positive observation must still hold after the settle window before it
  * counts. A shell/Store activation can start a process that exits immediately
@@ -398,9 +499,9 @@ export async function confirmRunning(
   if (!first.observed || !first.running) return first
   await new Promise((r) => setTimeout(r, settleMs))
   const settled = await probe(image)
-  // The second probe is the honest answer; if it could not run at all, keep the
-  // earlier positive rather than inventing a failure.
-  return settled.observed ? settled : first
+  // If the second probe cannot run, the earlier positive is no longer
+  // confirmed. Return the actual second observation (including unobservable).
+  return settled
 }
 
 async function observeRunning(image: string): Promise<RunningObservation> {
@@ -414,13 +515,23 @@ async function observeRunning(image: string): Promise<RunningObservation> {
   if (out === null || out.trim().length === 0) {
     return { running: false, observed: false }
   }
-  const lower = out.toLowerCase()
   const wants = image.toLowerCase()
-  const running = lower.split('\r\n').some((line) => {
+  for (const line of out.split('\r\n')) {
     const row = parseCsvLine(line)
-    return row[0]?.toLowerCase() === wants
-  })
-  return { running, observed: true }
+    if (row.length === 0) continue
+    if (row[0]?.toLowerCase() !== wants) continue
+    // `tasklist /FO CSV` rows are  "image","pid",session,"session#",mem.
+    // This is the ONLY place a real process identity is ever observed; carry
+    // the pid with the observation so launch reports can reconcile against the
+    // actual application process instead of a transient launcher.
+    const pidCell = Number.parseInt(row[1] ?? '', 10)
+    return {
+      running: true,
+      observed: true,
+      pid: Number.isFinite(pidCell) && pidCell > 0 ? pidCell : undefined,
+    }
+  }
+  return { running: false, observed: true }
 }
 
 /**
@@ -449,7 +560,10 @@ export async function observeRunningStable(
         // Only a positive that SURVIVES the settle window is a running app.
         const confirmed = await confirmRunning(probe, image, settleMs)
         if (confirmed.running && confirmed.observed) {
-          return { running: true, observed: true }
+          // Carry the settle-confirmed observation's real PID so the shell
+          // route can reconcile the transient activation pid to the actual
+          // application process instead of reporting a launcher stub.
+          return { running: true, observed: true, pid: confirmed.pid }
         }
         sawObservation = sawObservation || confirmed.observed
       }
@@ -458,6 +572,122 @@ export async function observeRunningStable(
     await new Promise((r) => setTimeout(r, APP_LIMITS.PROCESS_VERIFY_POLL_DELAY_MS))
   }
   return { running: false, observed: sawObservation }
+}
+
+/* ------------------------------------------------- launch pid reconciliation */
+
+/**
+ * Live `tasklist` lookup of every pid currently running the target image.
+ * Fixed-args only; injectable-bounded; returns null when the snapshot cannot
+ * be observed. An observed empty process list is distinct from a failed probe.
+ */
+export async function listImagePidsLive(image: string): Promise<number[] | null> {
+  if (process.platform !== 'win32' || image === '') return null
+  const out = await runTasklist(
+    ['/FO', 'CSV', '/NH', '/FI', `IMAGENAME eq ${image}`],
+    APP_LIMITS.PROCESS_VERIFY_PROBE_TIMEOUT_MS,
+  )
+  if (out === null || out.trim().length === 0) return null
+  const wants = image.toLowerCase()
+  const pids: number[] = []
+  for (const line of out.split('\r\n')) {
+    const row = parseCsvLine(line)
+    if (row.length === 0) continue
+    if (row[0]?.toLowerCase() !== wants) continue
+    const pid = Number.parseInt(row[1] ?? '', 10)
+    if (Number.isFinite(pid) && pid > 0) pids.push(pid)
+  }
+  if (pids.length > 0) return pids
+  // `tasklist` uses this informational row to report a successful empty
+  // filter. Unknown output is not evidence that no process was present.
+  return /no tasks are running/i.test(out) ? [] : null
+}
+
+/** Is this exact pid alive right now, and is it still the expected image? */
+function isPidAliveLive(pid: number, image: string): Promise<boolean> {
+  if (process.platform !== 'win32' || pid <= 0) return Promise.resolve(false)
+  return new Promise((resolve) => {
+    let settled = false
+    try {
+      const child = execFile(
+        'tasklist',
+        ['/FO', 'CSV', '/NH', '/FI', `PID eq ${pid}`],
+        { windowsHide: true, timeout: APP_LIMITS.PROCESS_VERIFY_PROBE_TIMEOUT_MS, encoding: 'utf8', shell: false },
+        (err, stdout) => {
+          if (settled) return
+          settled = true
+          if (err && !stdout) {
+            resolve(false)
+            return
+          }
+          const wants = image.toLowerCase()
+          const alive = (stdout as string)
+            .split('\r\n')
+            .some((line) => {
+              const row = parseCsvLine(line)
+              return row[0]?.toLowerCase() === wants && row[1] === String(pid)
+            })
+          resolve(alive)
+        },
+      )
+      if (typeof child.unref === 'function') child.unref()
+    } catch {
+      if (!settled) {
+        settled = true
+        resolve(false)
+      }
+    }
+  })
+}
+
+/**
+ * Default reconciler: launch-window correlation. A pid belongs to THIS launch
+ * only if it is NEW (absent before the launch) and still alive, as the same
+ * image, after the settle window. When the newly spawned launcher exits during
+ * hand-off, the surviving replacement process is the answer; when nothing new
+ * survives, the result is undefined — an honest failure, never a transient pid.
+ */
+export async function reconcileLaunchPid(
+  prePids: number[] | null,
+  image: string,
+  listPids: ImagePidLister = listImagePidsLive,
+  isAlive: (pid: number, img: string) => Promise<boolean> = isPidAliveLive,
+  settleMs: number = APP_LIMITS.PROCESS_VERIFY_SETTLE_MS,
+  launchedPid?: number,
+): Promise<ReconciledProcess | undefined> {
+  // Null pre-launch snapshot: attribution is impossible — no invented answers.
+  if (prePids === null) return undefined
+  const before = new Set(prePids)
+  await new Promise((r) => setTimeout(r, settleMs))
+  // Observe the world AFTER the settle window and keep only pids that are NEW
+  // (absent before the launch) and still alive as the target image.
+  const collect = async (): Promise<number[] | null> => {
+    const listed = await listPids(image)
+    if (listed === null) return null
+    const after = listed.filter((pid) => !before.has(pid))
+    const survivors: number[] = []
+    for (const pid of after) {
+      if (await isAlive(pid, image)) survivors.push(pid)
+    }
+    return survivors
+  }
+  let survivors = await collect()
+  if (survivors === null) return undefined
+  if (survivors.length === 0) {
+    // The launcher may have exited during the settle and handed off to a
+    // replacement that only became visible afterwards; re-observe once.
+    survivors = await collect()
+    if (survivors === null) return undefined
+  }
+  if (survivors.length !== 1) return undefined
+  const handoff = launchedPid !== undefined && survivors[0] !== launchedPid
+  return {
+    pid: survivors[0],
+    handoff,
+    handoffFromPid: handoff ? launchedPid : undefined,
+    handoffToImage: handoff ? image : undefined,
+    handoffToPid: handoff ? survivors[0] : undefined,
+  }
 }
 
 /* ------------------------------------------------- shell-exec exit code */
@@ -533,11 +763,12 @@ function spawnDetached(target: string, args: string[], applicationId: string): P
   return spawnProcess(target, args, applicationId, { detached: true, windowsHide: true })
 }
 
-function spawnProcess(
+export function spawnProcess(
   target: string,
   args: string[],
   applicationId: string,
   opts: LaunchSpawnOptions,
+  spawnImpl: typeof spawn = spawn,
 ): Promise<ChildProcess> {
   return new Promise<ChildProcess>((resolve, reject) => {
     let settled = false
@@ -549,7 +780,7 @@ function spawnProcess(
 
     let child: ChildProcess
     try {
-      child = spawn(target, args, {
+      child = spawnImpl(target, args, {
         detached: opts.detached ?? true,
         stdio: 'ignore',
         windowsHide: opts.windowsHide ?? true,
@@ -677,7 +908,7 @@ async function verifyProcess(target: string, pid: number | undefined): Promise<V
       const lower = out.toLowerCase()
       const found = lower.split('\r\n').some((line) => {
         const row = parseCsvLine(line)
-        return row[0]?.toLowerCase() === image
+        return row[0]?.toLowerCase() === image && row[1] === String(pid)
       })
       if (found) {
         // The pid was observed — but only a pid that is still there after the
@@ -693,7 +924,7 @@ async function verifyProcess(target: string, pid: number | undefined): Promise<V
           const settledLower = settled.toLowerCase()
           const stillRunning = settledLower.split('\r\n').some((line) => {
             const row = parseCsvLine(line)
-            return row[0]?.toLowerCase() === image
+            return row[0]?.toLowerCase() === image && row[1] === String(pid)
           })
           if (stillRunning) return 'verified'
         }

@@ -94,6 +94,18 @@ export interface AIProvider {
   isReachable(): Promise<boolean>
   /** Optional stable info for the settings panel. */
   describe?(): AIProviderInfo
+
+  /**
+   * Optional REAL model discovery (local engines). Implemented by providers
+   * that can actually probe the endpoint (Ollama `/api/tags`, LM Studio
+   * `/v1/models`). Mock providers may omit it.
+   *
+   * Honest semantics:
+   *   - `['…']` → a REAL probe found these models this process.
+   *   - `[]`    → nothing was verified. Callers MUST NOT read `[]` as "zero
+   *               models"; read it as "not verified / not supported".
+   */
+  listModels?(): Promise<string[]>
 }
 
 export type { EngineOutMessage } from './contracts'
