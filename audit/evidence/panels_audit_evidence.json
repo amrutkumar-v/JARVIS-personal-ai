@@ -1,0 +1,72 @@
+[
+  {
+    "name": "Overview",
+    "found": true,
+    "panelOpened": true,
+    "previewText": "◉ | JARVIS CORE | SYS // CORE | ◳ | ✕ | JARVIS CORE | CONNECTED | Backend | JARVIS CORE V0.10.0 | PID | 24156 | Uptime | 510S | Native agent | RUNNING (BACKEND-SUPERVISED) | Last device message | — | TRUSTED DEVICES (4 of 4) | Main PC (this machine) · Dell laptop · S26 Ultra · S23 FE. Phones/Dell show online only while their companion bridge is actively heartbeating. | Amrut's Victus · this machine | ONLINE · LOCAL · FILESYSTEM · APPLICATIONS · SCREEN · MOUSE · KEYBOARD · CAMERA · VISION · AUTOMATION | Amrut's Dell · secondary PC | OFFL",
+    "screenshot": "D:\\JARVIS\\audit\\evidence\\panel_overview.png"
+  },
+  {
+    "name": "Assistant",
+    "found": true,
+    "panelOpened": true,
+    "previewText": "◉ | JARVIS CORE | SYS // CORE | ◳ | ✕ | JARVIS CORE | CONNECTED | Backend | JARVIS CORE V0.10.0 | PID | 24156 | Uptime | 510S | Native agent | RUNNING (BACKEND-SUPERVISED) | Last device message | — | TRUSTED DEVICES (4 of 4) | Main PC (this machine) · Dell laptop · S26 Ultra · S23 FE. Phones/Dell show online only while their companion bridge is actively heartbeating. | Amrut's Victus · this machine | ONLINE · LOCAL · FILESYSTEM · APPLICATIONS · SCREEN · MOUSE · KEYBOARD · CAMERA · VISION · AUTOMATION | Amrut's Dell · secondary PC | OFFL",
+    "screenshot": "D:\\JARVIS\\audit\\evidence\\panel_assistant.png"
+  },
+  {
+    "name": "Tasks",
+    "found": true,
+    "panelOpened": true,
+    "previewText": "◉ | JARVIS CORE | SYS // CORE | ◳ | ✕ | JARVIS CORE | CONNECTED | Backend | JARVIS CORE V0.10.0 | PID | 24156 | Uptime | 510S | Native agent | RUNNING (BACKEND-SUPERVISED) | Last device message | — | TRUSTED DEVICES (4 of 4) | Main PC (this machine) · Dell laptop · S26 Ultra · S23 FE. Phones/Dell show online only while their companion bridge is actively heartbeating. | Amrut's Victus · this machine | ONLINE · LOCAL · FILESYSTEM · APPLICATIONS · SCREEN · MOUSE · KEYBOARD · CAMERA · VISION · AUTOMATION | Amrut's Dell · secondary PC | OFFL",
+    "screenshot": "D:\\JARVIS\\audit\\evidence\\panel_tasks.png"
+  },
+  {
+    "name": "Applications",
+    "found": true,
+    "panelOpened": true,
+    "previewText": "◉ | JARVIS CORE | SYS // CORE | ◳ | ✕ | JARVIS CORE | CONNECTED | Backend | JARVIS CORE V0.10.0 | PID | 24156 | Uptime | 510S | Native agent | RUNNING (BACKEND-SUPERVISED) | Last device message | — | TRUSTED DEVICES (4 of 4) | Main PC (this machine) · Dell laptop · S26 Ultra · S23 FE. Phones/Dell show online only while their companion bridge is actively heartbeating. | Amrut's Victus · this machine | ONLINE · LOCAL · FILESYSTEM · APPLICATIONS · SCREEN · MOUSE · KEYBOARD · CAMERA · VISION · AUTOMATION | Amrut's Dell · secondary PC | OFFL",
+    "screenshot": "D:\\JARVIS\\audit\\evidence\\panel_applications.png"
+  },
+  {
+    "name": "Files",
+    "found": true,
+    "panelOpened": true,
+    "previewText": "◉ | JARVIS CORE | SYS // CORE | ◳ | ✕ | JARVIS CORE | CONNECTED | Backend | JARVIS CORE V0.10.0 | PID | 24156 | Uptime | 510S | Native agent | RUNNING (BACKEND-SUPERVISED) | Last device message | — | TRUSTED DEVICES (4 of 4) | Main PC (this machine) · Dell laptop · S26 Ultra · S23 FE. Phones/Dell show online only while their companion bridge is actively heartbeating. | Amrut's Victus · this machine | ONLINE · LOCAL · FILESYSTEM · APPLICATIONS · SCREEN · MOUSE · KEYBOARD · CAMERA · VISION · AUTOMATION | Amrut's Dell · secondary PC | OFFL",
+    "screenshot": "D:\\JARVIS\\audit\\evidence\\panel_files.png"
+  },
+  {
+    "name": "Camera",
+    "found": true,
+    "panelOpened": true,
+    "previewText": "◉ | JARVIS CORE | SYS // CORE | ◳ | ✕ | JARVIS CORE | CONNECTED | Backend | JARVIS CORE V0.10.0 | PID | 24156 | Uptime | 510S | Native agent | RUNNING (BACKEND-SUPERVISED) | Last device message | — | TRUSTED DEVICES (4 of 4) | Main PC (this machine) · Dell laptop · S26 Ultra · S23 FE. Phones/Dell show online only while their companion bridge is actively heartbeating. | Amrut's Victus · this machine | ONLINE · LOCAL · FILESYSTEM · APPLICATIONS · SCREEN · MOUSE · KEYBOARD · CAMERA · VISION · AUTOMATION | Amrut's Dell · secondary PC | OFFL",
+    "screenshot": "D:\\JARVIS\\audit\\evidence\\panel_camera.png"
+  },
+  {
+    "name": "Vision",
+    "found": true,
+    "panelOpened": true,
+    "previewText": "◉ | JARVIS CORE | SYS // CORE | ◳ | ✕ | JARVIS CORE | CONNECTED | Backend | JARVIS CORE V0.10.0 | PID | 24156 | Uptime | 510S | Native agent | RUNNING (BACKEND-SUPERVISED) | Last device message | — | TRUSTED DEVICES (4 of 4) | Main PC (this machine) · Dell laptop · S26 Ultra · S23 FE. Phones/Dell show online only while their companion bridge is actively heartbeating. | Amrut's Victus · this machine | ONLINE · LOCAL · FILESYSTEM · APPLICATIONS · SCREEN · MOUSE · KEYBOARD · CAMERA · VISION · AUTOMATION | Amrut's Dell · secondary PC | OFFL",
+    "screenshot": "D:\\JARVIS\\audit\\evidence\\panel_vision.png"
+  },
+  {
+    "name": "Activity",
+    "found": true,
+    "panelOpened": true,
+    "previewText": "◉ | JARVIS CORE | SYS // CORE | ◳ | ✕ | JARVIS CORE | CONNECTED | Backend | JARVIS CORE V0.10.0 | PID | 24156 | Uptime | 510S | Native agent | RUNNING (BACKEND-SUPERVISED) | Last device message | — | TRUSTED DEVICES (4 of 4) | Main PC (this machine) · Dell laptop · S26 Ultra · S23 FE. Phones/Dell show online only while their companion bridge is actively heartbeating. | Amrut's Victus · this machine | ONLINE · LOCAL · FILESYSTEM · APPLICATIONS · SCREEN · MOUSE · KEYBOARD · CAMERA · VISION · AUTOMATION | Amrut's Dell · secondary PC | OFFL",
+    "screenshot": "D:\\JARVIS\\audit\\evidence\\panel_activity.png"
+  },
+  {
+    "name": "System Monitor",
+    "found": true,
+    "panelOpened": true,
+    "previewText": "◉ | JARVIS CORE | SYS // CORE | ◳ | ✕ | JARVIS CORE | CONNECTED | Backend | JARVIS CORE V0.10.0 | PID | 24156 | Uptime | 510S | Native agent | RUNNING (BACKEND-SUPERVISED) | Last device message | — | TRUSTED DEVICES (4 of 4) | Main PC (this machine) · Dell laptop · S26 Ultra · S23 FE. Phones/Dell show online only while their companion bridge is actively heartbeating. | Amrut's Victus · this machine | ONLINE · LOCAL · FILESYSTEM · APPLICATIONS · SCREEN · MOUSE · KEYBOARD · CAMERA · VISION · AUTOMATION | Amrut's Dell · secondary PC | OFFL",
+    "screenshot": "D:\\JARVIS\\audit\\evidence\\panel_system_monitor.png"
+  },
+  {
+    "name": "Settings Modal",
+    "found": true,
+    "modalOpened": true,
+    "previewText": "SYSTEM SETTINGS | ✕ | APPEARANCE | Theme | CLASSIC | CYBER | STEALTH | HOLOGRAPHIC | MINIMAL | The iconic cyan arc reactor on deep midnight. | Demo mode | Demo mode only enlarges the Arc Reactor and declutters the UI for presentations. It never fakes execution, verification or permissions. | VOICE | Voice interaction | Wake word (say \"Wake up, JARVIS\") | Output volume | 90% | HAND GESTURES | Status | Off (turn on the camera) — hand gestures follow the camera stream automatically, with no separate toggle. | Phase | unknown | Hands dete",
+    "screenshot": "D:\\JARVIS\\audit\\evidence\\modal_settings.png"
+  }
+]

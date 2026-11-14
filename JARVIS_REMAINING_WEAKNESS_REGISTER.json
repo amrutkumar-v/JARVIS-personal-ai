@@ -1,0 +1,63 @@
+{
+  "version": "4.0.0-RC1",
+  "generatedAt": "2026-11-13T11:25:00.000Z",
+  "totalItems": 5,
+  "statusSummary": {
+    "ACCEPTED_RISK": 3,
+    "OPERATIONAL_BOUNDARY": 2,
+    "BLOCKING": 0
+  },
+  "items": [
+    {
+      "id": "WEAKNESS-001",
+      "category": "PERFORMANCE",
+      "severity": "LOW",
+      "classification": "ACCEPTED_RISK",
+      "title": "Local LLM Cold-Start Inference Latency on Consumer Hardware",
+      "description": "When invoking local Ollama models (e.g. qwen3-coder:latest or qwen3:8b) for autonomous code generation, cold model loading into VRAM on Windows can take 15 to 75 seconds depending on hardware and model quantization.",
+      "mitigation": "Implemented deterministic fallback in DevelopmentPlanner so if Ollama is slow or unavailable, task planning falls back to deterministic regex rule templates.",
+      "releaseCandidateImpact": "NON_BLOCKING"
+    },
+    {
+      "id": "WEAKNESS-002",
+      "category": "NETWORK_TOPOLOGY",
+      "severity": "LOW",
+      "classification": "OPERATIONAL_BOUNDARY",
+      "title": "Android Companion App Requires Shared Local Area Network (LAN)",
+      "description": "Android phone companion server binds to local network (port 8788). It does not perform STUN/TURN cellular NAT traversal; remote companion operation requires private LAN or VPN (e.g., Tailscale).",
+      "mitigation": "Documentation specifies Private Network firewall configuration and home LAN recommendation.",
+      "releaseCandidateImpact": "NON_BLOCKING"
+    },
+    {
+      "id": "WEAKNESS-003",
+      "category": "OS_DESKTOP_AUTOMATION",
+      "severity": "MEDIUM",
+      "classification": "ACCEPTED_RISK",
+      "title": "Windows Desktop Observation Suspended While Workstation is Locked",
+      "description": "Desktop screen capture and Win32 UI Automation (UIA) APIs cannot capture the interactive desktop surface when Windows session is locked (Win+L) or screen saver is active.",
+      "mitigation": "Native supervisor reports reachable: false and gracefully buffers events until workstation unlock.",
+      "releaseCandidateImpact": "NON_BLOCKING"
+    },
+    {
+      "id": "WEAKNESS-004",
+      "category": "RESOURCE_MANAGEMENT",
+      "severity": "LOW",
+      "classification": "ACCEPTED_RISK",
+      "title": "Unattended Tasks Throttle Under Host CPU Load Exceeding 90%",
+      "description": "ResourceMonitor monitors CPU and RAM. When system-wide CPU load ratio exceeds 90% or free RAM drops below 250 MB, background dev subtasks back off up to 3 seconds to avoid starving host operations.",
+      "mitigation": "Exponential moving average smoothing prevents false positive spikes from 100ms ticks, and subtask retry backoff avoids burning retries.",
+      "releaseCandidateImpact": "NON_BLOCKING"
+    },
+    {
+      "id": "WEAKNESS-005",
+      "category": "ARCHITECTURE",
+      "severity": "LOW",
+      "classification": "OPERATIONAL_BOUNDARY",
+      "title": "Single-Node Local Daemon Architecture",
+      "description": "JARVIS 4.0 architecture is designed as a sovereign, single-node local executive daemon. Distributed multi-machine task federation across separate physical hosts is outside the v4.0 design scope.",
+      "mitigation": "Architecturally isolated data directories and process lock management permit multiple local daemon instances on different ports.",
+      "releaseCandidateImpact": "NON_BLOCKING"
+    }
+  ]
+}
+

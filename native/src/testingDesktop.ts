@@ -10,6 +10,7 @@ import type {
   NativeDesktopFocusResult,
   NativeDesktopMoveResult,
   NativeDesktopScrollResult,
+  NativeDesktopWindowStateResult,
 } from './protocol.js'
 
 /**
@@ -259,5 +260,26 @@ export class MemoryDesktopBackend implements DesktopInteractionBackend {
     }
     this.record({ name: 'focus', windowId, injected: false })
     return { windowId, focused: false, detail: 'The target window could not be made foreground (simulated denial).' }
+  }
+
+  async minimizeWindow(windowId: string): Promise<NativeDesktopWindowStateResult> {
+    const w = this.windows.get(windowId)
+    if (!w) throw nativeError('window_not_found', `Window "${windowId}" no longer exists.`, windowId)
+    w.minimized = true
+    return { windowId, action: 'minimize', success: true, detail: 'Window was minimized.' }
+  }
+
+  async maximizeWindow(windowId: string): Promise<NativeDesktopWindowStateResult> {
+    const w = this.windows.get(windowId)
+    if (!w) throw nativeError('window_not_found', `Window "${windowId}" no longer exists.`, windowId)
+    w.minimized = false
+    return { windowId, action: 'maximize', success: true, detail: 'Window was maximized.' }
+  }
+
+  async restoreWindow(windowId: string): Promise<NativeDesktopWindowStateResult> {
+    const w = this.windows.get(windowId)
+    if (!w) throw nativeError('window_not_found', `Window "${windowId}" no longer exists.`, windowId)
+    w.minimized = false
+    return { windowId, action: 'restore', success: true, detail: 'Window was restored.' }
   }
 }

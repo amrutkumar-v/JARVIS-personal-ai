@@ -691,8 +691,8 @@ describe('window.* — observation protocol (Phase 1.4)', () => {
   it('rejects observation EXECUTION verbs as unsupported — observation only', async () => {
     const moves = await rpc(agent.baseUrl, 'window.move', { windowId: '1001', x: 1 }, TOKEN)
     expect(errorCode(await asJson(moves))).toBe('unsupported')
-    const minimize = await rpc(agent.baseUrl, 'window.minimize', { windowId: '1001' }, TOKEN)
-    expect(errorCode(await asJson(minimize))).toBe('unsupported')
+    const resize = await rpc(agent.baseUrl, 'window.resize', { windowId: '1001' }, TOKEN)
+    expect(errorCode(await asJson(resize))).toBe('unsupported')
     const press = await rpc(agent.baseUrl, 'desktop.press', { key: 'A' }, TOKEN)
     expect(errorCode(await asJson(press))).toBe('unsupported')
   })

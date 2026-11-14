@@ -2,6 +2,9 @@ import { describe, expect, it, vi } from 'vitest'
 import {
   createAiProviderRouter,
   resolveLegacyProxy,
+  classifyModelTier,
+  probeLocalEndpoints,
+  isLocalProvider,
   type AiRouteResult,
   type AiRouterCreateOptions,
 } from './aiProvider.js'
@@ -26,6 +29,8 @@ function fakeResponse(status: number, body: string, contentType = 'application/j
     ok: status >= 200 && status < 300,
     headers: new Headers({ 'content-type': contentType }),
     arrayBuffer: async () => new TextEncoder().encode(body),
+    text: async () => body,
+    json: async () => JSON.parse(body),
   } as unknown as Response
 }
 
@@ -614,6 +619,7 @@ describe('aiProvider router — health and security', () => {
       'local',
       'ollama',
       'lmstudio',
+      'llamacpp',
     ])
     expect(snapshot.providers.filter((p) => p.enabled).map((p) => p.id)).toEqual(['gemini', 'openai'])
     expect(snapshot.providers.find((p) => p.id === 'anthropic')?.capabilities).toEqual(['reasoning'])
@@ -941,5 +947,126 @@ describe('resolveLegacyProxy (Vite dev parity)', () => {
     const proxy = resolveLegacyProxy({ OPENAI_API_KEY: 'sk-o' })
     expect(proxy?.baseUrl).toBe('https://generativelanguage.googleapis.com/v1beta/openai')
     expect(proxy?.key).toBe('sk-o')
+  })
+})
+
+describe('aiProvider router — Phase 5: Local AI & Model Routing', () => {
+  it('correctly classifies models into latency and capability tiers', () => {
+    expect(classifyModelTier('llama3.2:1b')).toBe('fast')
+    expect(classifyModelTier('llama3.2:3b')).toBe('fast')
+    expect(classifyModelTier('qwen2.5:0.5b')).toBe('fast')
+    expect(classifyModelTier('gpt-4o-mini')).toBe('fast')
+    expect(classifyModelTier('gemini-3.6-flash-lite')).toBe('fast')
+    expect(classifyModelTier('claude-3-5-haiku')).toBe('fast')
+
+    expect(classifyModelTier('llama3.1:8b')).toBe('balanced')
+    expect(classifyModelTier('qwen2.5:7b')).toBe('balanced')
+    expect(classifyModelTier('mistral:7b')).toBe('balanced')
+
+    expect(classifyModelTier('llama3.1:70b')).toBe('powerful')
+    expect(classifyModelTier('qwen2.5:72b')).toBe('powerful')
+    expect(classifyModelTier('claude-sonnet-4-5')).toBe('powerful')
+    expect(classifyModelTier('gpt-4o')).toBe('powerful')
+  })
+
+  it('identifies local engine provider IDs accurately', () => {
+    expect(isLocalProvider('ollama')).toBe(true)
+    expect(isLocalProvider('lmstudio')).toBe(true)
+    expect(isLocalProvider('llamacpp')).toBe(true)
+    expect(isLocalProvider('local')).toBe(true)
+    expect(isLocalProvider('gemini')).toBe(false)
+    expect(isLocalProvider('openai')).toBe(false)
+    expect(isLocalProvider('anthropic')).toBe(false)
+  })
+
+  it('routes to llama.cpp when configured as primary or discovered', async () => {
+    const { fetchImpl } = makeFetch(async (url) => {
+      if (url.includes('/models')) {
+        return okResponse({ data: [{ id: 'mistral-7b-instruct-v0.3.Q4_K_M.gguf' }] })
+      }
+      return chatReply('llama.cpp answered!')
+    })
+
+    const router = createAiProviderRouter({
+      env: {
+        JARVIS_AI_PRIMARY_PROVIDER: 'llamacpp',
+        LLAMACPP_BASE_URL: 'http://localhost:8080/v1',
+        LLAMACPP_AI_MODEL: 'mistral-7b-instruct-v0.3.Q4_K_M.gguf',
+      },
+      fetchImpl,
+    })
+
+    const res = await router.route({ subpath: '/chat/completions', body: CHAT_BODY })
+    expect(res.status).toBe(200)
+    expect(res.provider).toBe('llamacpp')
+    const reply = resBody(res) as { choices: Array<{ message: { content: string } }> }
+    expect(reply.choices[0]?.message.content).toBe('llama.cpp answered!')
+  })
+
+  it('enforces privacy local-only mode: excludes remote providers and returns 503 when no local engine is available', async () => {
+    const { fetchImpl, calls } = makeFetch(async () => chatReply('should not be called'))
+
+    const router = createAiProviderRouter({
+      env: {
+        JARVIS_AI_PRIMARY_PROVIDER: 'gemini',
+        GEMINI_API_KEY: 'sk-remote',
+      },
+      localOnly: true,
+      fetchImpl,
+    })
+
+    const res = await router.route({ subpath: '/chat/completions', body: CHAT_BODY })
+    expect(res.status).toBe(503)
+    expect(res.errorCode).toBe('ai_not_configured')
+    // Crucial privacy guarantee: remote Gemini endpoint was never invoked
+    expect(calls.mock.calls.every(([url]) => !String(url).includes('googleapis'))).toBe(true)
+  })
+
+  it('enforces privacy local-only mode: routes successfully to local engine while ignoring configured remote providers', async () => {
+    const { fetchImpl, calls } = makeFetch(async (url) => {
+      expect(url).toContain('11434')
+      return chatReply('local ollama reply')
+    })
+
+    const router = createAiProviderRouter({
+      env: {
+        JARVIS_AI_PRIMARY_PROVIDER: 'auto',
+        GEMINI_API_KEY: 'sk-remote',
+        OLLAMA_BASE_URL: 'http://localhost:11434/v1',
+        OLLAMA_AI_MODEL: 'llama3.2:3b',
+      },
+      fetchImpl,
+    })
+
+    const res = await router.route({ subpath: '/chat/completions', body: CHAT_BODY, localOnly: true })
+    expect(res.status).toBe(200)
+    expect(res.provider).toBe('ollama')
+    expect(calls).toHaveBeenCalled()
+  })
+
+  it('probes standard local endpoints and parses installed models', async () => {
+    const { fetchImpl } = makeFetch(async (url) => {
+      if (url.includes('11434/api/tags')) {
+        return okResponse({ models: [{ name: 'llama3.2:latest' }, { name: 'qwen2.5:7b' }] })
+      }
+      if (url.includes('8080/v1/models')) {
+        return okResponse({ data: [{ id: 'phi-3-mini.gguf' }] })
+      }
+      return fakeResponse(500, 'Server down')
+    })
+
+    const probeResults = await probeLocalEndpoints(fetchImpl, 1000)
+    expect(probeResults).toHaveLength(4)
+
+    const ollama = probeResults.find((p) => p.providerId === 'ollama')
+    expect(ollama?.reachable).toBe(true)
+    expect(ollama?.models).toEqual(['llama3.2:latest', 'qwen2.5:7b'])
+
+    const llamacpp = probeResults.find((p) => p.providerId === 'llamacpp')
+    expect(llamacpp?.reachable).toBe(true)
+    expect(llamacpp?.models).toEqual(['phi-3-mini.gguf'])
+
+    const lmstudio = probeResults.find((p) => p.providerId === 'lmstudio')
+    expect(lmstudio?.reachable).toBe(false)
   })
 })

@@ -46,8 +46,8 @@ function availabilityBlocker(provider: BrowserProvider): ToolResult | null {
   }
 }
 
-function paramStr(input: ToolInput, key: string): string | undefined {
-  const value = input.params?.[key]
+function paramStr(input: ToolInput | undefined, key: string): string | undefined {
+  const value = input?.params?.[key]
   return typeof value === 'string' ? value : undefined
 }
 
@@ -574,6 +574,322 @@ export class BrowserCloseTool extends BrowserTool {
   }
 }
 
+/* ---------------------------------------------------------------- listTabs */
+
+export class BrowserListTabsTool extends BrowserTool {
+  readonly id = 'browser.listTabs'
+  readonly name = 'List browser tabs'
+  readonly description = 'List all open browser tabs and identify the active one.'
+  readonly permission: ToolPermission = 'read_only'
+  readonly inputSchema: ToolInputSchema = { type: 'object', properties: {}, required: [] }
+
+  canRun(query: string): boolean {
+    return /\b(tabs|tab\s*list|open\s*tabs|list\s*tabs)\b/i.test(query)
+  }
+
+  async execute(_input?: ToolInput, _ctx?: ToolContext): Promise<ToolResult> {
+    const blocker = availabilityBlocker(this.provider)
+    if (blocker) return blocker
+    try {
+      if (typeof this.provider.listTabs !== 'function') {
+        return { ok: false, message: 'Tabs management is not supported by current provider.' }
+      }
+      const result = await this.provider.listTabs()
+      return {
+        ok: true,
+        message: `Found ${result.tabs.length} open tab(s).`,
+        data: result,
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to list tabs.'
+      return { ok: false, message }
+    }
+  }
+}
+
+/* ----------------------------------------------------------------- newTab */
+
+export class BrowserNewTabTool extends BrowserTool {
+  readonly id = 'browser.newTab'
+  readonly name = 'Open new browser tab'
+  readonly description = 'Open a new browser tab, optionally navigating to a URL.'
+  readonly permission: ToolPermission = 'low_risk'
+  readonly verifiable = true
+  readonly inputSchema: ToolInputSchema = {
+    type: 'object',
+    properties: {
+      url: { type: 'string', description: 'URL to navigate to in the new tab' },
+    },
+    required: [],
+  }
+
+  canRun(query: string): boolean {
+    return /\b(new\s*tab|open\s*tab|another\s*tab)\b/i.test(query)
+  }
+
+  async execute(input?: ToolInput, _ctx?: ToolContext): Promise<ToolResult> {
+    const blocker = availabilityBlocker(this.provider)
+    if (blocker) return blocker
+    try {
+      if (typeof this.provider.newTab !== 'function') {
+        return { ok: false, message: 'Tabs management is not supported by current provider.' }
+      }
+      const url = paramStr(input, 'url')
+      const result = await this.provider.newTab(url)
+      return {
+        ok: true,
+        message: `Opened new tab #${result.index}${result.url ? ` at ${result.url}` : ''}.`,
+        data: result,
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to open new tab.'
+      return { ok: false, message }
+    }
+  }
+
+  verify(_input?: ToolInput, result?: ToolResult, _ctx?: ToolContext): Promise<ToolVerification> {
+    const data = result?.data as { success?: boolean; url?: string } | undefined
+    if (data?.success) {
+      return Promise.resolve({ ok: true, message: 'New tab opened successfully.', checks: ['tab_active'] })
+    }
+    return Promise.resolve({ ok: false, message: 'New tab could not be verified.', checks: ['tab_active'] })
+  }
+}
+
+/* --------------------------------------------------------------- switchTab */
+
+export class BrowserSwitchTabTool extends BrowserTool {
+  readonly id = 'browser.switchTab'
+  readonly name = 'Switch active browser tab'
+  readonly description = 'Switch to another open browser tab by index.'
+  readonly permission: ToolPermission = 'low_risk'
+  readonly inputSchema: ToolInputSchema = {
+    type: 'object',
+    properties: {
+      index: { type: 'number', description: 'Zero-based tab index' },
+    },
+    required: ['index'],
+  }
+
+  canRun(query: string): boolean {
+    return /\b(switch\s*tab|goto\s*tab|activate\s*tab|select\s*tab)\b/i.test(query)
+  }
+
+  async execute(input?: ToolInput, _ctx?: ToolContext): Promise<ToolResult> {
+    const blocker = availabilityBlocker(this.provider)
+    if (blocker) return blocker
+    try {
+      if (typeof this.provider.switchTab !== 'function') {
+        return { ok: false, message: 'Tabs management is not supported by current provider.' }
+      }
+      const index = Number(input?.params?.index)
+      if (!Number.isFinite(index)) {
+        return { ok: false, message: 'Invalid or missing "index" parameter.' }
+      }
+      const result = await this.provider.switchTab(index)
+      return {
+        ok: true,
+        message: `Switched to tab #${result.index} (${result.title || result.url}).`,
+        data: result,
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to switch tab.'
+      return { ok: false, message }
+    }
+  }
+}
+
+/* ---------------------------------------------------------------- closeTab */
+
+export class BrowserCloseTabTool extends BrowserTool {
+  readonly id = 'browser.closeTab'
+  readonly name = 'Close browser tab'
+  readonly description = 'Close a specific browser tab by index or close the active tab.'
+  readonly permission: ToolPermission = 'low_risk'
+  readonly inputSchema: ToolInputSchema = {
+    type: 'object',
+    properties: {
+      index: { type: 'number', description: 'Tab index to close (omit for active)' },
+    },
+    required: [],
+  }
+
+  canRun(query: string): boolean {
+    return /\b(close\s*tab|shut\s*tab)\b/i.test(query)
+  }
+
+  async execute(input?: ToolInput, _ctx?: ToolContext): Promise<ToolResult> {
+    const blocker = availabilityBlocker(this.provider)
+    if (blocker) return blocker
+    try {
+      if (typeof this.provider.closeTab !== 'function') {
+        return { ok: false, message: 'Tabs management is not supported by current provider.' }
+      }
+      const rawIdx = input?.params?.index
+      const index = rawIdx !== undefined ? Number(rawIdx) : undefined
+      const result = await this.provider.closeTab(index)
+      return {
+        ok: true,
+        message: `Closed tab. ${result.remainingCount} tab(s) remaining.`,
+        data: result,
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to close tab.'
+      return { ok: false, message }
+    }
+  }
+}
+
+/* ---------------------------------------------------------------- fillForm */
+
+export class BrowserFillFormTool extends BrowserTool {
+  readonly id = 'browser.fillForm'
+  readonly name = 'Semantically fill form fields'
+  readonly description = 'Fill multiple form inputs, textareas, selects, or checkboxes on the current page.'
+  readonly permission: ToolPermission = 'low_risk'
+  readonly verifiable = true
+  readonly inputSchema: ToolInputSchema = {
+    type: 'object',
+    properties: {
+      fields: { type: 'object', description: 'Key-value map of form field names/labels and values to enter' },
+    },
+    required: ['fields'],
+  }
+
+  canRun(query: string): boolean {
+    return /\b(fill\s*form|complete\s*form|submit\s*form|populate\s*form|enter\s*fields)\b/i.test(query)
+  }
+
+  async execute(input?: ToolInput, _ctx?: ToolContext): Promise<ToolResult> {
+    const blocker = availabilityBlocker(this.provider)
+    if (blocker) return blocker
+    try {
+      if (typeof this.provider.fillForm !== 'function') {
+        return { ok: false, message: 'Form filling is not supported by current provider.' }
+      }
+      const fields = input?.params?.fields as Record<string, string> | undefined
+      if (!fields || typeof fields !== 'object') {
+        return { ok: false, message: 'Missing or invalid "fields" parameter.' }
+      }
+      const result = await this.provider.fillForm(fields)
+      return {
+        ok: result.success,
+        message: `Filled ${result.filled.length} field(s)${result.failed.length > 0 ? ` (${result.failed.length} not found)` : ''}.`,
+        data: result,
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to fill form.'
+      return { ok: false, message }
+    }
+  }
+
+  verify(_input?: ToolInput, result?: ToolResult, _ctx?: ToolContext): Promise<ToolVerification> {
+    const data = result?.data as { filled?: string[] } | undefined
+    if (data?.filled && data.filled.length > 0) {
+      return Promise.resolve({ ok: true, message: `Confirmed ${data.filled.length} fields filled.`, checks: ['fields_populated'] })
+    }
+    return Promise.resolve({ ok: false, message: 'No fields were confirmed populated.', checks: ['fields_populated'] })
+  }
+}
+
+/* ---------------------------------------------------------- extractContent */
+
+export class BrowserExtractContentTool extends BrowserTool {
+  readonly id = 'browser.extractContent'
+  readonly name = 'Extract structured page content'
+  readonly description = 'Extract structured content (title, headings, text, tables, links) from the current page.'
+  readonly permission: ToolPermission = 'read_only'
+  readonly inputSchema: ToolInputSchema = {
+    type: 'object',
+    properties: {
+      includeTables: { type: 'boolean', description: 'Whether to extract table rows and columns' },
+      includeLinks: { type: 'boolean', description: 'Whether to extract hyperlinks' },
+    },
+    required: [],
+  }
+
+  canRun(query: string): boolean {
+    return /\b(extract\s*content|extract\s*tables|extract\s*links|scrape\s*page|structured\s*data)\b/i.test(query)
+  }
+
+  async execute(input?: ToolInput, _ctx?: ToolContext): Promise<ToolResult> {
+    const blocker = availabilityBlocker(this.provider)
+    if (blocker) return blocker
+    try {
+      if (typeof this.provider.extractContent !== 'function') {
+        return { ok: false, message: 'Structured extraction is not supported by current provider.' }
+      }
+      const opts = {
+        includeTables: Boolean(input?.params?.includeTables),
+        includeLinks: Boolean(input?.params?.includeLinks),
+      }
+      const result = await this.provider.extractContent(opts)
+      return {
+        ok: true,
+        message: `${UNTRUSTED_PREFIX}Extracted ${result.headings.length} heading(s), ${result.tables.length} table(s), and ${result.links.length} link(s) from "${result.title}".`,
+        data: result,
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to extract content.'
+      return { ok: false, message }
+    }
+  }
+}
+
+/* ---------------------------------------------------------------- download */
+
+export class BrowserDownloadTool extends BrowserTool {
+  readonly id = 'browser.download'
+  readonly name = 'Download file'
+  readonly description = 'Download a file from a URL to a validated local destination with SHA-256 verification.'
+  readonly permission: ToolPermission = 'low_risk'
+  readonly verifiable = true
+  readonly inputSchema: ToolInputSchema = {
+    type: 'object',
+    properties: {
+      url: { type: 'string', description: 'Direct URL of file to download' },
+      destinationPath: { type: 'string', description: 'Local path where file will be saved' },
+    },
+    required: ['url', 'destinationPath'],
+  }
+
+  canRun(query: string): boolean {
+    return /\b(download\s*file|save\s*file|download\s*url)\b/i.test(query)
+  }
+
+  async execute(input?: ToolInput, _ctx?: ToolContext): Promise<ToolResult> {
+    const blocker = availabilityBlocker(this.provider)
+    if (blocker) return blocker
+    try {
+      if (typeof this.provider.download !== 'function') {
+        return { ok: false, message: 'File download is not supported by current provider.' }
+      }
+      const url = paramStr(input, 'url')
+      const dest = paramStr(input, 'destinationPath')
+      if (!url || !dest) {
+        return { ok: false, message: 'Both "url" and "destinationPath" parameters are required.' }
+      }
+      const result = await this.provider.download(url, dest)
+      return {
+        ok: true,
+        message: `File downloaded to ${result.path} (${result.size} bytes, sha256: ${result.sha256.slice(0, 12)}...).`,
+        data: result,
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Download failed.'
+      return { ok: false, message }
+    }
+  }
+
+  verify(_input?: ToolInput, result?: ToolResult, _ctx?: ToolContext): Promise<ToolVerification> {
+    const data = result?.data as { sha256?: string; size?: number } | undefined
+    if (data?.sha256 && typeof data.size === 'number' && data.size > 0) {
+      return Promise.resolve({ ok: true, message: 'Download integrity confirmed with SHA-256 hash.', checks: ['file_integrity'] })
+    }
+    return Promise.resolve({ ok: false, message: 'Download integrity verification failed.', checks: ['file_integrity'] })
+  }
+}
+
 /** All browser tools bound to one provider (empty when none supplied). */
 export function createBrowserTools(provider: BrowserProvider | undefined): Tool[] {
   if (!provider) return []
@@ -589,5 +905,12 @@ export function createBrowserTools(provider: BrowserProvider | undefined): Tool[
     new BrowserSearchTool(provider),
     new BrowserScreenshotTool(provider),
     new BrowserCloseTool(provider),
+    new BrowserListTabsTool(provider),
+    new BrowserNewTabTool(provider),
+    new BrowserSwitchTabTool(provider),
+    new BrowserCloseTabTool(provider),
+    new BrowserFillFormTool(provider),
+    new BrowserExtractContentTool(provider),
+    new BrowserDownloadTool(provider),
   ]
 }

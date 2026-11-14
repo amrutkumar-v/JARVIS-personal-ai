@@ -181,6 +181,7 @@ export interface JarvisState {
   setBackend(patch: Partial<BackendUiState>): void
   setSchedule(items: readonly ScheduledUiItem[]): void
   setPersistentTasks(tasks: PersistentTask[]): void
+  mergePersistentTasks(tasks: PersistentTask[]): void
   updatePersistentTask(task: PersistentTask): void
   setActiveTaskId(id: string | null): void
   setGesture(patch: Partial<GestureUiState>): void
@@ -394,6 +395,17 @@ const rawStore = create<JarvisState>()((set, get) => ({
   setBackend: (patch) => set({ backend: { ...get().backend, ...patch } }),
   setSchedule: (items) => set({ schedule: [...items] }),
   setPersistentTasks: (tasks) => set({ persistentTasks: tasks }),
+  /**
+   * Merge incoming tasks by id, preserving tasks that another source owns.
+   * The Task Monitor polls the backend while the HUD orchestrator runs tasks
+   * locally; neither source may erase the other's records.
+   */
+  mergePersistentTasks: (tasks) =>
+    set((state) => {
+      const byId = new Map(state.persistentTasks.map((t) => [t.id, t]))
+      for (const task of tasks) byId.set(task.id, task)
+      return { persistentTasks: [...byId.values()] }
+    }),
   updatePersistentTask: (task) =>
     set((state) => {
       const idx = state.persistentTasks.findIndex((t) => t.id === task.id)

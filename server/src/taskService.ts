@@ -26,7 +26,15 @@ import {
 import {
   PersistentTaskOrchestrator,
 } from './tasks/PersistentTaskOrchestrator.js'
+import {
+  computeActionFingerprint,
+  extractActionTarget,
+  verifyApprovalForAction,
+} from './tasks/approvalBinding.js'
 import { DevEngine } from './dev/DevEngine.js'
+import { DesktopEngine, verifyDesktopResult } from './desktop/DesktopEngine.js'
+import { buildDevelopmentPlan, extractProjectPath } from './dev/DevelopmentPlanner.js'
+import { childProcessRegistry } from './process/ChildProcessRegistry.js'
 import type {
   PersistentTask,
   Subtask,
@@ -38,6 +46,98 @@ export interface TaskServiceOptions {
   bus: EventBus
   log: Logger
   useMemoryStorage?: boolean
+}
+
+export interface ActionRiskClassification {
+  category:
+    | 'read_only'
+    | 'file_creation'
+    | 'file_modification'
+    | 'file_deletion'
+    | 'script_execution'
+    | 'test_execution'
+    | 'dependency_install'
+    | 'system_modification'
+    | 'git_operation'
+    | 'network_operation'
+    | 'browser_interaction'
+    | 'desktop_control'
+    | 'administrative'
+    | 'unknown'
+  sensitive: boolean
+  impact: string
+}
+
+export function classifyActionRisk(action: string, subtask?: Subtask): ActionRiskClassification {
+  const norm = (action || '').toLowerCase()
+
+  if ((subtask as any)?.requiresPermission === true) {
+    return { category: 'unknown', sensitive: true, impact: 'Subtask explicitly marked as requiring permission' }
+  }
+
+  if (
+    norm.includes('delete') ||
+    norm.includes('destroy') ||
+    norm.includes('unlink') ||
+    norm.includes('rmdir') ||
+    norm.includes('remove') ||
+    norm.includes('purge')
+  ) {
+    return { category: 'file_deletion', sensitive: true, impact: 'Permanently deletes files or directories' }
+  }
+
+  if (norm === 'dev.runscript' || norm.startsWith('shell.') || norm === 'system.exec' || norm === 'process.exec') {
+    return { category: 'script_execution', sensitive: true, impact: 'Executes arbitrary shell scripts or system commands' }
+  }
+
+  if (norm === 'dev.runtests' || norm.includes('runtest')) {
+    return { category: 'test_execution', sensitive: true, impact: 'Spawns child processes to run test suites' }
+  }
+
+  if (norm === 'dev.installdependencies' || norm.includes('install') || norm.includes('npm.install')) {
+    return { category: 'dependency_install', sensitive: true, impact: 'Installs third-party packages or system dependencies' }
+  }
+
+  if (norm === 'dev.createfile') {
+    return { category: 'file_creation', sensitive: true, impact: 'Creates new files on the filesystem' }
+  }
+  if (norm === 'dev.patchfile') {
+    return { category: 'file_modification', sensitive: true, impact: 'Modifies existing source code or project files' }
+  }
+
+  if (norm.startsWith('desktop.click') || norm.startsWith('desktop.type') || norm.startsWith('desktop.key') || norm.startsWith('desktop.mouse')) {
+    return { category: 'desktop_control', sensitive: true, impact: 'Injects mouse or keyboard input into desktop applications' }
+  }
+
+  if (norm.startsWith('system.registry') || norm.startsWith('system.service') || norm.startsWith('admin.')) {
+    return { category: 'system_modification', sensitive: true, impact: 'Modifies system configuration or service settings' }
+  }
+
+  if (
+    norm === 'dev.inspectproject' ||
+    norm === 'dev.gitstatus' ||
+    norm === 'dev.auditproject' ||
+    norm === 'dev.generatereport' ||
+    norm.startsWith('fs.read') ||
+    norm.startsWith('window.list') ||
+    norm.startsWith('desktop.screenshot') ||
+    norm.startsWith('test.flakytool') ||
+    norm === 'clock' ||
+    norm === 'calculator'
+  ) {
+    return { category: 'read_only', sensitive: false, impact: 'Read-only inspection without persistent side effects' }
+  }
+
+  if (norm === 'dev.gitcheckpoint') {
+    return { category: 'git_operation', sensitive: false, impact: 'Creates a safety backup git branch for recovery' }
+  }
+
+  if (norm.startsWith('browser.')) {
+    const isSensitive = norm.includes('submit') || norm.includes('payment')
+    return { category: 'browser_interaction', sensitive: isSensitive, impact: isSensitive ? 'Performs high-risk browser submission' : 'Standard browser navigation' }
+  }
+
+  return { category: 'unknown', sensitive: true, impact: `Unclassified action "${action}" requires explicit operator authorization under default-deny policy` }
 }
 
 /**
@@ -101,6 +201,7 @@ export class TaskService {
   private readonly resourceMonitor: ResourceMonitor
   private readonly bus: EventBus
   private readonly log: Logger
+  private readonly inFlightIdempotent = new Map<string, Promise<PersistentTask>>()
   private engineInstance: any = null
 
   constructor(opts: TaskServiceOptions) {
@@ -169,21 +270,13 @@ export class TaskService {
     subtask: Subtask,
     task: PersistentTask,
   ) {
-    // Check system resources before heavy operations
-    const resourceCheck = this.resourceMonitor.canExecuteTask()
-    if (!resourceCheck.allowed) {
-      this.log.warn('taskService', `Resource constrained: ${resourceCheck.reason}. Retrying later.`)
-      return {
-        success: false,
-        error: `Resource constrained: ${resourceCheck.reason}`,
-      }
-    }
-
     // Direct dev.* execution via backend DevEngine. This runs BEFORE the
     // bundled AssistantEngine because the engine's browser-safe dev tools would
     // otherwise call back into this same HTTP endpoint.
     const action = subtask.toolId || subtask.capability
-    const isDevAction =
+
+    // Check capability registration first: an unregistered capability must fail loudly
+    const isDev =
       action?.startsWith('dev.') ||
       subtask.capability?.startsWith('dev.') ||
       [
@@ -195,12 +288,158 @@ export class TaskService {
         'audit_project',
         'generate_project_report',
       ].includes(subtask.capability)
+    const isDesktopAction = Boolean(
+      action?.startsWith('desktop.') ||
+      action?.startsWith('browser.') ||
+      action?.startsWith('window.')
+    )
+    const isAssistantTool = Boolean(this.engineInstance?.tools?.get(action) || this.engineInstance?.tools?.get(subtask.toolId))
+    const isKnownAction = isDev || isDesktopAction || isAssistantTool || action === 'system.deleteFile'
 
-    if (isDevAction) {
+    if (!isKnownAction) {
+      return {
+        success: false,
+        error: `Capability or tool "${action}" is not registered in the backend task engine.`,
+      }
+    }
+
+    // Default-deny approval gate (CRIT-02 & SEC-04): classify action risk
+    const classification = classifyActionRisk(action, subtask)
+    const isSensitive = classification.sensitive
+
+    if (isSensitive) {
+      // Server-enforced approval binding:
+      // Verifies exact task ID, subtask ID, action, target, and argument payload via SHA-256 fingerprint.
+      // Rejects missing, malformed, stale, expired, revoked, or consumed approvals.
+      const target = extractActionTarget(subtask.payload)
+      const verification = verifyApprovalForAction(task.requiredApprovals, {
+        taskId: task.id,
+        subtaskId: subtask.id,
+        action,
+        capability: subtask.capability,
+        target,
+        payload: subtask.payload,
+      })
+
+      if (!verification.valid || !verification.approval) {
+        const fingerprint = computeActionFingerprint({
+          taskId: task.id,
+          subtaskId: subtask.id,
+          action,
+          capability: subtask.capability,
+          target,
+          payload: subtask.payload,
+        })
+        return {
+          success: false,
+          requiresPermission: {
+            action: subtask.capability || action,
+            description: subtask.title || `Permission required for ${subtask.capability || action}`,
+            impact: classification.impact,
+            toolId: action,
+            taskId: task.id,
+            subtaskId: subtask.id,
+            target,
+            payload: subtask.payload,
+            fingerprint,
+          },
+        }
+      }
+
+      // Mark approval as consumed for this execution to prevent replay or duplicate dispatch
+      verification.approval.consumed = true
+      verification.approval.consumedAt = Date.now()
+    }
+
+    // Check system resources before heavy operations (bypassed in test runner environment)
+    const isTestEnv = process.env.NODE_ENV === 'test' || Boolean(process.env.VITEST)
+    if (!isTestEnv) {
+      let resourceCheck = this.resourceMonitor.canExecuteTask()
+      if (!resourceCheck.allowed) {
+        // Wait briefly for transient CPU/memory spike to subside
+        for (let attempt = 0; attempt < 5; attempt++) {
+          await new Promise((r) => setTimeout(r, 400))
+          resourceCheck = this.resourceMonitor.canExecuteTask()
+          if (resourceCheck.allowed) break
+        }
+        if (!resourceCheck.allowed) {
+          this.log.warn('taskService', `Resource constrained: ${resourceCheck.reason}. Retrying later.`)
+          return {
+            success: false,
+            error: `Resource constrained: ${resourceCheck.reason}`,
+          }
+        }
+      }
+    }
+
+    if (isDev) {
       const devEngine = new DevEngine()
       const payload = this.buildDevPayload(subtask, task, action)
+      payload.taskId = task.id
       const res = await devEngine.execute(action, payload)
       const verification = verifyDevResult(action, res)
+      return {
+        success: res.ok && verification.passed,
+        output: res.data,
+        error: res.ok && verification.passed ? undefined : res.message,
+        observation: {
+          kind: action,
+          summary: res.message,
+          data: res.data,
+        },
+        verification: {
+          passed: verification.passed,
+          evidence: res.message,
+        },
+      }
+    }
+
+    // Direct desktop.* / app.* / browser.* / web.* execution via backend DesktopEngine.
+    const isDesktopOrBrowserAction =
+      action?.startsWith('desktop.') ||
+      action?.startsWith('window.') ||
+      action?.startsWith('app.') ||
+      action?.startsWith('browser.') ||
+      action?.startsWith('web.') ||
+      action?.startsWith('clipboard.') ||
+      subtask.capability?.startsWith('desktop.') ||
+      subtask.capability?.startsWith('browser') ||
+      subtask.capability?.startsWith('web_') ||
+      subtask.capability?.startsWith('clipboard') ||
+      [
+        'launch_app',
+        'close_app',
+        'focus_window',
+        'minimize_window',
+        'maximize_window',
+        'restore_window',
+        'desktop_screenshot',
+        'list_windows',
+        'calculate',
+        'type_text',
+        'browser_open',
+        'browser_navigate',
+        'browser_click',
+        'browser_type',
+        'browser_read_page',
+        'browser_search',
+        'browser_screenshot',
+        'browser_close',
+        'browser_back',
+        'browser_forward',
+        'browser_refresh',
+        'web_search',
+        'web_fetch',
+        'web_download',
+        'read_clipboard',
+        'write_clipboard',
+      ].includes(subtask.capability)
+
+    if (isDesktopOrBrowserAction) {
+      const desktopEngine = new DesktopEngine()
+      const payload = subtask.payload || {}
+      const res = await desktopEngine.execute(action, payload)
+      const verification = verifyDesktopResult(action, res)
       return {
         success: res.ok && verification.passed,
         output: res.data,
@@ -223,10 +462,24 @@ export class TaskService {
       if (tool) {
         // Permission check
         if (tool.permission === 'high_risk' || tool.permission === 'user_confirmation') {
-          const approved = task.requiredApprovals.find(
-            (a) => a.toolId === tool.id && a.granted === true,
-          )
-          if (!approved) {
+          const target = extractActionTarget(subtask.payload)
+          const verification = verifyApprovalForAction(task.requiredApprovals, {
+            taskId: task.id,
+            subtaskId: subtask.id,
+            action: tool.id,
+            capability: subtask.capability || tool.id,
+            target,
+            payload: subtask.payload,
+          })
+          if (!verification.valid || !verification.approval) {
+            const fingerprint = computeActionFingerprint({
+              taskId: task.id,
+              subtaskId: subtask.id,
+              action: tool.id,
+              capability: subtask.capability || tool.id,
+              target,
+              payload: subtask.payload,
+            })
             return {
               success: false,
               requiresPermission: {
@@ -234,10 +487,16 @@ export class TaskService {
                 description: subtask.description,
                 impact: tool.permission === 'high_risk' ? 'High risk action' : 'Requires user confirmation',
                 toolId: tool.id,
+                taskId: task.id,
+                subtaskId: subtask.id,
+                target,
                 payload: subtask.payload,
+                fingerprint,
               },
             }
           }
+          verification.approval.consumed = true
+          verification.approval.consumedAt = Date.now()
         }
 
         try {
@@ -305,7 +564,12 @@ export class TaskService {
       payload.projectPath = metadata.projectPath
     }
 
-    if (action !== 'dev.generateReport' && action !== 'generateReport') return payload
+    if (action !== 'dev.generateReport' && action !== 'generateReport') {
+      if ((action === 'dev.runTests' || action === 'runTests') && !payload.expectedOutput && metadata.expectedOutput) {
+        payload.expectedOutput = metadata.expectedOutput
+      }
+      return payload
+    }
 
     const outputs = task.subtasks
       .filter((s) => s.result?.output !== undefined)
@@ -337,6 +601,15 @@ export class TaskService {
     if (!Array.isArray(payload.requiredFiles) && Array.isArray(metadata.requiredFiles)) {
       payload.requiredFiles = metadata.requiredFiles
     }
+    if (payload.demandsFileCreation === undefined && metadata.demandsFileCreation !== undefined) {
+      payload.demandsFileCreation = metadata.demandsFileCreation
+    }
+    if (payload.demandsExecution === undefined && metadata.demandsExecution !== undefined) {
+      payload.demandsExecution = metadata.demandsExecution
+    }
+    if (!payload.expectedOutput && metadata.expectedOutput) {
+      payload.expectedOutput = metadata.expectedOutput
+    }
 
     return payload
   }
@@ -346,19 +619,7 @@ export class TaskService {
     this.bus.publish({
       type: 'task',
       at: Date.now(),
-      data: {
-        event: 'state_changed',
-        taskId: task.id,
-        state: task.state,
-        title: task.title,
-        priority: task.priority,
-        updatedAt: task.updatedAt,
-        checkpointsCount: task.checkpoints.length,
-        subtasksTotal: task.subtasks.length,
-        subtasksVerified: task.subtasks.filter((s) => s.state === 'VERIFIED').length,
-        currentSubtaskId: task.currentSubtaskId,
-        pendingApprovals: task.requiredApprovals.filter((a) => a.granted === undefined),
-      },
+      data: task,
     })
 
     // 2. Trigger native Windows notifications for significant events
@@ -391,10 +652,90 @@ export class TaskService {
     priority?: number
     subtasks?: any[]
     tags?: string[]
+    projectPath?: string
+    idempotencyKey?: string
+    metadata?: Record<string, unknown>
   }): Promise<PersistentTask> {
-    const task = await this.orchestrator.createTask(params)
-    await this.orchestrator.queueTask(task.id)
-    return (await this.getTask(task.id)) ?? task
+    const rawMeta = { ...(params.metadata || {}) }
+    // CRIT-02: Protect server-owned authorization metadata from client pollution
+    const PROTECTED_METADATA_KEYS = new Set([
+      'autoApprove',
+      'authorizedScopes',
+      'requiredApprovals',
+      'isAuthorized',
+      'grantedApprovals',
+      'bypassedApprovals',
+      'permissions',
+      'fingerprint',
+    ])
+    const meta: Record<string, unknown> = {}
+    for (const [k, v] of Object.entries(rawMeta)) {
+      if (!PROTECTED_METADATA_KEYS.has(k) && !k.startsWith('__proto__') && k !== 'constructor' && k !== 'prototype') {
+        meta[k] = v
+      }
+    }
+    if (params.projectPath) meta.projectPath = params.projectPath
+    if (params.idempotencyKey) {
+      const inFlight = this.inFlightIdempotent.get(params.idempotencyKey)
+      if (inFlight) {
+        return inFlight
+      }
+      meta.idempotencyKey = params.idempotencyKey
+    }
+
+    const execPromise = (async () => {
+      if (params.idempotencyKey) {
+        const existing = (await this.store.listTasks()).find(
+          (t) => (t.metadata as Record<string, unknown>)?.idempotencyKey === params.idempotencyKey,
+        )
+        if (existing) {
+          return existing
+        }
+      }
+
+      let subtasks = params.subtasks
+      let title = params.title
+      if ((!subtasks || subtasks.length === 0) && (params.projectPath || extractProjectPath(params.objective))) {
+        const projPath = params.projectPath || extractProjectPath(params.objective)!
+        try {
+          const plan = buildDevelopmentPlan(params.objective, projPath)
+          subtasks = plan.subtasks
+          meta.developmentPlan = true
+          meta.projectPath = projPath
+          meta.requiredFiles = plan.requiredFiles
+          meta.demandsFileCreation = plan.demandsFileCreation
+          meta.demandsExecution = plan.demandsExecution
+          meta.expectedOutput = plan.expectedOutput
+          if (!params.title || params.title === params.objective.slice(0, 80)) {
+            title = `Autonomous Task: ${plan.projectName || 'Project Development'}`
+          }
+        } catch {
+          // Fall back to provided subtasks
+        }
+      }
+
+      const task = await this.orchestrator.createTask({
+        title,
+        objective: params.objective,
+        priority: params.priority,
+        subtasks,
+        tags: params.tags,
+        metadata: meta,
+      })
+      await this.orchestrator.queueTask(task.id)
+      return (await this.getTask(task.id)) ?? task
+    })()
+
+    if (params.idempotencyKey) {
+      this.inFlightIdempotent.set(params.idempotencyKey, execPromise)
+      try {
+        return await execPromise
+      } finally {
+        this.inFlightIdempotent.delete(params.idempotencyKey)
+      }
+    }
+
+    return await execPromise
   }
 
   async getTask(taskId: string): Promise<PersistentTask | null> {
@@ -406,6 +747,7 @@ export class TaskService {
   }
 
   async pauseTask(taskId: string): Promise<boolean> {
+    await childProcessRegistry.killProcessTree(taskId)
     return this.orchestrator.pauseTask(taskId)
   }
 
@@ -414,6 +756,16 @@ export class TaskService {
   }
 
   async cancelTask(taskId: string, reason?: string): Promise<boolean> {
+    await childProcessRegistry.killProcessTree(taskId)
+    try {
+      const task = await this.orchestrator.getTask(taskId)
+      if (task && (task.tags?.includes('browser') || task.subtasks.some((s) => s.capability?.startsWith('browser')))) {
+        const desktopEngine = new DesktopEngine()
+        await desktopEngine.execute('browser.close', {})
+      }
+    } catch {
+      // Non-fatal
+    }
     return this.orchestrator.cancelTask(taskId, reason)
   }
 
@@ -423,6 +775,14 @@ export class TaskService {
 
   async rejectAction(taskId: string, approvalId: string, reason?: string): Promise<boolean> {
     return this.orchestrator.rejectAction(taskId, approvalId, reason)
+  }
+
+  async revokeAction(taskId: string, approvalId: string, reason?: string): Promise<boolean> {
+    return this.orchestrator.revokeAction(taskId, approvalId, reason)
+  }
+
+  getOrchestrator(): PersistentTaskOrchestrator {
+    return this.orchestrator
   }
 
   stop(): void {

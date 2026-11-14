@@ -67,6 +67,8 @@ function App() {
           onCaptureCamera: assistant.captureCamera,
           onSetCameraVideo: assistant.setCameraVideo,
           applicationProvider: () => assistant.engine.applicationProvider,
+          observationProvider: () => assistant.engine.observationProvider,
+          desktopProvider: () => assistant.engine.desktopProvider,
           onStopSpeaking: assistant.stopSpeaking,
           onInterrupt: assistant.interrupt,
           backendClient: assistant.backendClient,

@@ -8,6 +8,7 @@ import type {
   NativeDesktopMoveResult,
   NativeCursorResult,
   NativeDesktopScrollResult,
+  NativeDesktopWindowStateResult,
 } from './protocol.js'
 
 /**
@@ -78,6 +79,15 @@ export interface DesktopInteractionBackend {
 
   /** Bring a window to the foreground; `focused` reflects the POST-attempt state. */
   focusWindow(windowId: string): Promise<NativeDesktopFocusResult>
+
+  /** Minimize a window. */
+  minimizeWindow(windowId: string): Promise<NativeDesktopWindowStateResult>
+
+  /** Maximize a window. */
+  maximizeWindow(windowId: string): Promise<NativeDesktopWindowStateResult>
+
+  /** Restore a window to normal state. */
+  restoreWindow(windowId: string): Promise<NativeDesktopWindowStateResult>
 }
 
 /* ---------------------------------------------------------------- safety */

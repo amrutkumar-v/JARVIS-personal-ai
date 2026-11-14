@@ -126,6 +126,8 @@ function formatResult(value: number): string {
 /** Pull the most likely arithmetic expression out of a sentence. */
 function extractExpression(query: string): string | null {
   const normalized = query
+    .replace(/(\d+(?:\.\d+)?)\s*(?:%|percent|percentage)\s+(?:of\s+)?(\d+(?:\.\d+)?)/gi, '($1/100)*$2')
+    .replace(/(\d+(?:\.\d+)?)\s*(?:to\s+the\s+power\s+of|\^|power\s+of)\s*(\d+(?:\.\d+)?)/gi, '$1^$2')
     .replace(/×/g, '*')
     .replace(/÷/g, '/')
     .replace(/\bplus\b/gi, '+')
@@ -145,7 +147,7 @@ export class CalculatorTool implements Tool {
   readonly name = 'Calculator'
   readonly description =
     'Evaluates a safe arithmetic expression. Pass the expression to compute: + - * / % ^ and parentheses are supported.'
-  readonly permission: ToolPermission = 'low_risk'
+  readonly permission: ToolPermission = 'read_only'
   readonly requiresPermission = false
   readonly inputSchema = {
     type: 'object' as const,
@@ -161,8 +163,8 @@ export class CalculatorTool implements Tool {
   canRun(query: string): boolean {
     return (
       /(?:\d\s*[-+*/^%]\s*\d)/.test(query) ||
-      /^(?:calculate|compute)\b/i.test(query) ||
-      /\b(?:add|multiply|subtract|divide)\b/i.test(query)
+      /^(?:calculate|compute|evaluate|what\s+is)\b/i.test(query) ||
+      /\b(?:add|multiply|subtract|divide|percent|percentage|power\s+of)\b/i.test(query)
     )
   }
 

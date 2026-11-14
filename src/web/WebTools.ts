@@ -1,6 +1,7 @@
 import type { Tool, ToolCategory, ToolContext, ToolContextId, ToolInput, ToolPermission, ToolResult } from '../tools/Tool'
 import type { ToolInputSchema } from '../engine/provider'
 import { cleanSearchQuery } from '../engine/orchestrator/searchQuery'
+import { ResearchEngine } from '../engine/research/ResearchEngine'
 import type { WebProvider } from './provider'
 
 const WEB_REASON = 'The native Windows agent is not connected, so web access is unavailable right now.'
@@ -226,8 +227,70 @@ export class WebDownloadTool extends WebTool {
   }
 }
 
+/* ---------------------------------------------------------------- deep research */
+
+export class WebDeepResearchTool extends WebTool {
+  readonly id = 'web.deep_research'
+  readonly name = 'Deep research & synthesis'
+  readonly description =
+    'Conduct multi-source web research, parallel document retrieval, fact cross-checking, and structured report synthesis with inline citations. ' +
+    'Produces an executive summary, corroborated findings with [1][2] citations, discrepancy analysis, and source table.'
+  readonly permission: ToolPermission = 'read_only'
+  readonly inputSchema: ToolInputSchema = {
+    type: 'object',
+    properties: {
+      query: { type: 'string', description: 'The research topic or question to investigate.' },
+      depth: { type: 'string', description: 'Optional depth of research: brief, detailed, or deep (default: detailed).' },
+      maxSources: { type: 'number', description: 'Optional maximum number of sources to evaluate (1..10, default: 6).' },
+    },
+    required: ['query'],
+  }
+
+  private readonly engine: ResearchEngine
+
+  constructor(provider: WebProvider, engine?: ResearchEngine) {
+    super(provider)
+    this.engine = engine ?? new ResearchEngine(provider)
+  }
+
+  canRun(query: string): boolean {
+    return /\b(research|investigate|deep dive|literature search|comprehensive search|in-depth)\b/i.test(query)
+  }
+
+  async execute(input: ToolInput): Promise<ToolResult> {
+    const blocker = availabilityBlocker(this.provider)
+    if (blocker) return blocker
+    const rawQuery = paramStr(input, 'query') ?? ''
+    const query = validateQuery(rawQuery)
+    if (!query) {
+      return { ok: false, message: 'A research query is required.', data: { kind: 'invalid_input' } }
+    }
+    const depth = (input.params?.depth as 'brief' | 'detailed' | 'deep') || 'detailed'
+    const maxSources = Math.min(Math.max(paramNum(input, 'maxSources') ?? 6, 1), 10)
+
+    try {
+      const report = await this.engine.conductResearch(query, { depth, maxSources })
+      return {
+        ok: true,
+        message: `${UNTRUSTED_PREFIX}Research report compiled successfully:\n\n${report.markdown}`,
+        data: { ...report, untrusted: true },
+      }
+    } catch (error) {
+      return {
+        ok: false,
+        message: error instanceof Error ? error.message : 'Deep research failed.',
+      }
+    }
+  }
+}
+
 /** Bind web tools to a provider; absent provider => zero tools. */
 export function createWebTools(provider: WebProvider | undefined): Tool[] {
   if (!provider) return []
-  return [new WebSearchTool(provider), new WebFetchTool(provider), new WebDownloadTool(provider)]
+  return [
+    new WebSearchTool(provider),
+    new WebFetchTool(provider),
+    new WebDownloadTool(provider),
+    new WebDeepResearchTool(provider),
+  ]
 }

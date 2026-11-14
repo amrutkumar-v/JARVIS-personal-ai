@@ -10,7 +10,7 @@ describe('backend native RPC boundary', () => {
     const nativeMethods = listBody?.match(/'[^']+'/g)?.map((method) => method.slice(1, -1))
     expect(nativeMethods).toBeDefined()
     expect(NATIVE_RPC_METHODS).toEqual(nativeMethods)
-    expect(NATIVE_RPC_METHODS).toHaveLength(48)
+    expect(NATIVE_RPC_METHODS).toHaveLength(62)
     expect(NATIVE_RPC_METHODS).not.toContain('exec')
     expect(NATIVE_RPC_METHODS).not.toContain('shell')
     expect(NATIVE_RPC_METHODS).not.toContain('cmd')

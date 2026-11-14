@@ -181,6 +181,11 @@ describe('PersistentTaskOrchestrator (Phase B)', () => {
 
     // Simulate Subtask 1 was verified and checkpoint saved
     task.subtasks[0].state = 'VERIFIED'
+    task.subtasks[0].verification = {
+      passed: true,
+      evidence: 'Phase 1 completed and verified',
+      timestamp: Date.now() - 5000,
+    }
     task.subtasks[1].dependencies = [task.subtasks[0].id]
     task.checkpoints.push({
       checkpointId: 'cp-step1',

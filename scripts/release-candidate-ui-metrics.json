@@ -1,0 +1,316 @@
+{
+  "timestamp": "2026-11-13T05:46:02.743Z",
+  "overallStatus": "VERIFIED",
+  "viewportsTested": 4,
+  "viewportsPassed": 4,
+  "results": [
+    {
+      "viewport": "1440px_desktop",
+      "width": 1440,
+      "height": 900,
+      "baseline": {
+        "topbar": {
+          "x": 240,
+          "y": 0,
+          "width": 1200,
+          "height": 54,
+          "visible": true
+        },
+        "sidebar": {
+          "x": 0,
+          "y": 0,
+          "width": 240,
+          "height": 900,
+          "visible": true
+        },
+        "dock": {
+          "x": 240,
+          "y": 812,
+          "width": 1200,
+          "height": 88,
+          "visible": true
+        },
+        "cardsGrid": {
+          "x": 290,
+          "y": 317,
+          "width": 1100,
+          "height": 183,
+          "visible": true
+        },
+        "openPanelsCount": 1
+      },
+      "panelWindow": {
+        "x": 1156,
+        "y": 70,
+        "width": 268,
+        "height": 260
+      },
+      "checks": [
+        {
+          "name": "Nominal Launch Panel State (Activity HUD Open)",
+          "passed": true,
+          "details": "Open panels on launch: 1 (default Activity widget)"
+        },
+        {
+          "name": "Topbar Position & Height",
+          "passed": true,
+          "details": "y=0, h=54"
+        },
+        {
+          "name": "Dock Streamlined Height (< 90px)",
+          "passed": true,
+          "details": "h=88px"
+        },
+        {
+          "name": "Zero Collision with Topbar",
+          "passed": true,
+          "details": "Header collision: false"
+        },
+        {
+          "name": "Zero Collision with Dock",
+          "passed": true,
+          "details": "Dock collision: false"
+        },
+        {
+          "name": "No Viewport Clipping",
+          "passed": true,
+          "details": "Panel rect: (1156, 70, 268x260)"
+        }
+      ],
+      "passed": true,
+      "defaultScreenshot": "docs\\release-candidate\\screenshots\\rc_1440px_desktop_default.png",
+      "panelScreenshot": "docs\\release-candidate\\screenshots\\rc_1440px_desktop_panels.png"
+    },
+    {
+      "viewport": "1024px_laptop",
+      "width": 1024,
+      "height": 768,
+      "baseline": {
+        "topbar": {
+          "x": 64,
+          "y": 0,
+          "width": 960,
+          "height": 54,
+          "visible": true
+        },
+        "sidebar": {
+          "x": 0,
+          "y": 0,
+          "width": 64,
+          "height": 768,
+          "visible": true
+        },
+        "dock": {
+          "x": 64,
+          "y": 680,
+          "width": 960,
+          "height": 88,
+          "visible": true
+        },
+        "cardsGrid": {
+          "x": 95,
+          "y": 317,
+          "width": 899,
+          "height": 381,
+          "visible": true
+        },
+        "openPanelsCount": 1
+      },
+      "panelWindow": {
+        "x": 740,
+        "y": 70,
+        "width": 268,
+        "height": 260
+      },
+      "checks": [
+        {
+          "name": "Nominal Launch Panel State (Activity HUD Open)",
+          "passed": true,
+          "details": "Open panels on launch: 1 (default Activity widget)"
+        },
+        {
+          "name": "Topbar Position & Height",
+          "passed": true,
+          "details": "y=0, h=54"
+        },
+        {
+          "name": "Dock Streamlined Height (< 90px)",
+          "passed": true,
+          "details": "h=88px"
+        },
+        {
+          "name": "Zero Collision with Topbar",
+          "passed": true,
+          "details": "Header collision: false"
+        },
+        {
+          "name": "Zero Collision with Dock",
+          "passed": true,
+          "details": "Dock collision: false"
+        },
+        {
+          "name": "No Viewport Clipping",
+          "passed": true,
+          "details": "Panel rect: (740, 70, 268x260)"
+        }
+      ],
+      "passed": true,
+      "defaultScreenshot": "docs\\release-candidate\\screenshots\\rc_1024px_laptop_default.png",
+      "panelScreenshot": "docs\\release-candidate\\screenshots\\rc_1024px_laptop_panels.png"
+    },
+    {
+      "viewport": "768px_tablet",
+      "width": 768,
+      "height": 1024,
+      "baseline": {
+        "topbar": {
+          "x": 0,
+          "y": 0,
+          "width": 768,
+          "height": 54,
+          "visible": true
+        },
+        "sidebar": {
+          "x": -260,
+          "y": 0,
+          "width": 260,
+          "height": 1024,
+          "visible": true
+        },
+        "dock": {
+          "x": 0,
+          "y": 936,
+          "width": 768,
+          "height": 88,
+          "visible": true
+        },
+        "cardsGrid": {
+          "x": 23,
+          "y": 301,
+          "width": 722,
+          "height": 381,
+          "visible": true
+        },
+        "openPanelsCount": 1
+      },
+      "panelWindow": {
+        "x": 488,
+        "y": 66,
+        "width": 268,
+        "height": 260
+      },
+      "checks": [
+        {
+          "name": "Nominal Launch Panel State (Activity HUD Open)",
+          "passed": true,
+          "details": "Open panels on launch: 1 (default Activity widget)"
+        },
+        {
+          "name": "Topbar Position & Height",
+          "passed": true,
+          "details": "y=0, h=54"
+        },
+        {
+          "name": "Dock Streamlined Height (< 90px)",
+          "passed": true,
+          "details": "h=88px"
+        },
+        {
+          "name": "Zero Collision with Topbar",
+          "passed": true,
+          "details": "Header collision: false"
+        },
+        {
+          "name": "Zero Collision with Dock",
+          "passed": true,
+          "details": "Dock collision: false"
+        },
+        {
+          "name": "No Viewport Clipping",
+          "passed": true,
+          "details": "Panel rect: (488, 66, 268x260)"
+        }
+      ],
+      "passed": true,
+      "defaultScreenshot": "docs\\release-candidate\\screenshots\\rc_768px_tablet_default.png",
+      "panelScreenshot": "docs\\release-candidate\\screenshots\\rc_768px_tablet_panels.png"
+    },
+    {
+      "viewport": "390px_mobile",
+      "width": 390,
+      "height": 844,
+      "baseline": {
+        "topbar": {
+          "x": 0,
+          "y": 0,
+          "width": 390,
+          "height": 54,
+          "visible": true
+        },
+        "sidebar": {
+          "x": -260,
+          "y": 0,
+          "width": 260,
+          "height": 844,
+          "visible": true
+        },
+        "dock": {
+          "x": 0,
+          "y": 757,
+          "width": 390,
+          "height": 87,
+          "visible": true
+        },
+        "cardsGrid": {
+          "x": 16,
+          "y": 360,
+          "width": 358,
+          "height": 779,
+          "visible": true
+        },
+        "openPanelsCount": 1
+      },
+      "panelWindow": {
+        "x": 110,
+        "y": 66,
+        "width": 268,
+        "height": 260
+      },
+      "checks": [
+        {
+          "name": "Nominal Launch Panel State (Activity HUD Open)",
+          "passed": true,
+          "details": "Open panels on launch: 1 (default Activity widget)"
+        },
+        {
+          "name": "Topbar Position & Height",
+          "passed": true,
+          "details": "y=0, h=54"
+        },
+        {
+          "name": "Dock Streamlined Height (< 90px)",
+          "passed": true,
+          "details": "h=87px"
+        },
+        {
+          "name": "Zero Collision with Topbar",
+          "passed": true,
+          "details": "Header collision: false"
+        },
+        {
+          "name": "Zero Collision with Dock",
+          "passed": true,
+          "details": "Dock collision: false"
+        },
+        {
+          "name": "No Viewport Clipping",
+          "passed": true,
+          "details": "Panel rect: (110, 66, 268x260)"
+        }
+      ],
+      "passed": true,
+      "defaultScreenshot": "docs\\release-candidate\\screenshots\\rc_390px_mobile_default.png",
+      "panelScreenshot": "docs\\release-candidate\\screenshots\\rc_390px_mobile_panels.png"
+    }
+  ]
+}

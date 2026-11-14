@@ -88,6 +88,7 @@ export class NativeWindowsObservationProvider implements ObservationProvider {
       maximized: w.maximized,
       bounds: w.bounds,
       clientBounds: w.clientBounds,
+      isForeground: w.isForeground,
     }
   }
 }

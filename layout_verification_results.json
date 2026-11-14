@@ -1,0 +1,506 @@
+{
+  "timestamp": "2026-11-12T19:01:15.478Z",
+  "viewports": {
+    "1440px_desktop": {
+      "viewport": {
+        "name": "1440px_desktop",
+        "width": 1440,
+        "height": 900,
+        "isMobile": false
+      },
+      "metrics": {
+        "topbar": {
+          "selector": ".jarvis-topbar",
+          "x": 240,
+          "y": 0,
+          "width": 1200,
+          "height": 54,
+          "visible": true
+        },
+        "sidebar": {
+          "selector": ".jarvis-taskbar",
+          "x": 0,
+          "y": 0,
+          "width": 240,
+          "height": 900,
+          "visible": true
+        },
+        "stage": {
+          "selector": ".jarvis-stage",
+          "x": 240,
+          "y": 54,
+          "width": 1200,
+          "height": 758,
+          "visible": true
+        },
+        "hero": {
+          "selector": ".dashboard-hero",
+          "x": 440,
+          "y": 82,
+          "width": 800,
+          "height": 215,
+          "visible": true
+        },
+        "dock": {
+          "selector": ".jarvis-dock",
+          "x": 240,
+          "y": 812,
+          "width": 1200,
+          "height": 88,
+          "visible": true
+        },
+        "dockBar": {
+          "selector": ".jarvis-dock-bar",
+          "x": 450,
+          "y": 820,
+          "width": 780,
+          "height": 49,
+          "visible": true
+        },
+        "cardsGrid": {
+          "selector": ".dashboard-cards-grid",
+          "x": 290,
+          "y": 317,
+          "width": 1100,
+          "height": 183,
+          "visible": true
+        },
+        "cards": [
+          {
+            "title": "Neural Engine",
+            "x": 290,
+            "y": 317,
+            "width": 263,
+            "height": 183
+          },
+          {
+            "title": "Task Orchestrator",
+            "x": 569,
+            "y": 317,
+            "width": 263,
+            "height": 183
+          },
+          {
+            "title": "Sensors & Vision",
+            "x": 848,
+            "y": 317,
+            "width": 263,
+            "height": 183
+          },
+          {
+            "title": "Event Activity",
+            "x": 1127,
+            "y": 317,
+            "width": 263,
+            "height": 183
+          }
+        ],
+        "openPanels": []
+      },
+      "checks": [
+        {
+          "name": "Topbar Height & Position",
+          "passed": true,
+          "details": "y=0, h=54"
+        },
+        {
+          "name": "Dock Streamlined Height (< 90px)",
+          "passed": true,
+          "details": "Actual dock height: 88px"
+        },
+        {
+          "name": "Pristine Launch (0 Auxiliary Panels Open)",
+          "passed": true,
+          "details": "Open panels on launch: 0"
+        },
+        {
+          "name": "Dashboard Cards Within Viewport Bounds",
+          "passed": true,
+          "details": "x=290, w=1100, vp.width=1440"
+        },
+        {
+          "name": "Opened Tool Window Clamped Inside Workspace (No Clipping)",
+          "passed": true,
+          "details": "Panel rect: (344, 144, 380x460) in viewport 1440x900"
+        }
+      ],
+      "passed": true
+    },
+    "1024px_laptop": {
+      "viewport": {
+        "name": "1024px_laptop",
+        "width": 1024,
+        "height": 768,
+        "isMobile": false
+      },
+      "metrics": {
+        "topbar": {
+          "selector": ".jarvis-topbar",
+          "x": 64,
+          "y": 0,
+          "width": 960,
+          "height": 54,
+          "visible": true
+        },
+        "sidebar": {
+          "selector": ".jarvis-taskbar",
+          "x": 0,
+          "y": 0,
+          "width": 64,
+          "height": 768,
+          "visible": true
+        },
+        "stage": {
+          "selector": ".jarvis-stage",
+          "x": 64,
+          "y": 54,
+          "width": 960,
+          "height": 626,
+          "visible": true
+        },
+        "hero": {
+          "selector": ".dashboard-hero",
+          "x": 144,
+          "y": 82,
+          "width": 800,
+          "height": 215,
+          "visible": true
+        },
+        "dock": {
+          "selector": ".jarvis-dock",
+          "x": 64,
+          "y": 680,
+          "width": 960,
+          "height": 88,
+          "visible": true
+        },
+        "dockBar": {
+          "selector": ".jarvis-dock-bar",
+          "x": 154,
+          "y": 688,
+          "width": 780,
+          "height": 49,
+          "visible": true
+        },
+        "cardsGrid": {
+          "selector": ".dashboard-cards-grid",
+          "x": 95,
+          "y": 317,
+          "width": 899,
+          "height": 381,
+          "visible": true
+        },
+        "cards": [
+          {
+            "title": "Neural Engine",
+            "x": 95,
+            "y": 317,
+            "width": 289,
+            "height": 183
+          },
+          {
+            "title": "Task Orchestrator",
+            "x": 400,
+            "y": 317,
+            "width": 289,
+            "height": 183
+          },
+          {
+            "title": "Sensors & Vision",
+            "x": 704,
+            "y": 317,
+            "width": 289,
+            "height": 183
+          },
+          {
+            "title": "Event Activity",
+            "x": 95,
+            "y": 515,
+            "width": 289,
+            "height": 183
+          }
+        ],
+        "openPanels": []
+      },
+      "checks": [
+        {
+          "name": "Topbar Height & Position",
+          "passed": true,
+          "details": "y=0, h=54"
+        },
+        {
+          "name": "Dock Streamlined Height (< 90px)",
+          "passed": true,
+          "details": "Actual dock height: 88px"
+        },
+        {
+          "name": "Pristine Launch (0 Auxiliary Panels Open)",
+          "passed": true,
+          "details": "Open panels on launch: 0"
+        },
+        {
+          "name": "Dashboard Cards Within Viewport Bounds",
+          "passed": true,
+          "details": "x=95, w=899, vp.width=1024"
+        },
+        {
+          "name": "Opened Tool Window Clamped Inside Workspace (No Clipping)",
+          "passed": true,
+          "details": "Panel rect: (344, 144, 380x460) in viewport 1024x768"
+        }
+      ],
+      "passed": true
+    },
+    "768px_tablet": {
+      "viewport": {
+        "name": "768px_tablet",
+        "width": 768,
+        "height": 1024,
+        "isMobile": true
+      },
+      "metrics": {
+        "topbar": {
+          "selector": ".jarvis-topbar",
+          "x": 0,
+          "y": 0,
+          "width": 768,
+          "height": 54,
+          "visible": true
+        },
+        "sidebar": {
+          "selector": ".jarvis-taskbar",
+          "x": -260,
+          "y": 0,
+          "width": 260,
+          "height": 1024,
+          "visible": true
+        },
+        "stage": {
+          "selector": ".jarvis-stage",
+          "x": 0,
+          "y": 54,
+          "width": 768,
+          "height": 882,
+          "visible": true
+        },
+        "hero": {
+          "selector": ".dashboard-hero",
+          "x": 23,
+          "y": 82,
+          "width": 722,
+          "height": 199,
+          "visible": true
+        },
+        "dock": {
+          "selector": ".jarvis-dock",
+          "x": 0,
+          "y": 936,
+          "width": 768,
+          "height": 88,
+          "visible": true
+        },
+        "dockBar": {
+          "selector": ".jarvis-dock-bar",
+          "x": 16,
+          "y": 944,
+          "width": 736,
+          "height": 49,
+          "visible": true
+        },
+        "cardsGrid": {
+          "selector": ".dashboard-cards-grid",
+          "x": 23,
+          "y": 301,
+          "width": 722,
+          "height": 381,
+          "visible": true
+        },
+        "cards": [
+          {
+            "title": "Neural Engine",
+            "x": 23,
+            "y": 301,
+            "width": 353,
+            "height": 183
+          },
+          {
+            "title": "Task Orchestrator",
+            "x": 392,
+            "y": 301,
+            "width": 353,
+            "height": 183
+          },
+          {
+            "title": "Sensors & Vision",
+            "x": 23,
+            "y": 499,
+            "width": 353,
+            "height": 183
+          },
+          {
+            "title": "Event Activity",
+            "x": 392,
+            "y": 499,
+            "width": 353,
+            "height": 183
+          }
+        ],
+        "openPanels": []
+      },
+      "checks": [
+        {
+          "name": "Topbar Height & Position",
+          "passed": true,
+          "details": "y=0, h=54"
+        },
+        {
+          "name": "Dock Streamlined Height (< 90px)",
+          "passed": true,
+          "details": "Actual dock height: 88px"
+        },
+        {
+          "name": "Pristine Launch (0 Auxiliary Panels Open)",
+          "passed": true,
+          "details": "Open panels on launch: 0"
+        },
+        {
+          "name": "Dashboard Cards Within Viewport Bounds",
+          "passed": true,
+          "details": "x=23, w=722, vp.width=768"
+        },
+        {
+          "name": "Opened Tool Window Clamped Inside Workspace (No Clipping)",
+          "passed": true,
+          "details": "Panel rect: (344, 144, 380x460) in viewport 768x1024"
+        }
+      ],
+      "passed": true
+    },
+    "390px_mobile": {
+      "viewport": {
+        "name": "390px_mobile",
+        "width": 390,
+        "height": 844,
+        "isMobile": true
+      },
+      "metrics": {
+        "topbar": {
+          "selector": ".jarvis-topbar",
+          "x": 0,
+          "y": 0,
+          "width": 390,
+          "height": 54,
+          "visible": true
+        },
+        "sidebar": {
+          "selector": ".jarvis-taskbar",
+          "x": -260,
+          "y": 0,
+          "width": 260,
+          "height": 844,
+          "visible": true
+        },
+        "stage": {
+          "selector": ".jarvis-stage",
+          "x": 0,
+          "y": 54,
+          "width": 390,
+          "height": 703,
+          "visible": true
+        },
+        "hero": {
+          "selector": ".dashboard-hero",
+          "x": 16,
+          "y": 82,
+          "width": 358,
+          "height": 258,
+          "visible": true
+        },
+        "dock": {
+          "selector": ".jarvis-dock",
+          "x": 0,
+          "y": 757,
+          "width": 390,
+          "height": 87,
+          "visible": true
+        },
+        "dockBar": {
+          "selector": ".jarvis-dock-bar",
+          "x": 16,
+          "y": 765,
+          "width": 358,
+          "height": 49,
+          "visible": true
+        },
+        "cardsGrid": {
+          "selector": ".dashboard-cards-grid",
+          "x": 16,
+          "y": 360,
+          "width": 358,
+          "height": 779,
+          "visible": true
+        },
+        "cards": [
+          {
+            "title": "Neural Engine",
+            "x": 16,
+            "y": 360,
+            "width": 358,
+            "height": 183
+          },
+          {
+            "title": "Task Orchestrator",
+            "x": 16,
+            "y": 559,
+            "width": 358,
+            "height": 183
+          },
+          {
+            "title": "Sensors & Vision",
+            "x": 16,
+            "y": 757,
+            "width": 358,
+            "height": 183
+          },
+          {
+            "title": "Event Activity",
+            "x": 16,
+            "y": 956,
+            "width": 358,
+            "height": 183
+          }
+        ],
+        "openPanels": []
+      },
+      "checks": [
+        {
+          "name": "Topbar Height & Position",
+          "passed": true,
+          "details": "y=0, h=54"
+        },
+        {
+          "name": "Dock Streamlined Height (< 90px)",
+          "passed": true,
+          "details": "Actual dock height: 87px"
+        },
+        {
+          "name": "Pristine Launch (0 Auxiliary Panels Open)",
+          "passed": true,
+          "details": "Open panels on launch: 0"
+        },
+        {
+          "name": "Dashboard Cards Within Viewport Bounds",
+          "passed": true,
+          "details": "x=16, w=358, vp.width=390"
+        },
+        {
+          "name": "Opened Tool Window Clamped Inside Workspace (No Clipping)",
+          "passed": true,
+          "details": "Panel rect: (12, 144, 366x460) in viewport 390x844"
+        }
+      ],
+      "passed": true
+    }
+  },
+  "allPassed": true
+}

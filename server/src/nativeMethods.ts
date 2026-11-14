@@ -13,11 +13,14 @@ export const NATIVE_RPC_METHODS = [
   'window.list', 'window.status',
   'desktop.screenshot', 'desktop.capabilities', 'desktop.cursor', 'desktop.move', 'desktop.click',
   'desktop.doubleClick', 'desktop.rightClick', 'desktop.scroll', 'desktop.keyPress', 'desktop.hotkey', 'desktop.type',
-  'window.focus',
+  'window.focus', 'window.minimize', 'window.maximize', 'window.restore',
   'web.capabilities', 'web.search', 'web.fetch', 'web.download',
   'clipboard.read', 'clipboard.write',
   'browser.open', 'browser.navigate', 'browser.back', 'browser.forward', 'browser.refresh',
   'browser.click', 'browser.type', 'browser.readPage', 'browser.search', 'browser.screenshot', 'browser.close',
+  'browser.listTabs', 'browser.newTab', 'browser.switchTab', 'browser.closeTab',
+  'browser.fillForm', 'browser.extractContent', 'browser.download',
+  'uia.inspect', 'uia.invoke', 'uia.setValue', 'uia.toggle',
 ] as const
 
 export type NativeRpcMethod = (typeof NATIVE_RPC_METHODS)[number]

@@ -84,7 +84,14 @@ export interface UserPreferences {
   wakeWordEnabled: boolean
 }
 
-export type MemoryType = 'PROFILE' | 'PREFERENCE' | 'FACT' | 'NOTE'
+export type MemoryType =
+  | 'PROFILE'
+  | 'PREFERENCE'
+  | 'PROJECT_DECISION'
+  | 'WORKFLOW'
+  | 'REFERENCE'
+  | 'FACT'
+  | 'NOTE'
 
 /**
  * A single durable memory item.
@@ -1120,7 +1127,15 @@ function validateItem(item: MemoryItem): MemoryItem | null {
 }
 
 function isMemoryType(t: unknown): t is MemoryType {
-  return t === 'PROFILE' || t === 'PREFERENCE' || t === 'FACT' || t === 'NOTE'
+  return (
+    t === 'PROFILE' ||
+    t === 'PREFERENCE' ||
+    t === 'PROJECT_DECISION' ||
+    t === 'WORKFLOW' ||
+    t === 'REFERENCE' ||
+    t === 'FACT' ||
+    t === 'NOTE'
+  )
 }
 
 function copyItem(item: MemoryItem): MemoryItem {

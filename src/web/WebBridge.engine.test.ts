@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { AssistantEngine } from '../engine'
 import { createFileSystemProvider } from '../filesystem'
 import type { FileSystemProvider } from '../filesystem'
-import { WebSearchTool, WebFetchTool, WebDownloadTool } from '../web'
+import { WebSearchTool, WebFetchTool, WebDownloadTool, WebDeepResearchTool } from '../web'
 import type { WebProvider } from '../web/provider'
 
 /**
@@ -57,6 +57,27 @@ describe('Phase 2.9 — web capability through the engine', () => {
     expect(engine.tools.get('web.search')).toBeInstanceOf(WebSearchTool)
     expect(engine.tools.get('web.fetch')).toBeInstanceOf(WebFetchTool)
     expect(engine.tools.get('web.download')).toBeInstanceOf(WebDownloadTool)
+    expect(engine.tools.get('web.deep_research')).toBeInstanceOf(WebDeepResearchTool)
+  })
+
+  it('executes web.deep_research and returns cited report', async () => {
+    const web = new FakeWebProvider()
+    web.setSearch({
+      query: 'deep learning architectures',
+      provider: 'duckduckgo',
+      servedAt: Date.now(),
+      results: [
+        { title: 'Deep Learning Review', url: 'https://example.com/dl', snippet: 'Deep learning architectures utilize multi-layered neural networks for representations.' },
+      ],
+      freshness: { detectable: true, note: 'fresh' },
+    })
+    const engine = makeEngine({ web })
+    const tool = engine.tools.get('web.deep_research')
+    const result = await tool!.execute({ query: 'deep learning architectures', params: { query: 'deep learning architectures', depth: 'brief' } }, { requestId: '1' })
+    expect(result.ok).toBe(true)
+    expect(result.message).toContain('Research Brief: deep learning architectures')
+    expect(result.message).toContain('## Key Findings')
+    expect(result.message).toContain('## Sources & Citations')
   })
 
   it('catalogs web capabilities when tools are registered', () => {

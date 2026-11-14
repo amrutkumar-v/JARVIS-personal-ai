@@ -41,7 +41,7 @@ const run = async (tool: Tool, params: Record<string, unknown>): Promise<ToolRes
   tool.execute({ query: 'test', params }, { requestId: 'r1' })
 
 describe('desktop tools — registration + capability', () => {
-  it('creates exactly the 10 desktop/window-focus tools (no other ids)', () => {
+  it('creates exactly the 13 desktop/window-focus tools (no other ids)', () => {
     const { tools } = asTools()
     expect([...tools.keys()].sort()).toEqual(
       [
@@ -55,6 +55,9 @@ describe('desktop tools — registration + capability', () => {
         'desktop.scroll',
         'desktop.type',
         'window.focus',
+        'window.maximize',
+        'window.minimize',
+        'window.restore',
       ].sort(),
     )
   })
@@ -300,5 +303,21 @@ describe('desktop validation + budget helpers (pure)', () => {
     expect(desktopBudgetExceeded('keys', 0, DESKTOP_BUDGET.keys)).toBe(true)
     expect(desktopBudgetLabel('mouse')).toBe('mouse')
     expect(desktopBudgetLabel('keys')).toBe('keyboard')
+  })
+
+  it('window.minimize, window.maximize, and window.restore alter window state', async () => {
+    const { tools } = asTools()
+    const minTool = tools.get('window.minimize')!
+    const maxTool = tools.get('window.maximize')!
+    const resTool = tools.get('window.restore')!
+
+    const minRes = await run(minTool, { window_id: '1001' })
+    expect(minRes.ok).toBe(true)
+
+    const maxRes = await run(maxTool, { window_id: '1001' })
+    expect(maxRes.ok).toBe(true)
+
+    const restoreRes = await run(resTool, { window_id: '1001' })
+    expect(restoreRes.ok).toBe(true)
   })
 })

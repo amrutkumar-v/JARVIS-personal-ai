@@ -8,8 +8,26 @@ const sessions = new WeakMap<typeof fetch, Map<string, Promise<void>>>()
 /** Hard bound on the session handshake (ms). */
 const SESSION_TIMEOUT_MS = 15_000
 
+/**
+ * Node-side callers (acceptance tests / headless verification) cannot rely on
+ * a browser cookie jar, so the session cookie is captured from the response
+ * and replayed explicitly. Browser callers never reach this path.
+ */
+let nodeSessionCookie: string | null = null
+
+export function getNodeSessionCookie(): string | null {
+  return nodeSessionCookie
+}
+
+export function setNodeSessionCookie(cookie: string | null): void {
+  nodeSessionCookie = cookie
+}
+
 export function ensureBackendSession(baseUrl: string, fetchImpl: typeof fetch, timeoutMs = SESSION_TIMEOUT_MS): Promise<void> {
-  if (typeof window === 'undefined') return Promise.resolve()
+  // Browsers manage this cookie automatically. In Node the explicit helper
+  // below is used instead: a fetch here would leak a session attempt into
+  // unrelated provider calls and ignore the injected fetch implementation.
+  if (typeof window === 'undefined' || typeof window.document === 'undefined') return Promise.resolve()
 
   let byBase = sessions.get(fetchImpl)
   if (!byBase) {
@@ -36,6 +54,31 @@ export function ensureBackendSession(baseUrl: string, fetchImpl: typeof fetch, t
   })
   byBase.set(baseUrl, pending)
   return pending
+}
+
+/**
+ * Node-only session handshake used by the headless acceptance path.
+ * Captures the `jarvis_session` cookie so dev tool calls can authenticate.
+ */
+export async function ensureNodeBackendSession(
+  baseUrl: string,
+  fetchImpl: typeof fetch,
+  timeoutMs = SESSION_TIMEOUT_MS,
+): Promise<void> {
+  if (typeof window !== 'undefined' && typeof window.document !== 'undefined') return
+  const response = await fetchImpl(`${baseUrl.replace(/\/+$/, '')}/api/session`, {
+    method: 'GET',
+    cache: 'no-store',
+    signal: typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function'
+      ? AbortSignal.timeout(timeoutMs)
+      : undefined,
+  })
+  if (!response.ok) throw new Error(`Backend session unavailable (${response.status}).`)
+  const setCookie = response.headers?.get?.('set-cookie')
+  if (setCookie) {
+    const match = setCookie.match(/jarvis_session=[^;]+/)
+    if (match) nodeSessionCookie = match[0]
+  }
 }
 
 export function resetBackendSession(baseUrl: string, fetchImpl: typeof fetch): void {

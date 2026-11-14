@@ -8,6 +8,8 @@
  * PAUSED, WAITING_FOR_PERMISSION, FAILED, CANCELLED, RECOVERY_REQUIRED
  */
 
+import { existsSync, statSync } from 'fs'
+import { isAbsolute, join } from 'path'
 import type {
   PersistentTask,
   Subtask,
@@ -19,6 +21,11 @@ import type {
   TaskStorage,
 } from './types.js'
 import { TaskStore } from './TaskStore.js'
+import {
+  computeActionFingerprint,
+  extractActionTarget,
+  APPROVAL_TTL_MS,
+} from './approvalBinding.js'
 
 export interface SubtaskExecutionResult {
   success: boolean
@@ -38,7 +45,11 @@ export interface SubtaskExecutionResult {
     description: string
     impact: string
     toolId: string
+    taskId?: string
+    subtaskId?: string
+    target?: string
     payload?: Record<string, unknown>
+    fingerprint?: string
   }
 }
 
@@ -135,6 +146,15 @@ export class PersistentTaskOrchestrator {
           const targetStep = parseInt(dep.replace('step-', ''), 10) - 1
           if (targetStep >= 0 && targetStep < subtasks.length) {
             return subtasks[targetStep].id
+          }
+        }
+        if (dep.startsWith('subtask-')) {
+          const raw = parseInt(dep.replace('subtask-', ''), 10)
+          if (!Number.isNaN(raw)) {
+            const targetStep = raw < subtasks.length ? raw : raw - 1
+            if (targetStep >= 0 && targetStep < subtasks.length) {
+              return subtasks[targetStep].id
+            }
           }
         }
         return dep
@@ -245,6 +265,19 @@ export class PersistentTaskOrchestrator {
 
     task.state = 'PAUSED'
     task.updatedAt = Date.now()
+    // An executor may still be in flight. Return its subtask to PENDING so a
+    // later resume re-runs it; the worker itself is left registered until its
+    // promise settles, otherwise tick() could start a second execution of the
+    // same task.
+    for (const sub of task.subtasks) {
+      if (
+        sub.state === 'EXECUTING' ||
+        sub.state === 'OBSERVING' ||
+        sub.state === 'VERIFYING'
+      ) {
+        sub.state = 'PENDING'
+      }
+    }
     task.logs.push({
       id: `log-${Date.now()}-paused`,
       taskId,
@@ -255,7 +288,6 @@ export class PersistentTaskOrchestrator {
     })
 
     await this.store.saveTask(task)
-    this.activeWorkers.delete(taskId)
     this.notifyStateChange(task)
     return true
   }
@@ -271,6 +303,15 @@ export class PersistentTaskOrchestrator {
       task.subtasks.filter((s: Subtask) => s.state === 'VERIFIED').map((s: Subtask) => s.id),
     )
     for (const sub of task.subtasks) {
+      if (
+        sub.state === 'EXECUTING' ||
+        sub.state === 'OBSERVING' ||
+        sub.state === 'VERIFYING'
+      ) {
+        // An interrupted in-flight subtask has no verified result. Re-run it
+        // after its dependencies are met instead of trusting its old state.
+        sub.state = 'PENDING'
+      }
       if (sub.state === 'PENDING') {
         const depsMet = sub.dependencies.every((d: string) => verifiedIds.has(d))
         if (depsMet) sub.state = 'READY'
@@ -320,7 +361,6 @@ export class PersistentTaskOrchestrator {
     }
 
     await this.store.saveTask(task)
-    this.activeWorkers.delete(taskId)
     this.notifyStateChange(task)
     return true
   }
@@ -330,7 +370,8 @@ export class PersistentTaskOrchestrator {
     if (!task) return false
 
     const approval = task.requiredApprovals.find((a: TaskApproval) => a.id === approvalId)
-    if (!approval || approval.granted !== undefined) return false
+    if (!approval || approval.granted !== undefined || approval.revoked) return false
+    if (approval.expiresAt && approval.expiresAt <= Date.now()) return false
 
     approval.granted = true
     approval.resolvedAt = Date.now()
@@ -366,7 +407,7 @@ export class PersistentTaskOrchestrator {
     if (!task) return false
 
     const approval = task.requiredApprovals.find((a: TaskApproval) => a.id === approvalId)
-    if (!approval || approval.granted !== undefined) return false
+    if (!approval || approval.granted !== undefined || approval.revoked) return false
 
     approval.granted = false
     approval.resolvedAt = Date.now()
@@ -388,7 +429,33 @@ export class PersistentTaskOrchestrator {
     task.updatedAt = Date.now()
 
     await this.store.saveTask(task)
-    this.activeWorkers.delete(taskId)
+    this.notifyStateChange(task)
+    return true
+  }
+
+  async revokeAction(taskId: string, approvalId: string, reason = 'Revoked by operator'): Promise<boolean> {
+    const task = await this.store.getTask(taskId)
+    if (!task) return false
+
+    const approval = task.requiredApprovals.find((a: TaskApproval) => a.id === approvalId)
+    if (!approval) return false
+
+    approval.revoked = true
+    approval.revokedAt = Date.now()
+    approval.granted = false
+    approval.note = reason
+
+    task.logs.push({
+      id: `log-${Date.now()}-approval-revoked`,
+      taskId,
+      timestamp: Date.now(),
+      level: 'security',
+      phase: task.state,
+      message: `Approval revoked: ${reason} for ${approval.action}`,
+    })
+
+    task.updatedAt = Date.now()
+    await this.store.saveTask(task)
     this.notifyStateChange(task)
     return true
   }
@@ -435,12 +502,39 @@ export class PersistentTaskOrchestrator {
       const verifiedIds = new Set(latestCheckpoint?.completedSubtaskIds || [])
 
       for (const sub of task.subtasks) {
-        if (verifiedIds.has(sub.id)) {
-          sub.state = 'VERIFIED'
-        } else if (
+        // A checkpoint ID (or a VERIFIED label) without persisted verification
+        // evidence is not proof. Only a subtask that recorded a passing
+        // verification with non-empty evidence survives a restart; everything
+        // else is returned to PENDING and re-executed after its dependencies.
+        const hasEvidence =
+          sub.state === 'VERIFIED' &&
+          sub.verification?.passed === true &&
+          Boolean(sub.verification.evidence?.trim())
+        if (hasEvidence) continue
+        if (
+          verifiedIds.has(sub.id) ||
+          sub.state === 'VERIFIED' ||
           sub.state === 'EXECUTING' ||
           sub.state === 'OBSERVING' ||
           sub.state === 'VERIFYING'
+        ) {
+          sub.state = 'PENDING'
+        }
+      }
+      const verifiedNow = new Set(
+        task.subtasks
+          .filter(
+            (sub) =>
+              sub.state === 'VERIFIED' &&
+              sub.verification?.passed === true &&
+              Boolean(sub.verification.evidence?.trim()),
+          )
+          .map((sub) => sub.id),
+      )
+      for (const sub of task.subtasks) {
+        if (
+          sub.state === 'PENDING' &&
+          sub.dependencies.every((dependency) => verifiedNow.has(dependency))
         ) {
           sub.state = 'READY'
         }
@@ -475,6 +569,9 @@ export class PersistentTaskOrchestrator {
     const stalled: PersistentTask[] = []
 
     for (const task of activeTasks) {
+      // An in-process worker still owns this task; its heartbeat is updated
+      // between subtasks, so a long test run must not be mistaken for a stall.
+      if (this.activeWorkers.has(task.id)) continue
       if (now - task.lastHeartbeatAt > this.stallThresholdMs) {
         task.state = 'RECOVERY_REQUIRED'
         task.updatedAt = now
@@ -488,7 +585,6 @@ export class PersistentTaskOrchestrator {
         })
 
         await this.store.saveTask(task)
-        this.activeWorkers.delete(task.id)
         this.notifyStateChange(task)
         stalled.push(task)
       }
@@ -569,7 +665,7 @@ export class PersistentTaskOrchestrator {
     this.notifyStateChange(task)
 
     while (true) {
-      const currentTask = await this.store.getTask(taskId)
+      let currentTask = await this.store.getTask(taskId)
       if (!currentTask) break
       if (
         currentTask.state === 'PAUSED' ||
@@ -598,10 +694,39 @@ export class PersistentTaskOrchestrator {
         }
       }
 
-      const nextSubtask = currentTask.subtasks.find((s: Subtask) => s.state === 'READY')
+      let nextSubtask = currentTask.subtasks.find((s: Subtask) => s.state === 'READY')
       if (!nextSubtask) {
-        const allDone = currentTask.subtasks.every((s: Subtask) => s.state === 'VERIFIED')
+        const allDone =
+          currentTask.subtasks.length > 0 &&
+          currentTask.subtasks.every((s: Subtask) => s.state === 'VERIFIED')
         const anyFailed = currentTask.subtasks.some((s: Subtask) => s.state === 'FAILED')
+        // A VERIFIED label is only valid when the executor recorded a passing
+        // verification with real evidence. Never promote a run to COMPLETED on
+        // labels alone.
+        const unproven = currentTask.subtasks.find(
+          (s: Subtask) =>
+            s.state === 'VERIFIED' &&
+            !(s.verification?.passed === true && Boolean(s.verification.evidence?.trim())),
+        )
+
+        if (allDone && unproven) {
+          currentTask.state = 'FAILED'
+          currentTask.error = `Completion blocked: subtask "${unproven.title}" has no passing verification evidence.`
+          currentTask.completedAt = Date.now()
+          currentTask.updatedAt = Date.now()
+          currentTask.logs.push({
+            id: `log-${Date.now()}-completion-blocked`,
+            taskId,
+            timestamp: Date.now(),
+            level: 'error',
+            phase: 'FAILED',
+            subtaskId: unproven.id,
+            message: currentTask.error,
+          })
+          await this.store.saveTask(currentTask)
+          this.notifyStateChange(currentTask)
+          break
+        }
 
         if (allDone) {
           currentTask.state = 'VERIFYING'
@@ -616,16 +741,42 @@ export class PersistentTaskOrchestrator {
           await this.store.saveTask(currentTask)
           this.notifyStateChange(currentTask)
 
+          const verification = await this.verifyObjectiveCompletion(currentTask)
+          if (!verification.satisfied) {
+            currentTask.state = 'FAILED'
+            currentTask.error = `Completion blocked: ${verification.reason}`
+            currentTask.completedAt = Date.now()
+            currentTask.updatedAt = Date.now()
+            currentTask.logs.push({
+              id: `log-${Date.now()}-completion-blocked`,
+              taskId,
+              timestamp: Date.now(),
+              level: 'error',
+              phase: 'FAILED',
+              message: currentTask.error,
+              details: verification.evidence,
+            })
+            await this.store.saveTask(currentTask)
+            this.notifyStateChange(currentTask)
+            break
+          }
+
           currentTask.state = 'COMPLETED'
           currentTask.completedAt = Date.now()
           currentTask.updatedAt = Date.now()
+          currentTask.metadata = {
+            ...(currentTask.metadata || {}),
+            completionEvidence: verification.evidence,
+            objectiveVerified: true,
+          }
           currentTask.logs.push({
             id: `log-${Date.now()}-completed`,
             taskId,
             timestamp: Date.now(),
             level: 'info',
             phase: 'COMPLETED',
-            message: `Task successfully completed (${currentTask.subtasks.length} subtasks verified).`,
+            message: `Task successfully completed and objective verified (${currentTask.subtasks.length} subtasks verified).`,
+            details: verification.evidence,
           })
           await this.store.saveTask(currentTask)
           this.notifyStateChange(currentTask)
@@ -643,8 +794,10 @@ export class PersistentTaskOrchestrator {
         }
 
         if (currentTask.subtasks.length === 0) {
-          currentTask.state = 'COMPLETED'
+          currentTask.state = 'FAILED'
+          currentTask.error = 'Task has no executable subtasks; nothing was verified.'
           currentTask.completedAt = Date.now()
+          currentTask.updatedAt = Date.now()
           await this.store.saveTask(currentTask)
           this.notifyStateChange(currentTask)
           break
@@ -672,30 +825,59 @@ export class PersistentTaskOrchestrator {
       }
 
       try {
+        const executingSubtaskId = nextSubtask.id
         const result = await this.executor(nextSubtask, currentTask)
+
+        // Re-read after the executor settles. Pause/cancel (or a recovery
+        // transition) may have changed the task while this call was in flight;
+        // saving the old snapshot here would resurrect EXECUTING and could
+        // overwrite the operator's control decision.
+        const latest = await this.store.getTask(taskId)
+        if (!latest || latest.state !== 'EXECUTING') break
+        currentTask = latest
+        const activeSubtask = currentTask.subtasks.find(
+          (s: Subtask) => s.id === executingSubtaskId,
+        )
+        if (!activeSubtask || activeSubtask.state !== 'EXECUTING') break
+        nextSubtask = activeSubtask
 
         if (result.requiresPermission) {
           const approvalId = `appr-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
+          const target = result.requiresPermission.target ?? extractActionTarget(result.requiresPermission.payload ?? nextSubtask.payload)
+          const now = Date.now()
+          const fingerprint = computeActionFingerprint({
+            taskId: currentTask.id,
+            subtaskId: nextSubtask.id,
+            action: result.requiresPermission.toolId || result.requiresPermission.action,
+            capability: nextSubtask.capability,
+            target,
+            payload: result.requiresPermission.payload ?? nextSubtask.payload,
+          })
           const approval: TaskApproval = {
             id: approvalId,
+            taskId: currentTask.id,
+            subtaskId: nextSubtask.id,
             action: result.requiresPermission.action,
             description: result.requiresPermission.description,
             impact: result.requiresPermission.impact,
             toolId: result.requiresPermission.toolId,
-            payload: result.requiresPermission.payload,
-            createdAt: Date.now(),
+            target,
+            payload: result.requiresPermission.payload ?? nextSubtask.payload,
+            fingerprint,
+            createdAt: now,
+            expiresAt: now + APPROVAL_TTL_MS,
           }
           currentTask.requiredApprovals.push(approval)
           currentTask.state = 'WAITING_FOR_PERMISSION'
           nextSubtask.state = 'WAITING_FOR_PERMISSION'
           currentTask.logs.push({
-            id: `log-${Date.now()}-permission-req`,
+            id: `log-${now}-permission-req`,
             taskId,
-            timestamp: Date.now(),
+            timestamp: now,
             level: 'security',
             phase: 'WAITING_FOR_PERMISSION',
             subtaskId: nextSubtask.id,
-            message: `Approval required for action: ${approval.action}`,
+            message: `Approval required for action: ${approval.action} [fingerprint: ${fingerprint.slice(0, 12)}...]`,
           })
           await this.store.saveTask(currentTask)
           this.notifyStateChange(currentTask)
@@ -711,7 +893,8 @@ export class PersistentTaskOrchestrator {
         const passedVerification =
           result.success &&
           result.verification?.passed === true &&
-          Boolean(result.verification?.evidence)
+          typeof result.verification.evidence === 'string' &&
+          result.verification.evidence.trim().length > 0
 
         if (passedVerification) {
           nextSubtask.state = 'VERIFIED'
@@ -776,6 +959,9 @@ export class PersistentTaskOrchestrator {
               subtaskId: nextSubtask.id,
               message: `Subtask verification failed. Retrying (${nextSubtask.retries}/${nextSubtask.maxRetries}): ${result.error || 'Verification not satisfied'}`,
             })
+            // Exponential backoff delay between retries to allow transient conditions (file locks, resource spikes) to clear
+            const retryCount = nextSubtask.retries
+            await new Promise((resolve) => setTimeout(resolve, Math.min(300 * Math.pow(2, retryCount - 1), 2000)))
           } else {
             nextSubtask.state = 'FAILED'
             nextSubtask.result = {
@@ -783,6 +969,8 @@ export class PersistentTaskOrchestrator {
               error: result.error || 'Verification failed after maximum retries',
             }
             currentTask.state = 'RECOVERY_REQUIRED'
+            currentTask.error = `Subtask "${nextSubtask.title}" failed after ${nextSubtask.maxRetries} retries: ${result.error || 'Verification unsatisfied'}`
+            currentTask.updatedAt = Date.now()
             currentTask.logs.push({
               id: `log-${Date.now()}-subtask-failed`,
               taskId,
@@ -808,11 +996,187 @@ export class PersistentTaskOrchestrator {
           error: err instanceof Error ? err.message : String(err),
         }
         currentTask.state = 'RECOVERY_REQUIRED'
+        currentTask.error = `Subtask "${nextSubtask.title}" threw: ${nextSubtask.result.error}`
         currentTask.updatedAt = Date.now()
         await this.store.saveTask(currentTask)
         this.notifyStateChange(currentTask)
         break
       }
+    }
+  }
+
+  private async verifyObjectiveCompletion(task: PersistentTask): Promise<{
+    satisfied: boolean
+    reason?: string
+    evidence?: Record<string, unknown>
+  }> {
+    // 1. All subtasks must have valid passing verification evidence
+    for (const sub of task.subtasks) {
+      if (sub.state !== 'VERIFIED') {
+        return {
+          satisfied: false,
+          reason: `Subtask "${sub.title}" is in state "${sub.state}", not VERIFIED.`,
+        }
+      }
+      if (!sub.verification?.passed || !sub.verification?.evidence?.trim()) {
+        return {
+          satisfied: false,
+          reason: `Subtask "${sub.title}" has no passing verification evidence.`,
+        }
+      }
+    }
+
+    const meta = (task.metadata || {}) as Record<string, unknown>
+    let projectPath = typeof meta.projectPath === 'string' ? meta.projectPath : undefined
+    if (!projectPath) {
+      for (const sub of task.subtasks) {
+        if (typeof sub.payload?.projectPath === 'string') {
+          projectPath = sub.payload.projectPath
+          break
+        }
+      }
+    }
+
+    // Collect declared required files
+    const declaredFiles = new Set<string>()
+    if (Array.isArray(meta.requiredFiles)) {
+      for (const f of meta.requiredFiles) {
+        if (typeof f === 'string' && f.trim()) declaredFiles.add(f.trim())
+      }
+    }
+    for (const sub of task.subtasks) {
+      if (Array.isArray(sub.payload?.expectedFiles)) {
+        for (const f of sub.payload.expectedFiles) {
+          if (typeof f === 'string' && f.trim()) declaredFiles.add(f.trim())
+        }
+      }
+      if (typeof sub.payload?.filePath === 'string' && sub.payload.filePath.trim()) {
+        declaredFiles.add(sub.payload.filePath.trim())
+      }
+    }
+
+    const objText = String(task.objective ?? '')
+    const demandsFileCreation =
+      Boolean(meta.demandsFileCreation) ||
+      /\b(create|write|make|generate|implement)\s+(?:a\s+)?(?:new\s+)?(?:[a-zA-Z]+\s+)?(?:file\s+)?(?:named\s+)?([a-zA-Z0-9_.-]+\.[a-zA-Z0-9]+)/i.test(objText) ||
+      /file\s+named\s+([a-zA-Z0-9_.-]+\.[a-zA-Z0-9]+)/i.test(objText)
+
+    if (demandsFileCreation && declaredFiles.size === 0) {
+      return {
+        satisfied: false,
+        reason: 'Objective demanded file creation, but no required files were planned or created on disk.',
+      }
+    }
+
+    const verifiedFilesEvidence: Array<{ path: string; bytes: number; exists: boolean }> = []
+    if (declaredFiles.size > 0 && projectPath) {
+      for (const file of declaredFiles) {
+        const fullPath = isAbsolute(file) ? file : join(projectPath, file)
+        let exists = false
+        let bytes = 0
+        try {
+          exists = existsSync(fullPath)
+          if (exists) {
+            bytes = statSync(fullPath).size
+          }
+        } catch {
+          exists = false
+          bytes = 0
+        }
+
+        if (!exists || bytes === 0) {
+          return {
+            satisfied: false,
+            reason: `Required file on disk verification failed: "${file}" does not exist or is empty at ${fullPath}.`,
+          }
+        }
+        verifiedFilesEvidence.push({ path: file, bytes, exists })
+      }
+    }
+
+    const demandsExecution =
+      Boolean(meta.demandsExecution) ||
+      /\b(run|execute)\b.*\b(file|script|code|it|tests?)\b/i.test(objText)
+
+    const executionSubtasks = task.subtasks.filter(
+      (s) =>
+        s.capability === 'dev.runTests' ||
+        s.capability === 'runTests' ||
+        s.capability === 'dev.test' ||
+        s.capability === 'test' ||
+        s.capability === 'dev.build' ||
+        s.toolId === 'dev.runTests' ||
+        s.toolId === 'dev.test' ||
+        s.toolId === 'dev.build' ||
+        s.capability?.includes('test') ||
+        s.capability?.includes('execute') ||
+        s.capability === 'run_project_tests',
+    )
+
+    if (demandsExecution && executionSubtasks.length === 0) {
+      return {
+        satisfied: false,
+        reason: 'Objective demanded code execution, but no execution subtask was planned or run.',
+      }
+    }
+
+    const executionEvidence: Array<{ command: string; exitCode: number; passed: boolean; stdoutSnippet?: string }> = []
+    if (executionSubtasks.length > 0) {
+      for (const sub of executionSubtasks) {
+        const obsData = (sub.observation?.data ?? sub.result?.output ?? {}) as Record<string, unknown>
+        const exitCode = typeof obsData.exitCode === 'number' ? obsData.exitCode : (sub.verification?.passed ? 0 : -1)
+        const passed = (typeof obsData.exitCode === 'number' ? obsData.exitCode === 0 : sub.verification?.passed === true) && (obsData.passed !== false)
+        const expectedMatched = obsData.expectedOutputMatched !== false
+
+        executionEvidence.push({
+          command: String(obsData.command ?? sub.title),
+          exitCode,
+          passed,
+          stdoutSnippet: String(obsData.stdout ?? obsData.outputSnippet ?? '').slice(-500),
+        })
+
+        if (!passed) {
+          return {
+            satisfied: false,
+            reason: `Execution subtask "${sub.title}" failed with exit code ${exitCode}.`,
+          }
+        }
+        if (!expectedMatched) {
+          return {
+            satisfied: false,
+            reason: `Execution subtask "${sub.title}" failed output verification: expected output did not match.`,
+          }
+        }
+      }
+    }
+
+    const reportSubtask = task.subtasks.find(
+      (s) => s.capability === 'dev.generateReport' || s.toolId === 'dev.generateReport',
+    )
+    if (reportSubtask) {
+      const repData = (reportSubtask.observation?.data ?? reportSubtask.result?.output ?? {}) as Record<string, unknown>
+      if (repData.verified !== true) {
+        return {
+          satisfied: false,
+          reason: 'Execution report could not be verified on disk.',
+        }
+      }
+      if (repData.requiredFilesVerified === false) {
+        return {
+          satisfied: false,
+          reason: 'Execution report recorded required files verification failure.',
+        }
+      }
+    }
+
+    return {
+      satisfied: true,
+      evidence: {
+        verifiedAt: Date.now(),
+        projectPath,
+        files: verifiedFilesEvidence,
+        executions: executionEvidence,
+      },
     }
   }
 

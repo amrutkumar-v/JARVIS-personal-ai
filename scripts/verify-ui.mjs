@@ -26,11 +26,14 @@ async function main() {
   })
 
   try {
-    const response = await page.goto('http://localhost:3000', {
-      waitUntil: 'domcontentloaded',
-      timeout: 15000,
-    })
+    let url = 'http://localhost:3000'
+    let response = await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 5000 }).catch(() => null)
+    if (!response || response.status() !== 200) {
+      url = 'http://localhost:3001'
+      response = await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 15000 })
+    }
 
+    console.log(`Navigated to: ${url}`)
     console.log(`HTTP Status: ${response?.status()}`)
     
     // Wait an extra second for React mounting & 3D canvas / HUD initialization

@@ -8,6 +8,7 @@ import type {
   DesktopMoveResult,
   DesktopProvider,
   DesktopScrollResult,
+  DesktopWindowStateResult,
 } from '../desktop'
 import { DESKTOP_LIMITS } from '../desktop'
 import { normalizeWindowId } from '../observation'
@@ -20,6 +21,7 @@ import type {
   NativeDesktopMoveResult,
   NativeCursorResult,
   NativeDesktopScrollResult,
+  NativeDesktopWindowStateResult,
 } from '../../native/src/protocol'
 
 /**
@@ -65,6 +67,9 @@ export class NativeWindowsDesktopProvider implements DesktopProvider {
       hotkey: connected,
       type: connected,
       focus: connected,
+      minimize: connected,
+      maximize: connected,
+      restore: connected,
     }
     return {
       available: connected,
@@ -152,6 +157,24 @@ export class NativeWindowsDesktopProvider implements DesktopProvider {
     return ({ windowId: value.windowId, focused: value.focused, detail: value.detail } satisfies DesktopFocusResult)
   }
 
+  async minimizeWindow(windowId: string): Promise<DesktopWindowStateResult> {
+    const id = this.requireWindowId(windowId)
+    const value = await this.rpc.call<NativeDesktopWindowStateResult>('window.minimize', { windowId: id })
+    return ({ windowId: value.windowId, action: value.action, success: value.success, detail: value.detail } satisfies DesktopWindowStateResult)
+  }
+
+  async maximizeWindow(windowId: string): Promise<DesktopWindowStateResult> {
+    const id = this.requireWindowId(windowId)
+    const value = await this.rpc.call<NativeDesktopWindowStateResult>('window.maximize', { windowId: id })
+    return ({ windowId: value.windowId, action: value.action, success: value.success, detail: value.detail } satisfies DesktopWindowStateResult)
+  }
+
+  async restoreWindow(windowId: string): Promise<DesktopWindowStateResult> {
+    const id = this.requireWindowId(windowId)
+    const value = await this.rpc.call<NativeDesktopWindowStateResult>('window.restore', { windowId: id })
+    return ({ windowId: value.windowId, action: value.action, success: value.success, detail: value.detail } satisfies DesktopWindowStateResult)
+  }
+
   private requireWindowId(windowId: string): string {
     const parsed = normalizeWindowId(windowId)
     if ('error' in parsed) throw fsError('invalid_path', parsed.error, windowId)
@@ -197,6 +220,9 @@ export function unsupportedWebDesktopCapabilities(reason: string): DesktopCapabi
       hotkey: false,
       type: false,
       focus: false,
+      minimize: false,
+      maximize: false,
+      restore: false,
     },
   }
 }

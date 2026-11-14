@@ -22,6 +22,7 @@ export interface SpeechToTextProvider {
   readonly listening: boolean
   readonly supported: boolean
   onTranscript(handler: (text: string) => void): () => void
+  onInterimTranscript?(handler: (text: string) => void): () => void
   onStart(handler: () => void): () => void
   onEnd(handler: (reason: 'done' | 'aborted' | 'error') => void): () => void
   onError(handler: (message: string) => void): () => void
@@ -33,6 +34,7 @@ export class BrowserSpeechToTextProvider implements SpeechToTextProvider {
   readonly id = 'browser-speech-to-text'
   private recognition: RecognitionLike | null = null
   private transcriptHandlers: ((text: string) => void)[] = []
+  private interimHandlers: ((text: string) => void)[] = []
   private startHandlers: (() => void)[] = []
   private endHandlers: ((reason: 'done' | 'aborted' | 'error') => void)[] = []
   private errorHandlers: ((message: string) => void)[] = []
@@ -58,6 +60,13 @@ export class BrowserSpeechToTextProvider implements SpeechToTextProvider {
     this.transcriptHandlers.push(handler)
     return () => {
       this.transcriptHandlers = this.transcriptHandlers.filter((h) => h !== handler)
+    }
+  }
+
+  onInterimTranscript(handler: (text: string) => void): () => void {
+    this.interimHandlers.push(handler)
+    return () => {
+      this.interimHandlers = this.interimHandlers.filter((h) => h !== handler)
     }
   }
 
@@ -99,7 +108,7 @@ export class BrowserSpeechToTextProvider implements SpeechToTextProvider {
     this.stopping = false
     try {
       this.recognition.continuous = true
-      this.recognition.interimResults = false
+      this.recognition.interimResults = true
       this.recognition.lang = 'en-US'
       this.recognition.start()
       return true
@@ -136,6 +145,10 @@ export class BrowserSpeechToTextProvider implements SpeechToTextProvider {
     for (const handler of [...this.transcriptHandlers]) handler(text)
   }
 
+  private emitInterim(text: string): void {
+    for (const handler of [...this.interimHandlers]) handler(text)
+  }
+
   private emitStart(): void {
     for (const handler of [...this.startHandlers]) handler()
   }
@@ -156,12 +169,19 @@ export class BrowserSpeechToTextProvider implements SpeechToTextProvider {
 
     rec.onresult = (event) => {
       let final = ''
+      let interim = ''
       for (let i = event.resultIndex; i < event.results.length; i += 1) {
         const alt = event.results[i]
-        if (alt.isFinal) final += alt[0]?.transcript ?? ''
+        if (alt.isFinal) {
+          final += alt[0]?.transcript ?? ''
+        } else {
+          interim += alt[0]?.transcript ?? ''
+        }
       }
       const cleaned = final.trim()
       if (cleaned) this.emitTranscript(cleaned)
+      const cleanedInterim = interim.trim()
+      if (cleanedInterim) this.emitInterim(cleanedInterim)
     }
 
     rec.onerror = (event) => {

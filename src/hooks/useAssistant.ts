@@ -100,7 +100,21 @@ const engine = useMemo(
     androidProviderRef.current = new BackendAndroidProvider(client, {
       records: () => [...useDeviceStore.getState().devices.values()],
     })
+    // Durable task ownership: planning stays in AssistantEngine, but
+    // submission/control go to the persistent backend. Closing or refreshing
+    // this tab therefore cannot stop an autonomous task.
+    engine.attachTaskGateway({
+      createTask: (request) => client.createTask(request),
+      listTasks: () => client.getTasks(),
+      getTask: (taskId) => client.getTask(taskId),
+      pauseTask: (taskId) => client.pauseTask(taskId),
+      resumeTask: (taskId) => client.resumeTask(taskId),
+      cancelTask: (taskId) => client.cancelTask(taskId),
+      approveTask: (taskId, approvalId) => client.approveTask(taskId, approvalId),
+      rejectTask: (taskId, approvalId, reason) => client.rejectTask(taskId, approvalId, reason),
+    })
     return () => {
+      engine.attachTaskGateway(null)
       engine.attachDevice(undefined)
       engine.attachAndroid(undefined)
       deviceProviderRef.current = null
@@ -226,6 +240,29 @@ const engine = useMemo(
       refreshGoalRun()
     })
     return off
+  }, [engine])
+
+  /* ---- Autonomous task visibility: mirror the authoritative task store into
+   * the Task Monitor. With the backend gateway attached this is the backend's
+   * durable store; closing the tab no longer stops the run. */
+  useEffect(() => {
+    let mounted = true
+    const syncLocalTasks = async () => {
+      try {
+        const tasks = await engine.getPersistentTasks()
+        if (mounted && tasks.length > 0) {
+          useJarvisStore.getState().mergePersistentTasks(tasks)
+        }
+      } catch {
+        // The Task Monitor surface is additive: a failed sync never blocks input.
+      }
+    }
+    void syncLocalTasks()
+    const interval = setInterval(syncLocalTasks, 1000)
+    return () => {
+      mounted = false
+      clearInterval(interval)
+    }
   }, [engine])
 
   /* ---- Phase 2.7 webcam: one REAL controller wired to the engine + store ---- */

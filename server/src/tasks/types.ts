@@ -32,18 +32,45 @@ export type SubtaskState =
   | 'SKIPPED'
   | 'WAITING_FOR_PERMISSION'
 
+export type SpecialistWorkerRole = 'researcher' | 'coder' | 'verifier' | 'general'
+
+export interface WorkerConstraint {
+  allowedToolCategories?: string[]
+  allowedTools?: string[]
+  disallowedTools?: string[]
+  maxRunDurationMs?: number
+  readOnlyOnly?: boolean
+}
+
+export interface WorkerLineage {
+  parentTaskId?: string
+  parentSubtaskId?: string
+  workerId: string
+  workerRole: SpecialistWorkerRole
+  delegatedAt: number
+}
+
 export interface TaskApproval {
   id: string
+  taskId?: string
+  subtaskId?: string
   action: string
   description: string
   impact: string
   toolId?: string
+  target?: string
   payload?: Record<string, unknown>
+  fingerprint?: string
   createdAt: number
+  expiresAt?: number
   granted?: boolean
   resolvedAt?: number
   resolvedBy?: 'user' | 'policy'
   note?: string
+  consumed?: boolean
+  consumedAt?: number
+  revoked?: boolean
+  revokedAt?: number
 }
 
 export interface Subtask {
@@ -62,6 +89,11 @@ export interface Subtask {
   maxRetries: number
   startedAt?: number
   completedAt?: number
+  workerRole?: SpecialistWorkerRole
+  workerId?: string
+  parentTaskId?: string
+  lineage?: WorkerLineage
+  constraints?: WorkerConstraint
   result?: {
     success: boolean
     output?: unknown

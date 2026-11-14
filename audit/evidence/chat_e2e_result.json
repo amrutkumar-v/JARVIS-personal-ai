@@ -1,0 +1,8 @@
+{
+  "test": "Chat E2E",
+  "messageSent": "What is 2 + 2? Answer in one word.",
+  "messagesFound": [],
+  "screenshot": "D:\\JARVIS\\audit\\evidence\\ui_e2e_chat_response.png",
+  "has4": true,
+  "pageTextSnippet": "MOD-A1\nARC REACTOR\nJARVIS\nV0.10.0\n/\nCOMMAND CONSOLE\nFAILED\n02:20:24 PM\nFRI, NOV 13\nJARVIS OS\nAI SYSTEM\nMAIN\nOverview\nCore runtime status & system summary\nAssistant\nInteractive conversation & session log\nTasks\nActive, queued & completed autonomous workflows\nApplications\nDesktop apps & window observation\nWORKSPACE\nFiles\nStorage roots, documents & generated artifacts\nCamera\nLive video viewfinder & frame capture\nVision\nVisual perception & screen inspection\nActivity\nExecution timeline & system audit logs\nOPEN\nSYSTEM\nSystem Monitor\nCPU, memory, connectivity & health telemetry\nDevices\nHardware topology, presence & phone pairing\nEnvironments\n3D visual HUD themes & backgrounds\nSettings\nPreferences, AI models, keys & memory\n◉\nARC REACTOR\n3D ENVIRONMENT\nReset Windows\n1 window open\nERROR\nNEURAL ENGINE\nEXECUTION\nVERIFICATION\nAI LINK · ONLINE\nDEVICE LINK · ONLINE\nVOICE · \nSTANDBY\nSTATE · ERROR\nJARVIS\n\nI cannot what is 2 + 2? answer in one word.: Plan validation rejected \"perform_calculation\": Plan r"
+}

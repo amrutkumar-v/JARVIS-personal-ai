@@ -34,6 +34,7 @@ export async function rpcCall(
   baseUrl: string,
   token: string,
   method: string,
+  params?: Record<string, unknown>,
   fetchImpl: typeof fetch = fetch,
   timeoutMs = 4000,
 ): Promise<RpcResult> {
@@ -42,10 +43,12 @@ export async function rpcCall(
   try {
     const headers: Record<string, string> = { 'content-type': 'application/json' }
     if (token) headers.authorization = `Bearer ${token}`
+    const bodyPayload: Record<string, unknown> = { jsonrpc: '2.0', id: Date.now(), method }
+    if (params) bodyPayload.params = params
     const res = await fetchImpl(`${baseUrl.replace(/\/$/, '')}/`, {
       method: 'POST',
       headers,
-      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method }),
+      body: JSON.stringify(bodyPayload),
       signal: controller.signal,
     })
     if (!res.ok) {
@@ -67,7 +70,7 @@ export async function probeNativeAgent(
   const fetchImpl = opts.fetchImpl ?? fetch
   const timeoutMs = opts.timeoutMs ?? 4000
   try {
-    const result = await rpcCall(baseUrl, token, 'system.identity', fetchImpl, timeoutMs)
+    const result = await rpcCall(baseUrl, token, 'system.identity', undefined, fetchImpl, timeoutMs)
     if (result.kind === 'http_error') {
       return {
         ok: false,

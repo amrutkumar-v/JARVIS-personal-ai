@@ -35,7 +35,27 @@
 
 export type AiCapability = 'reasoning' | 'vision' | 'embeddings'
 
-export type ProviderId = 'gemini' | 'openai' | 'anthropic' | 'openrouter' | 'local' | 'ollama' | 'lmstudio'
+export type ProviderId = 'gemini' | 'openai' | 'anthropic' | 'openrouter' | 'local' | 'ollama' | 'lmstudio' | 'llamacpp'
+
+export type ModelTier = 'fast' | 'balanced' | 'powerful'
+
+/**
+ * Classifies model IDs into latency/capability tiers for intelligent request routing.
+ */
+export function classifyModelTier(modelName: string): ModelTier {
+  const name = modelName.toLowerCase()
+  if (/(70b|72b|405b|opus|sonnet-4|gpt-4o$|pro)/i.test(name)) {
+    return 'powerful'
+  }
+  if (/(?:^|\D)(0\.5|1|1\.5|2|3)b(?:\D|$)|mini|nano|flash-lite|haiku/i.test(name)) {
+    return 'fast'
+  }
+  return 'balanced'
+}
+
+export function isLocalProvider(id: string): boolean {
+  return id === 'ollama' || id === 'lmstudio' || id === 'local' || id === 'llamacpp'
+}
 
 export type AiTransportId = ProviderId | 'legacy'
 
@@ -145,6 +165,8 @@ export interface AiRouterCreateOptions {
   transientRetryDelayMs?: number
   /** Test seam for the transient retry backoff (defaults to a real timer). */
   sleep?: (ms: number) => Promise<void>
+  /** Force local-only / offline mode (all remote providers excluded). */
+  localOnly?: boolean
 }
 
 export interface AiRouter {
@@ -164,6 +186,8 @@ export interface AiRouteRequest {
   body: Uint8Array
   /** Pinned provider id (client `x-jarvis-provider` header or server pin). */
   pinned?: string | null
+  /** Force local-only / offline mode for this specific request. */
+  localOnly?: boolean
 }
 
 export interface AiRouteResult {
@@ -225,7 +249,7 @@ export interface AiHealthReport {
 
 export type AiProviderRegistrySnapshot = AiRegistrySnapshot
 
-const PROVIDER_IDS: readonly ProviderId[] = ['gemini', 'openai', 'anthropic', 'openrouter', 'local', 'ollama', 'lmstudio']
+const PROVIDER_IDS: readonly ProviderId[] = ['gemini', 'openai', 'anthropic', 'openrouter', 'local', 'ollama', 'lmstudio', 'llamacpp']
 
 const DEFAULT_GEMINI_BASE = 'https://generativelanguage.googleapis.com/v1beta/openai'
 const DEFAULT_OPENAI_BASE = 'https://api.openai.com/v1'
@@ -244,6 +268,7 @@ function normalizeOllamaBase(baseUrl: string): string {
   return /\/v\d+$/.test(base) ? base : `${base}/v1`
 }
 const DEFAULT_LMSTUDIO_BASE = 'http://localhost:1234/v1'
+const DEFAULT_LLAMACPP_BASE = 'http://localhost:8080/v1'
 
 /** Max locally-discovered models kept in a health report (bounded payload). */
 const MAX_DISCOVERED_MODELS = 50
@@ -345,11 +370,11 @@ function buildProvider(
   const embeddingModel = envString(env, defaults.embeddingEnv ?? '') || defaults.embeddingModel
   const key = envString(env, defaults.keyEnv)
   const configuredTimeoutMs = envInt(env, defaults.timeoutEnv, 0)
-  const isLocalEngine = id === 'local' || id === 'ollama' || id === 'lmstudio'
+  const isLocalEngine = id === 'local' || id === 'ollama' || id === 'lmstudio' || id === 'llamacpp'
   const timeoutMs = configuredTimeoutMs || (isLocalEngine ? LOCAL_CHAT_TIMEOUT_MS : DEFAULT_CHAT_TIMEOUT_MS)
 
   let enabled = false
-  if (id === 'local' || id === 'ollama' || id === 'lmstudio') {
+  if (id === 'local' || id === 'ollama' || id === 'lmstudio' || id === 'llamacpp') {
     // Keyless local endpoints: enabled only when a base URL AND a chat model are
     // explicitly configured (never guessed — a defaulted localhost base URL on
     // its own is not evidence that the local engine is installed or running,
@@ -362,7 +387,7 @@ function buildProvider(
 
   const capabilities: AiCapability[] = ['reasoning']
   if (id !== 'anthropic') capabilities.push('vision')
-  if (id === 'gemini' || id === 'openai' || id === 'local' || id === 'ollama' || id === 'lmstudio') {
+  if (id === 'gemini' || id === 'openai' || id === 'local' || id === 'ollama' || id === 'lmstudio' || id === 'llamacpp') {
     if (id === 'gemini' || id === 'openai' ? true : Boolean(embeddingModel)) capabilities.push('embeddings')
   }
 
@@ -389,6 +414,7 @@ const names: Record<ProviderId, string> = {
   local: 'Local (Ollama / LM Studio)',
   ollama: 'Ollama (local)',
   lmstudio: 'LM Studio (local)',
+  llamacpp: 'llama.cpp (local)',
 }
 
 function buildProviders(env: Record<string, string | undefined>, legacy?: AiProxyConfig): AiProviderDefinition[] {
@@ -521,6 +547,20 @@ function buildProviders(env: Record<string, string | undefined>, legacy?: AiProx
           visionEnv: 'LMSTUDIO_VISION_MODEL',
           embeddingEnv: 'LMSTUDIO_EMBEDDING_MODEL',
           timeoutEnv: 'LMSTUDIO_AI_TIMEOUT_MS',
+          requiresKey: false,
+        })
+      case 'llamacpp':
+        return buildProvider('llamacpp', env, {
+          baseUrl: DEFAULT_LLAMACPP_BASE,
+          chatModel: '',
+          visionModel: '',
+          embeddingModel: '',
+          keyEnv: 'LLAMACPP_API_KEY',
+          baseUrlEnv: 'LLAMACPP_BASE_URL',
+          chatEnv: 'LLAMACPP_AI_MODEL',
+          visionEnv: 'LLAMACPP_VISION_MODEL',
+          embeddingEnv: 'LLAMACPP_EMBEDDING_MODEL',
+          timeoutEnv: 'LLAMACPP_AI_TIMEOUT_MS',
           requiresKey: false,
         })
     }
@@ -1018,7 +1058,8 @@ function buildRouter(
    */
   const lastObservation = (id: AiTransportId): ProbeRecord | undefined => observations.get(id)
 
-  const isLocalProvider = (id: AiTransportId): boolean => id === 'ollama' || id === 'lmstudio' || id === 'local'
+  const isLocalProvider = (id: AiTransportId): boolean =>
+    id === 'ollama' || id === 'lmstudio' || id === 'local' || id === 'llamacpp'
 
   /**
    * A provider is usable when its config is complete, or when a real probe
@@ -1097,23 +1138,7 @@ function buildRouter(
   }
 
   /** Parse the REAL model list out of an Ollama/LM Studio/OpenAI payload. */
-  const parseModelIds = (payload: unknown): string[] => {
-    if (!payload || typeof payload !== 'object') return []
-    const record = payload as Record<string, unknown>
-    const list = Array.isArray(record.models) ? record.models : Array.isArray(record.data) ? record.data : []
-    const out: string[] = []
-    for (const item of list) {
-      if (typeof item === 'string') {
-        if (item.trim()) out.push(item.trim())
-        continue
-      }
-      if (!item || typeof item !== 'object') continue
-      const entry = item as Record<string, unknown>
-      const name = entry.name ?? entry.id ?? entry.model
-      if (typeof name === 'string' && name.trim()) out.push(name.trim())
-    }
-    return [...new Set(out)].slice(0, MAX_DISCOVERED_MODELS)
-  }
+  const parseModelIds = (payload: unknown): string[] => parseDiscoveredModelIds(payload)
 
   /**
    * REAL model discovery for local providers. Returns the installed models or a
@@ -1257,15 +1282,32 @@ function buildRouter(
       candidates = routingCandidates(registry, null)
     }
 
-    if (candidates.length === 0 && !pinned && registry.primary === 'auto') {
+    const isLocalOnly = Boolean(
+      req.localOnly ||
+      options.localOnly ||
+      envString(env, 'JARVIS_AI_LOCAL_ONLY') === 'true' ||
+      envString(env, 'JARVIS_AI_OFFLINE_MODE') === 'true',
+    )
+
+    if (isLocalOnly) {
+      candidates = candidates.filter((p) => isLocalProvider(p.id))
+    }
+
+    if (candidates.length === 0 && !pinned && (registry.primary === 'auto' || isLocalOnly)) {
       // Cold start: nothing has been observed yet. Discover the local engines for
-      // real (bounded + TTL-cached) so `auto` can use a running Ollama/LM Studio
+      // real (bounded + TTL-cached) so `auto` or local-only can use a running Ollama/LM Studio/llama.cpp
       // without waiting for a separate health call.
       await probeAll(registry.providers.filter((p) => isLocalProvider(p.id) && p.baseUrl !== ''))
       candidates = routingCandidates(registry, null)
+      if (isLocalOnly) {
+        candidates = candidates.filter((p) => isLocalProvider(p.id))
+      }
     }
 
     if (candidates.length === 0) {
+      if (isLocalOnly) {
+        return { status: 503, contentType: 'application/json; charset=utf-8', body: jsonBytes({ error: { message: 'Local-only / offline mode is active, but no local AI provider (Ollama, LM Studio, llama.cpp, Local) is available or running.', code: 'LOCAL_ONLY_UNAVAILABLE' } }), provider: 'none', model: '', capability, usedFallback: false, errorCode: 'ai_not_configured', errorMessage: 'Local-only mode active: no reachable local AI provider.' }
+      }
       return { status: 503, contentType: 'application/json; charset=utf-8', body: jsonBytes({ error: { message: 'No AI provider is configured. Set JARVIS_AI_PRIMARY_PROVIDER (e.g. gemini/openai/anthropic/openrouter/local) plus its API key, or set JARVIS_AI_BASE_URL + JARVIS_API_KEY (or GEMINI_API_KEY) for the legacy single provider.', code: 'AI_NOT_CONFIGURED' } }), provider: 'none', model: '', capability, usedFallback: false, errorCode: 'ai_not_configured', errorMessage: 'No AI provider is configured.' }
     }
 
@@ -1548,4 +1590,94 @@ export function resolveLegacyProxy(env: Record<string, string | undefined>): AiP
     key: activeKey,
     timeoutMs: envInt(env, 'JARVIS_AI_TIMEOUT_MS', 60_000),
   }
+}
+
+/**
+ * Parse the real model list out of an Ollama/LM Studio/OpenAI payload.
+ */
+export function parseDiscoveredModelIds(payload: unknown): string[] {
+  if (!payload || typeof payload !== 'object') return []
+  const record = payload as Record<string, unknown>
+  const list = Array.isArray(record.models) ? record.models : Array.isArray(record.data) ? record.data : []
+  const out: string[] = []
+  for (const item of list) {
+    if (typeof item === 'string') {
+      if (item.trim()) out.push(item.trim())
+      continue
+    }
+    if (!item || typeof item !== 'object') continue
+    const entry = item as Record<string, unknown>
+    const name = entry.name ?? entry.id ?? entry.model
+    if (typeof name === 'string' && name.trim()) out.push(name.trim())
+  }
+  return [...new Set(out)].slice(0, MAX_DISCOVERED_MODELS)
+}
+
+export interface LocalEndpointProbeResult {
+  providerId: ProviderId
+  name: string
+  endpoint: string
+  reachable: boolean
+  models: string[]
+  latencyMs?: number
+  error?: string
+}
+
+/**
+ * Probes all standard local AI endpoints (Ollama, LM Studio, llama.cpp, Local).
+ */
+export async function probeLocalEndpoints(
+  fetchImpl: (input: Parameters<typeof fetch>[0], init?: RequestInit) => Promise<Response> = globalThis.fetch,
+  timeoutMs = 3000,
+): Promise<LocalEndpointProbeResult[]> {
+  const targets: Array<{ id: ProviderId; name: string; url: string }> = [
+    { id: 'ollama', name: 'Ollama', url: 'http://localhost:11434/api/tags' },
+    { id: 'lmstudio', name: 'LM Studio', url: 'http://localhost:1234/v1/models' },
+    { id: 'llamacpp', name: 'llama.cpp', url: 'http://localhost:8080/v1/models' },
+    { id: 'local', name: 'Generic Local', url: 'http://localhost:5000/v1/models' },
+  ]
+
+  const results = await Promise.all(
+    targets.map(async (t) => {
+      const start = Date.now()
+      const controller = new AbortController()
+      const timer = setTimeout(() => controller.abort(), timeoutMs)
+      try {
+        const res = await fetchImpl(t.url, { method: 'GET', signal: controller.signal })
+        const latencyMs = Date.now() - start
+        if (!res.ok) {
+          return { providerId: t.id, name: t.name, endpoint: t.url, reachable: false, models: [], error: `HTTP ${res.status}` }
+        }
+        const text = await res.text()
+        let payload: unknown
+        try {
+          payload = JSON.parse(text)
+        } catch {
+          return { providerId: t.id, name: t.name, endpoint: t.url, reachable: false, models: [], error: 'invalid_json' }
+        }
+        const models = parseDiscoveredModelIds(payload)
+        return {
+          providerId: t.id,
+          name: t.name,
+          endpoint: t.url,
+          reachable: true,
+          models,
+          latencyMs,
+        }
+      } catch (err) {
+        const isAbort = err instanceof Error && err.name === 'AbortError'
+        return {
+          providerId: t.id,
+          name: t.name,
+          endpoint: t.url,
+          reachable: false,
+          models: [],
+          error: isAbort ? 'timeout' : 'unreachable',
+        }
+      } finally {
+        clearTimeout(timer)
+      }
+    }),
+  )
+  return results
 }

@@ -35,7 +35,7 @@ function envNumber(name: string, fallback: number): number {
 
 function readConfig(): BackendConfig {
   const configured = envString('VITE_JARVIS_BACKEND_URL')?.trim()
-  const fallbackHost = typeof window !== 'undefined' ? window.location.hostname || '127.0.0.1' : '127.0.0.1'
+  const fallbackHost = typeof window !== 'undefined' ? window.location?.hostname || '127.0.0.1' : '127.0.0.1'
   const baseUrl = configured ?? `http://${fallbackHost}:8787`
   return {
     baseUrl: baseUrl.replace(/\/+$/, ''),

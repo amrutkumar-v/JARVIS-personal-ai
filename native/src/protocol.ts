@@ -46,6 +46,9 @@ export type NativeMethod =
   | 'desktop.hotkey'
   | 'desktop.type'
   | 'window.focus'
+  | 'window.minimize'
+  | 'window.maximize'
+  | 'window.restore'
   | 'web.capabilities'
   | 'web.search'
   | 'web.fetch'
@@ -63,6 +66,17 @@ export type NativeMethod =
   | 'browser.search'
   | 'browser.screenshot'
   | 'browser.close'
+  | 'browser.listTabs'
+  | 'browser.newTab'
+  | 'browser.switchTab'
+  | 'browser.closeTab'
+  | 'browser.fillForm'
+  | 'browser.extractContent'
+  | 'browser.download'
+  | 'uia.inspect'
+  | 'uia.invoke'
+  | 'uia.setValue'
+  | 'uia.toggle'
 
 /** Allow-list: the ONLY methods the agent will ever dispatch. */
 export const NATIVE_METHODS: readonly NativeMethod[] = [
@@ -97,6 +111,9 @@ export const NATIVE_METHODS: readonly NativeMethod[] = [
   'desktop.hotkey',
   'desktop.type',
   'window.focus',
+  'window.minimize',
+  'window.maximize',
+  'window.restore',
   'web.capabilities',
   'web.search',
   'web.fetch',
@@ -114,6 +131,17 @@ export const NATIVE_METHODS: readonly NativeMethod[] = [
   'browser.search',
   'browser.screenshot',
   'browser.close',
+  'browser.listTabs',
+  'browser.newTab',
+  'browser.switchTab',
+  'browser.closeTab',
+  'browser.fillForm',
+  'browser.extractContent',
+  'browser.download',
+  'uia.inspect',
+  'uia.invoke',
+  'uia.setValue',
+  'uia.toggle',
 ]
 
 /**
@@ -299,6 +327,8 @@ export interface NativeWindowSummary {
   bounds?: { left: number; top: number; right: number; bottom: number }
   /** Client-area bounds in screen coordinates; measured via GetClientRect + ClientToScreen. */
   clientBounds?: { left: number; top: number; right: number; bottom: number }
+  /** True when this window is the active foreground window. */
+  isForeground?: boolean
 }
 
 export interface NativeWindowStatusResult {
@@ -314,6 +344,8 @@ export interface NativeWindowStatusResult {
   bounds?: { left: number; top: number; right: number; bottom: number }
   /** Client-area bounds in screen coordinates; measured via GetClientRect + ClientToScreen. */
   clientBounds?: { left: number; top: number; right: number; bottom: number }
+  /** True when this window is the active foreground window. */
+  isForeground?: boolean
 }
 
 export interface NativeScreenshotResult {
@@ -403,6 +435,13 @@ export interface NativeDesktopFocusResult {
   /** True only when the target is the foreground window right now. */
   focused: boolean
   /** Provider-safe explanation of the post-attempt state. */
+  detail: string
+}
+
+export interface NativeDesktopWindowStateResult {
+  windowId: string
+  action: 'minimize' | 'maximize' | 'restore'
+  success: boolean
   detail: string
 }
 

@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import type { PanelId } from '../../panel/types'
 import { Header } from './Header'
 import { JarvisTaskbar } from './JarvisTaskbar'
@@ -30,6 +30,7 @@ import { GestureHud } from '../gesture/GestureHud'
 import { EnvironmentPanel } from '../panel/EnvironmentPanel'
 import { CapabilityPanel } from '../panel/CapabilityPanel'
 import { ApplicationCatalogue } from '../panel/ApplicationCatalogue'
+import { DesktopObservationView } from '../panel/DesktopObservationView'
 import { TaskMonitorPanel } from '../panel/TaskMonitorPanel'
 import type { ApplicationProvider } from '../../applications'
 import {
@@ -42,6 +43,7 @@ import { usePanelLayoutStore } from '../../panel/panelStore'
 import { dispatchInteraction } from '../../interaction/controller'
 import { VoiceStatus } from '../voice/VoiceStatus'
 import { CrushButton } from '../system/CrushButton'
+import { DashboardCards } from './DashboardCards'
 
 interface AssistantAPI {
   status: ReturnType<typeof useJarvisStore.getState>['status']
@@ -68,6 +70,8 @@ interface AssistantAPI {
   onSetCameraVideo: (element: HTMLVideoElement | null) => void
   /** Live getter for the engine's current application provider (may swap). */
   applicationProvider: () => ApplicationProvider | undefined
+  observationProvider?: () => any
+  desktopProvider?: () => any
   onStopSpeaking: () => void
   onInterrupt: () => void
   backendClient?: any
@@ -119,6 +123,44 @@ export function JarvisShell({
   onCancelTask,
 }: Props) {
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false)
+  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(() => {
+    try {
+      const stored = localStorage.getItem('jarvis_sidebar_collapsed')
+      if (stored !== null) return stored === 'true'
+      return window.innerWidth < 1200
+    } catch {
+      return false
+    }
+  })
+
+  // Global Ctrl+B / Cmd+B keyboard shortcut to toggle sidebar collapse
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // Don't intercept if user is typing in an input/textarea
+      const tag = (e.target as HTMLElement)?.tagName?.toLowerCase()
+      if (tag === 'input' || tag === 'textarea' || (e.target as HTMLElement)?.isContentEditable) {
+        return
+      }
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'b') {
+        e.preventDefault()
+        setIsSidebarCollapsed((prev) => {
+          const next = !prev
+          try {
+            localStorage.setItem('jarvis_sidebar_collapsed', String(next))
+          } catch {}
+          return next
+        })
+      }
+    }
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [])
+
+  const handleToggleSidebarCollapse = useCallback((collapsed: boolean) => {
+    setIsSidebarCollapsed(collapsed)
+  }, [])
+
   const environmentId = usePanelLayoutStore((s) => s.environmentId)
 
   const activeStatuses: Array<ReturnType<typeof useJarvisStore.getState>['status']> = [
@@ -194,6 +236,10 @@ export function JarvisShell({
       case 'applications':
         return (
           <>
+            <DesktopObservationView
+              observation={assistant.observationProvider?.()}
+              desktop={assistant.desktopProvider?.()}
+            />
             <CapabilityPanel
               title="APPLICATIONS"
               rows={applicationsRows(assistant.capabilities, assistant.catalog)}
@@ -218,33 +264,68 @@ export function JarvisShell({
   }
 
   return (
-    <div className="jarvis-shell">
+    <div
+      className={`jarvis-shell ${
+        isSidebarCollapsed ? 'is-sidebar-collapsed' : 'is-sidebar-expanded'
+      } ${mobileSidebarOpen ? 'is-mobile-sidebar-open' : ''}`}
+    >
       <Header
         status={assistant.status}
         onOpenSettings={() => setSettingsOpen(true)}
+        onToggleMobileSidebar={() => setMobileSidebarOpen((prev) => !prev)}
       />
 
       <JarvisTaskbar
         onOpenSettings={() => setSettingsOpen(true)}
+        isCollapsed={isSidebarCollapsed}
+        onToggleCollapse={handleToggleSidebarCollapse}
+        mobileOpen={mobileSidebarOpen}
+        onCloseMobile={() => setMobileSidebarOpen(false)}
       />
+
+      {/* Mobile Drawer Backdrop */}
+      {mobileSidebarOpen && (
+        <div
+          className="sidebar-backdrop"
+          aria-hidden="true"
+          onClick={() => setMobileSidebarOpen(false)}
+        />
+      )}
 
       <GestureHud gesture={assistant.gesture} />
 
       <main className="jarvis-stage">
-        {environmentId === 'arc' ? (
-          <>
-            <ArcReactor />
-            <CoreTelemetry />
-          </>
-        ) : null}
-        {environmentId === 'arc' || environmentId === 'space' || environmentId === 'tunnel' ? (
-          <CoreCaption />
-        ) : null}
+        <div className="dashboard-hero">
+          {environmentId === 'arc' ? (
+            <div className="hero-reactor-frame">
+              <ArcReactor />
+              <CoreTelemetry />
+            </div>
+          ) : null}
+          {environmentId === 'arc' || environmentId === 'space' || environmentId === 'tunnel' ? (
+            <CoreCaption />
+          ) : null}
+        </div>
+
         <TaskIndicator />
         <GoalPanel />
+
+        <DashboardCards
+          status={assistant.status}
+          providerLabel={assistant.providerLabel}
+          modelLabel={assistant.modelLabel}
+          endpointLabel={assistant.endpointLabel}
+          backend={assistant.backend}
+          camera={assistant.camera}
+          gesture={assistant.gesture}
+          task={task}
+        />
       </main>
 
-      <PanelHost renderPanel={renderPanel} />
+      <PanelHost
+        renderPanel={renderPanel}
+        isSidebarCollapsed={isSidebarCollapsed}
+      />
 
       <footer className="jarvis-dock">
         {!canHear() && !assistant.capabilities.speechSynthesisAvailable ? (
@@ -252,24 +333,28 @@ export function JarvisShell({
             This browser has no voice support — keyboard and text still work.
           </p>
         ) : null}
-        <VoiceButton
-          isListening={assistant.isRecognizing}
-          isSpeaking={assistant.isSpeaking}
-          onStart={() => {
-            dispatchInteraction({ action: 'listen_start' })
-          }}
-          onStop={() => {
-            dispatchInteraction({ action: 'listen_stop' })
-          }}
-        />
-        <VoiceStatus />
-        <CrushButton />
-        <GoalComposer
-          busy={task?.active ?? false}
-          cancelVisible={task?.active ?? false}
-          onSubmit={assistant.submit}
-          onCancel={onCancelTask ?? (() => {})}
-        />
+        <div className="jarvis-dock-bar">
+          <VoiceButton
+            isListening={assistant.isRecognizing}
+            isSpeaking={assistant.isSpeaking}
+            onStart={() => {
+              dispatchInteraction({ action: 'listen_start' })
+            }}
+            onStop={() => {
+              dispatchInteraction({ action: 'listen_stop' })
+            }}
+          />
+          <GoalComposer
+            busy={task?.active ?? false}
+            cancelVisible={task?.active ?? false}
+            onSubmit={assistant.submit}
+            onCancel={onCancelTask ?? (() => {})}
+          />
+          <div className="jarvis-dock-controls">
+            <VoiceStatus />
+            <CrushButton />
+          </div>
+        </div>
         {canInterrupt ? (
           <button
             type="button"

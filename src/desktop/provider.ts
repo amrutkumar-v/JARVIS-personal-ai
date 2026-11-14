@@ -50,6 +50,9 @@ export type DesktopOp =
   | 'hotkey'
   | 'type'
   | 'focus'
+  | 'minimize'
+  | 'maximize'
+  | 'restore'
 
 export interface DesktopCapabilities {
   /** False when the native agent is unreachable / not Windows. */
@@ -117,6 +120,13 @@ export interface DesktopFocusResult {
   detail: string
 }
 
+export interface DesktopWindowStateResult {
+  windowId: string
+  action: 'minimize' | 'maximize' | 'restore'
+  success: boolean
+  detail: string
+}
+
 export interface DesktopProvider {
   id: string
   /** Test doubles MUST set this true (production never binds to them). */
@@ -146,6 +156,12 @@ export interface DesktopProvider {
   typeText(text: string): Promise<DesktopKeyResult>
   /** Bring a window to the foreground; `focused` reflects the POST-attempt state. */
   focusWindow(windowId: string): Promise<DesktopFocusResult>
+  /** Minimize a window. */
+  minimizeWindow(windowId: string): Promise<DesktopWindowStateResult>
+  /** Maximize a window. */
+  maximizeWindow(windowId: string): Promise<DesktopWindowStateResult>
+  /** Restore a window. */
+  restoreWindow(windowId: string): Promise<DesktopWindowStateResult>
 }
 
 /* ---------------------------------------------------------------- safety */

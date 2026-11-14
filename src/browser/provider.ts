@@ -20,6 +20,13 @@ export type BrowserOp =
   | 'search'
   | 'screenshot'
   | 'close'
+  | 'listTabs'
+  | 'newTab'
+  | 'switchTab'
+  | 'closeTab'
+  | 'fillForm'
+  | 'extractContent'
+  | 'download'
 
 export interface BrowserCapabilities {
   /** False when the native agent is unreachable or Playwright is not installed. */
@@ -68,6 +75,70 @@ export interface BrowserScreenshotResult {
   format: 'png'
 }
 
+export interface BrowserTabInfo {
+  index: number
+  url: string
+  title: string
+  active: boolean
+}
+
+export interface BrowserListTabsResult {
+  success: boolean
+  tabs: BrowserTabInfo[]
+}
+
+export interface BrowserNewTabResult {
+  success: boolean
+  index: number
+  url: string
+  title: string
+}
+
+export interface BrowserSwitchTabResult {
+  success: boolean
+  index: number
+  url: string
+  title: string
+}
+
+export interface BrowserCloseTabResult {
+  success: boolean
+  remainingCount: number
+}
+
+export interface BrowserFillFormResult {
+  success: boolean
+  filled: string[]
+  failed: string[]
+}
+
+export interface BrowserExtractedTable {
+  headers: string[]
+  rows: string[][]
+}
+
+export interface BrowserExtractedLink {
+  text: string
+  href: string
+}
+
+export interface BrowserExtractContentResult {
+  success: boolean
+  title: string
+  url: string
+  headings: Array<{ level: number; text: string }>
+  text: string
+  tables: BrowserExtractedTable[]
+  links: BrowserExtractedLink[]
+}
+
+export interface BrowserDownloadResult {
+  success: boolean
+  path: string
+  size: number
+  sha256: string
+}
+
 export interface BrowserProvider {
   readonly id: string
   capabilities(): BrowserCapabilities
@@ -82,4 +153,11 @@ export interface BrowserProvider {
   search(query: string): Promise<BrowserSearchResult>
   screenshot(): Promise<BrowserScreenshotResult>
   close(): Promise<{ success: boolean }>
+  listTabs?(): Promise<BrowserListTabsResult>
+  newTab?(url?: string): Promise<BrowserNewTabResult>
+  switchTab?(index: number): Promise<BrowserSwitchTabResult>
+  closeTab?(index?: number): Promise<BrowserCloseTabResult>
+  fillForm?(fields: Record<string, string>): Promise<BrowserFillFormResult>
+  extractContent?(opts?: { includeTables?: boolean; includeLinks?: boolean }): Promise<BrowserExtractContentResult>
+  download?(url: string, destinationPath: string, allowedRoots?: string[]): Promise<BrowserDownloadResult>
 }

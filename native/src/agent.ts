@@ -42,6 +42,8 @@ import type { AppCloseBackend } from './appClose.js'
 import { RealAppCloseBackend } from './appClose.js'
 import type { BrowserBackend } from './browser.js'
 import { RealBrowserBackend } from './browserInput.js'
+import type { UiaBackend } from './uiaWin32.js'
+import { RealUiaBackend } from './uiaWin32.js'
 
 /**
  * Native Windows Agent — JSON-RPC over loopback HTTP (Phase 1.2 + 1.5).
@@ -94,6 +96,8 @@ export interface AgentOptions {
   appClose?: AppCloseBackend
   /** Browser backend (Phase 4.0); defaults to the real Playwright browser. */
   browser?: BrowserBackend
+  /** UI Automation backend (Phase 7); defaults to the real Win32 UIA. */
+  uia?: UiaBackend
   log?: (line: string) => void
 }
 
@@ -395,6 +399,7 @@ function createHandler(options: AgentOptions): (req: IncomingMessage, res: Serve
   const clipboard: ClipboardBackend = options.clipboard ?? new RealClipboardBackend()
   const appClose: AppCloseBackend = options.appClose ?? new RealAppCloseBackend()
   const browser: BrowserBackend = options.browser ?? new RealBrowserBackend()
+  const uia: UiaBackend = options.uia ?? new RealUiaBackend()
   const token = options.token ?? ''
   const allowedOrigins = options.allowedOrigins
   const openFolders = options.openFolders ?? []
@@ -591,6 +596,18 @@ function createHandler(options: AgentOptions): (req: IncomingMessage, res: Serve
           const result = await desktop.focusWindow(windowIdParam(params))
           return envelope(id, { result })
         }
+        case 'window.minimize': {
+          const result = await desktop.minimizeWindow(windowIdParam(params))
+          return envelope(id, { result })
+        }
+        case 'window.maximize': {
+          const result = await desktop.maximizeWindow(windowIdParam(params))
+          return envelope(id, { result })
+        }
+        case 'window.restore': {
+          const result = await desktop.restoreWindow(windowIdParam(params))
+          return envelope(id, { result })
+        }
         case 'web.capabilities': {
           return envelope(id, { result: web.capabilities() })
         }
@@ -692,6 +709,89 @@ function createHandler(options: AgentOptions): (req: IncomingMessage, res: Serve
         }
         case 'browser.close': {
           const result = await browser.close()
+          return envelope(id, { result })
+        }
+        case 'browser.listTabs': {
+          const result = await browser.listTabs()
+          return envelope(id, { result })
+        }
+        case 'browser.newTab': {
+          const url = optStr(params, 'url')
+          const result = await browser.newTab(url)
+          return envelope(id, { result })
+        }
+        case 'browser.switchTab': {
+          const index = Number(params?.index)
+          if (!Number.isFinite(index)) throw nativeError('invalid_argument', 'Invalid or missing "index" param.')
+          const result = await browser.switchTab(index)
+          return envelope(id, { result })
+        }
+        case 'browser.closeTab': {
+          const rawIdx = params?.index
+          const index = rawIdx !== undefined ? Number(rawIdx) : undefined
+          const result = await browser.closeTab(index)
+          return envelope(id, { result })
+        }
+        case 'browser.fillForm': {
+          const fields = params?.fields as Record<string, string> | undefined
+          if (!fields || typeof fields !== 'object') {
+            throw nativeError('invalid_argument', 'Missing or invalid "fields" param.')
+          }
+          const result = await browser.fillForm(fields)
+          return envelope(id, { result })
+        }
+        case 'browser.extractContent': {
+          const result = await browser.extractContent({
+            includeTables: Boolean(params?.includeTables),
+            includeLinks: Boolean(params?.includeLinks),
+          })
+          return envelope(id, { result })
+        }
+        case 'browser.download': {
+          const url = webUrlParam(params)
+          const destinationPath = strParam(params, 'destinationPath')
+          const result = await browser.download(url, destinationPath, roots)
+          return envelope(id, { result })
+        }
+        case 'uia.inspect': {
+          const target = strParam(params, 'target') || strParam(params, 'windowId') || 'active'
+          const maxDepth = Number(params?.maxDepth)
+          const maxElements = Number(params?.maxElements)
+          const result = await uia.inspect(target, {
+            maxDepth: Number.isFinite(maxDepth) ? maxDepth : undefined,
+            maxElements: Number.isFinite(maxElements) ? maxElements : undefined,
+          })
+          return envelope(id, { result })
+        }
+        case 'uia.invoke': {
+          const target = strParam(params, 'target') || strParam(params, 'windowId') || 'active'
+          const selector = (params?.selector as Record<string, string> | undefined) || {
+            automationId: optStr(params, 'automationId'),
+            name: optStr(params, 'name'),
+            controlType: optStr(params, 'controlType'),
+          }
+          const result = await uia.invoke(target, selector)
+          return envelope(id, { result })
+        }
+        case 'uia.setValue': {
+          const target = strParam(params, 'target') || strParam(params, 'windowId') || 'active'
+          const value = strParam(params, 'value')
+          const selector = (params?.selector as Record<string, string> | undefined) || {
+            automationId: optStr(params, 'automationId'),
+            name: optStr(params, 'name'),
+            controlType: optStr(params, 'controlType'),
+          }
+          const result = await uia.setValue(target, selector, value)
+          return envelope(id, { result })
+        }
+        case 'uia.toggle': {
+          const target = strParam(params, 'target') || strParam(params, 'windowId') || 'active'
+          const selector = (params?.selector as Record<string, string> | undefined) || {
+            automationId: optStr(params, 'automationId'),
+            name: optStr(params, 'name'),
+            controlType: optStr(params, 'controlType'),
+          }
+          const result = await uia.toggle(target, selector)
           return envelope(id, { result })
         }
         default:

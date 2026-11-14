@@ -71,6 +71,8 @@ export interface RunningApplication {
   titles: string[]
   /** Opaque window ids these titles came from (real enumeration). */
   windowIds: string[]
+  /** True when at least one visible window of this app is in the foreground. */
+  isForeground?: boolean
 }
 
 export interface RunningAppsReport {
@@ -127,6 +129,7 @@ export function deriveRunningApps(windows: readonly WindowSummary[]): RunningApp
     const existing = byKey.get(key)
     if (existing) {
       existing.windowCount += 1
+      if (win.isForeground) existing.isForeground = true
       if (existing.titles.length < MAX_TITLES_PER_APP) existing.titles.push(clipTitle(win.title))
       if (existing.windowIds.length < MAX_TITLES_PER_APP) existing.windowIds.push(win.windowId)
       continue
@@ -138,6 +141,7 @@ export function deriveRunningApps(windows: readonly WindowSummary[]): RunningApp
       windowCount: 1,
       titles: [clipTitle(win.title)],
       windowIds: [win.windowId],
+      isForeground: win.isForeground ?? false,
     })
   }
 

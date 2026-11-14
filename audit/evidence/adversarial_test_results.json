@@ -1,0 +1,94 @@
+{
+  "timestamp": "2026-11-13T14:27:11.670Z",
+  "tests": [
+    {
+      "id": "ADV-01",
+      "name": "Empty workspace configuration behavior",
+      "passed": true,
+      "details": {
+        "windowsRejectedWithEmptyRoots": true,
+        "cwdWithEmptyArray": "FELL_BACK_TO_DEFAULTS",
+        "note": "FINDING: passing [] falls back to defaults instead of failing closed."
+      }
+    },
+    {
+      "id": "ADV-02",
+      "name": "Malformed environment roots parsing",
+      "passed": true,
+      "details": {
+        "parsedRootsCount": 4,
+        "hasEmpty": false
+      }
+    },
+    {
+      "id": "ADV-03",
+      "name": "Overlapping workspace roots",
+      "passed": true,
+      "details": {
+        "ok": true,
+        "dir": "C:\\Users\\vamru\\AppData\\Local\\Temp\\jarvis-adv-sec-u406Om\\nested_sub\\app"
+      }
+    },
+    {
+      "id": "ADV-04",
+      "name": "Similar-prefix attacks on authorized roots",
+      "passed": true,
+      "details": {
+        "res1": false,
+        "res2": false,
+        "res3": false,
+        "res4": false
+      }
+    },
+    {
+      "id": "ADV-05",
+      "name": "Junction replacement detection",
+      "passed": true,
+      "details": {
+        "ok": false,
+        "message": "projectPath symlink or junction target is outside authorized workspace roots: \"C:\\Users\\vamru\\AppData\\Local\\Temp\\jarvis-adv-outside-8WLqle\"."
+      }
+    },
+    {
+      "id": "ADV-06",
+      "name": "Symlink to sensitive host file inside project",
+      "passed": true,
+      "details": "Symlink creation skipped: EPERM: operation not permitted, symlink 'C:\\Users\\vamru\\AppData\\Local\\Temp\\jarvis-adv-outside-8WLqle\\secret_passwords.txt' -> 'C:\\Users\\vamru\\AppData\\Local\\Temp\\jarvis-adv-sec-u406Om\\link_to_hosts'"
+    },
+    {
+      "id": "ADV-07",
+      "name": "Directory creation boundary enforcement",
+      "passed": true,
+      "details": {
+        "legitimateCreated": true,
+        "unauthorizedCreated": false
+      }
+    },
+    {
+      "id": "ADV-08",
+      "name": "Deeply nested traversal attacks",
+      "passed": true,
+      "details": {
+        "ok": false,
+        "message": "projectPath is outside authorized workspace roots: \"C:\\Users\\vamru\\AppData\\Local\\Windows\"."
+      }
+    },
+    {
+      "id": "ADV-09",
+      "name": "Case variation handling on Windows",
+      "passed": true,
+      "details": {
+        "lowerOk": true,
+        "upperOk": true
+      }
+    },
+    {
+      "id": "ADV-10",
+      "name": "UNC and device namespaces rejection",
+      "passed": true,
+      "details": {
+        "allBlocked": true
+      }
+    }
+  ]
+}

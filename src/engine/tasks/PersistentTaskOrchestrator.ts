@@ -19,6 +19,7 @@ import type {
   TaskStorage,
 } from './types'
 import { TaskStore } from './TaskStore'
+import { SpecialistDelegator } from './SpecialistWorkerPool'
 
 export interface SubtaskExecutionResult {
   success: boolean
@@ -60,6 +61,7 @@ export interface OrchestratorOptions {
 
 export class PersistentTaskOrchestrator {
   private readonly store: TaskStore
+  private readonly delegator = new SpecialistDelegator()
   private executor?: SubtaskExecutor
   private readonly maxConcurrentTasks: number
   private readonly stallThresholdMs: number
@@ -84,6 +86,10 @@ export class PersistentTaskOrchestrator {
 
   getStore(): TaskStore {
     return this.store
+  }
+
+  getDelegator(): SpecialistDelegator {
+    return this.delegator
   }
 
   async getTask(id: string): Promise<PersistentTask | null> {
@@ -129,12 +135,20 @@ export class PersistentTaskOrchestrator {
       payload: s.payload ?? {},
     }))
 
-    // Resolve relative step dependencies (e.g. 'step-1' -> subtask-${taskId}-1)
+    // Resolve relative step dependencies (e.g. 'step-1' or 'subtask-0' -> subtask-${taskId}-1)
     for (const subtask of subtasks) {
       subtask.dependencies = subtask.dependencies.map((dep) => {
         const stepMatch = dep.match(/^step-(\d+)$/i)
         if (stepMatch) {
           const stepIdx = parseInt(stepMatch[1], 10) - 1
+          if (stepIdx >= 0 && stepIdx < subtasks.length) {
+            return subtasks[stepIdx].id
+          }
+        }
+        const subMatch = dep.match(/^subtask-(\d+)$/i)
+        if (subMatch) {
+          const raw = parseInt(subMatch[1], 10)
+          const stepIdx = raw < subtasks.length ? raw : raw - 1
           if (stepIdx >= 0 && stepIdx < subtasks.length) {
             return subtasks[stepIdx].id
           }
@@ -247,6 +261,15 @@ export class PersistentTaskOrchestrator {
 
     task.state = 'PAUSED'
     task.updatedAt = Date.now()
+    for (const sub of task.subtasks) {
+      if (
+        sub.state === 'EXECUTING' ||
+        sub.state === 'OBSERVING' ||
+        sub.state === 'VERIFYING'
+      ) {
+        sub.state = 'PENDING'
+      }
+    }
     task.logs.push({
       id: `log-${Date.now()}-paused`,
       taskId,
@@ -257,7 +280,6 @@ export class PersistentTaskOrchestrator {
     })
 
     await this.store.saveTask(task)
-    this.activeWorkers.delete(taskId)
     this.notifyStateChange(task)
     return true
   }
@@ -273,6 +295,13 @@ export class PersistentTaskOrchestrator {
       task.subtasks.filter((s: Subtask) => s.state === 'VERIFIED').map((s: Subtask) => s.id),
     )
     for (const sub of task.subtasks) {
+      if (
+        sub.state === 'EXECUTING' ||
+        sub.state === 'OBSERVING' ||
+        sub.state === 'VERIFYING'
+      ) {
+        sub.state = 'PENDING'
+      }
       if (sub.state === 'PENDING') {
         const depsMet = sub.dependencies.every((d: string) => verifiedIds.has(d))
         if (depsMet) sub.state = 'READY'
@@ -322,7 +351,6 @@ export class PersistentTaskOrchestrator {
     }
 
     await this.store.saveTask(task)
-    this.activeWorkers.delete(taskId)
     this.notifyStateChange(task)
     return true
   }
@@ -390,7 +418,6 @@ export class PersistentTaskOrchestrator {
     task.updatedAt = Date.now()
 
     await this.store.saveTask(task)
-    this.activeWorkers.delete(taskId)
     this.notifyStateChange(task)
     return true
   }
@@ -437,16 +464,45 @@ export class PersistentTaskOrchestrator {
       const verifiedIds = new Set(latestCheckpoint?.completedSubtaskIds || [])
 
       for (const sub of task.subtasks) {
-        if (verifiedIds.has(sub.id)) {
-          sub.state = 'VERIFIED'
-        } else if (
+        const hasEvidence =
+          sub.state === 'VERIFIED' &&
+          sub.verification?.passed === true &&
+          Boolean(sub.verification.evidence?.trim())
+        if (hasEvidence) continue
+        if (
+          verifiedIds.has(sub.id) ||
+          sub.state === 'VERIFIED' ||
           sub.state === 'EXECUTING' ||
           sub.state === 'OBSERVING' ||
           sub.state === 'VERIFYING'
         ) {
+          sub.state = 'PENDING'
+        }
+      }
+      const verifiedNow = new Set(
+        task.subtasks
+          .filter(
+            (sub) =>
+              sub.state === 'VERIFIED' &&
+              sub.verification?.passed === true &&
+              Boolean(sub.verification.evidence?.trim()),
+          )
+          .map((sub) => sub.id),
+      )
+      for (const sub of task.subtasks) {
+        if (
+          sub.state === 'PENDING' &&
+          sub.dependencies.every((dependency) => verifiedNow.has(dependency))
+        ) {
           sub.state = 'READY'
         }
       }
+      const preserved = task.subtasks.filter(
+        (sub) =>
+          sub.state === 'VERIFIED' &&
+          sub.verification?.passed === true &&
+          Boolean(sub.verification.evidence?.trim()),
+      ).length
 
       task.state = 'QUEUED'
       task.lastHeartbeatAt = now
@@ -457,7 +513,7 @@ export class PersistentTaskOrchestrator {
         timestamp: now,
         level: 'warn',
         phase: 'QUEUED',
-        message: `Task recovered from restart. Checkpoint: ${latestCheckpoint?.checkpointId || 'initial'} (${verifiedIds.size} subtasks preserved)`,
+        message: `Task recovered from restart. Checkpoint: ${latestCheckpoint?.checkpointId || 'initial'} (${preserved} subtasks preserved with evidence)`,
       })
 
       await this.store.saveTask(task)
@@ -477,6 +533,7 @@ export class PersistentTaskOrchestrator {
     const stalled: PersistentTask[] = []
 
     for (const task of activeTasks) {
+      if (this.activeWorkers.has(task.id)) continue
       if (now - task.lastHeartbeatAt > this.stallThresholdMs) {
         task.state = 'RECOVERY_REQUIRED'
         task.updatedAt = now
@@ -490,7 +547,6 @@ export class PersistentTaskOrchestrator {
         })
 
         await this.store.saveTask(task)
-        this.activeWorkers.delete(task.id)
         this.notifyStateChange(task)
         stalled.push(task)
       }
@@ -571,7 +627,7 @@ export class PersistentTaskOrchestrator {
     this.notifyStateChange(task)
 
     while (true) {
-      const currentTask = await this.store.getTask(taskId)
+      let currentTask = await this.store.getTask(taskId)
       if (!currentTask) break
       if (
         currentTask.state === 'PAUSED' ||
@@ -600,10 +656,36 @@ export class PersistentTaskOrchestrator {
         }
       }
 
-      const nextSubtask = currentTask.subtasks.find((s: Subtask) => s.state === 'READY')
+      let nextSubtask = currentTask.subtasks.find((s: Subtask) => s.state === 'READY')
       if (!nextSubtask) {
-        const allDone = currentTask.subtasks.every((s: Subtask) => s.state === 'VERIFIED')
+        const allDone =
+          currentTask.subtasks.length > 0 &&
+          currentTask.subtasks.every((s: Subtask) => s.state === 'VERIFIED')
         const anyFailed = currentTask.subtasks.some((s: Subtask) => s.state === 'FAILED')
+        const unproven = currentTask.subtasks.find(
+          (s: Subtask) =>
+            s.state === 'VERIFIED' &&
+            !(s.verification?.passed === true && Boolean(s.verification.evidence?.trim())),
+        )
+
+        if (allDone && unproven) {
+          currentTask.state = 'FAILED'
+          currentTask.error = `Completion blocked: subtask "${unproven.title}" has no passing verification evidence.`
+          currentTask.completedAt = Date.now()
+          currentTask.updatedAt = Date.now()
+          currentTask.logs.push({
+            id: `log-${Date.now()}-completion-blocked`,
+            taskId,
+            timestamp: Date.now(),
+            level: 'error',
+            phase: 'FAILED',
+            subtaskId: unproven.id,
+            message: currentTask.error,
+          })
+          await this.store.saveTask(currentTask)
+          this.notifyStateChange(currentTask)
+          break
+        }
 
         if (allDone) {
           currentTask.state = 'VERIFYING'
@@ -618,16 +700,45 @@ export class PersistentTaskOrchestrator {
           await this.store.saveTask(currentTask)
           this.notifyStateChange(currentTask)
 
+          const verification = await this.verifyObjectiveCompletion(currentTask)
+          if (!verification.satisfied) {
+            currentTask.state = 'FAILED'
+            currentTask.error = `Completion blocked: ${verification.reason}`
+            currentTask.completedAt = Date.now()
+            currentTask.updatedAt = Date.now()
+            currentTask.logs.push({
+              id: `log-${Date.now()}-completion-blocked`,
+              taskId,
+              timestamp: Date.now(),
+              level: 'error',
+              phase: 'FAILED',
+              message: currentTask.error,
+              details: verification.evidence,
+            })
+            await this.store.saveTask(currentTask)
+            this.notifyStateChange(currentTask)
+            break
+          }
+
           currentTask.state = 'COMPLETED'
           currentTask.completedAt = Date.now()
           currentTask.updatedAt = Date.now()
+          const aggregation = this.delegator.aggregateResults(currentTask.subtasks)
+          currentTask.metadata = {
+            ...(currentTask.metadata || {}),
+            specialistSummary: aggregation.summary,
+            specialistAggregation: aggregation,
+            completionEvidence: verification.evidence,
+            objectiveVerified: true,
+          }
           currentTask.logs.push({
             id: `log-${Date.now()}-completed`,
             taskId,
             timestamp: Date.now(),
             level: 'info',
             phase: 'COMPLETED',
-            message: `Task successfully completed (${currentTask.subtasks.length} subtasks verified).`,
+            message: `Task successfully completed and objective verified (${currentTask.subtasks.length} subtasks verified).`,
+            details: verification.evidence,
           })
           await this.store.saveTask(currentTask)
           this.notifyStateChange(currentTask)
@@ -645,8 +756,10 @@ export class PersistentTaskOrchestrator {
         }
 
         if (currentTask.subtasks.length === 0) {
-          currentTask.state = 'COMPLETED'
+          currentTask.state = 'FAILED'
+          currentTask.error = 'Task has no executable subtasks; nothing was verified.'
           currentTask.completedAt = Date.now()
+          currentTask.updatedAt = Date.now()
           await this.store.saveTask(currentTask)
           this.notifyStateChange(currentTask)
           break
@@ -663,6 +776,24 @@ export class PersistentTaskOrchestrator {
       currentTask.currentSubtaskId = nextSubtask.id
       nextSubtask.state = 'EXECUTING'
       nextSubtask.startedAt = Date.now()
+
+      // Specialist worker delegation & authorization gate (Phase 10)
+      if (!nextSubtask.workerRole || !nextSubtask.lineage) {
+        const delegated = this.delegator.delegateSubtask(nextSubtask, currentTask.id)
+        Object.assign(nextSubtask, delegated)
+      }
+
+      const auth = this.delegator.validateSubtaskExecution(nextSubtask)
+      if (!auth.allowed) {
+        nextSubtask.state = 'FAILED'
+        nextSubtask.result = { success: false, error: auth.reason }
+        currentTask.state = 'FAILED'
+        currentTask.error = auth.reason
+        await this.store.saveTask(currentTask)
+        this.notifyStateChange(currentTask)
+        break
+      }
+
       await this.store.saveTask(currentTask)
       this.notifyStateChange(currentTask)
 
@@ -674,7 +805,17 @@ export class PersistentTaskOrchestrator {
       }
 
       try {
+        const executingSubtaskId = nextSubtask.id
         const result = await this.executor(nextSubtask, currentTask)
+
+        const latest = await this.store.getTask(taskId)
+        if (!latest || latest.state !== 'EXECUTING') break
+        currentTask = latest
+        const activeSubtask = currentTask.subtasks.find(
+          (s: Subtask) => s.id === executingSubtaskId,
+        )
+        if (!activeSubtask || activeSubtask.state !== 'EXECUTING') break
+        nextSubtask = activeSubtask
 
         if (result.requiresPermission) {
           const approvalId = `appr-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
@@ -713,7 +854,8 @@ export class PersistentTaskOrchestrator {
         const passedVerification =
           result.success &&
           result.verification?.passed === true &&
-          Boolean(result.verification?.evidence)
+          typeof result.verification.evidence === 'string' &&
+          result.verification.evidence.trim().length > 0
 
         if (passedVerification) {
           nextSubtask.state = 'VERIFIED'
@@ -785,6 +927,8 @@ export class PersistentTaskOrchestrator {
               error: result.error || 'Verification failed after maximum retries',
             }
             currentTask.state = 'RECOVERY_REQUIRED'
+            currentTask.error = `Subtask "${nextSubtask.title}" failed after ${nextSubtask.maxRetries} retries: ${result.error || 'Verification unsatisfied'}`
+            currentTask.updatedAt = Date.now()
             currentTask.logs.push({
               id: `log-${Date.now()}-subtask-failed`,
               taskId,
@@ -810,11 +954,232 @@ export class PersistentTaskOrchestrator {
           error: err instanceof Error ? err.message : String(err),
         }
         currentTask.state = 'RECOVERY_REQUIRED'
+        currentTask.error = `Subtask "${nextSubtask.title}" threw: ${nextSubtask.result.error}`
         currentTask.updatedAt = Date.now()
         await this.store.saveTask(currentTask)
         this.notifyStateChange(currentTask)
         break
       }
+    }
+  }
+
+  private async verifyObjectiveCompletion(task: PersistentTask): Promise<{
+    satisfied: boolean
+    reason?: string
+    evidence?: Record<string, unknown>
+  }> {
+    // 1. All subtasks must have valid passing verification evidence
+    for (const sub of task.subtasks) {
+      if (sub.state !== 'VERIFIED') {
+        return {
+          satisfied: false,
+          reason: `Subtask "${sub.title}" is in state "${sub.state}", not VERIFIED.`,
+        }
+      }
+      if (!sub.verification?.passed || !sub.verification?.evidence?.trim()) {
+        return {
+          satisfied: false,
+          reason: `Subtask "${sub.title}" has no passing verification evidence.`,
+        }
+      }
+    }
+
+    const meta = (task.metadata || {}) as Record<string, unknown>
+    let projectPath = typeof meta.projectPath === 'string' ? meta.projectPath : undefined
+    if (!projectPath) {
+      for (const sub of task.subtasks) {
+        if (typeof sub.payload?.projectPath === 'string') {
+          projectPath = sub.payload.projectPath
+          break
+        }
+      }
+    }
+
+    // Collect declared required files
+    const declaredFiles = new Set<string>()
+    if (Array.isArray(meta.requiredFiles)) {
+      for (const f of meta.requiredFiles) {
+        if (typeof f === 'string' && f.trim()) declaredFiles.add(f.trim())
+      }
+    }
+    for (const sub of task.subtasks) {
+      if (Array.isArray(sub.payload?.expectedFiles)) {
+        for (const f of sub.payload.expectedFiles) {
+          if (typeof f === 'string' && f.trim()) declaredFiles.add(f.trim())
+        }
+      }
+      if (typeof sub.payload?.filePath === 'string' && sub.payload.filePath.trim()) {
+        declaredFiles.add(sub.payload.filePath.trim())
+      }
+    }
+
+    const objText = String(task.objective ?? '')
+    const demandsFileCreation =
+      Boolean(meta.demandsFileCreation) ||
+      /\b(create|write|make|generate|implement)\s+(?:a\s+)?(?:new\s+)?(?:[a-zA-Z]+\s+)?(?:file\s+)?(?:named\s+)?([a-zA-Z0-9_.-]+\.[a-zA-Z0-9]+)/i.test(objText) ||
+      /file\s+named\s+([a-zA-Z0-9_.-]+\.[a-zA-Z0-9]+)/i.test(objText)
+
+    if (demandsFileCreation && declaredFiles.size === 0) {
+      return {
+        satisfied: false,
+        reason: 'Objective demanded file creation, but no required files were planned or created on disk.',
+      }
+    }
+
+    const verifiedFilesEvidence: Array<{ path: string; bytes: number; exists: boolean }> = []
+    if (declaredFiles.size > 0 && projectPath) {
+      for (const file of declaredFiles) {
+        let fullPath = file
+        if (!/^[a-zA-Z]:[\\/]/.test(file)) {
+          const sep = projectPath.includes('/') ? '/' : '\\'
+          fullPath = `${projectPath.replace(/[\\/]+$/, '')}${sep}${file.replace(/^[\\/]+/, '')}`
+        }
+
+        let exists = false
+        let bytes = 0
+        let nodeChecked = false
+
+        if (typeof process !== 'undefined' && process.versions?.node && typeof window === 'undefined') {
+          try {
+            const fsModule = 'node:fs'
+            const fs = await import(/* @vite-ignore */ fsModule)
+            nodeChecked = true
+            exists = fs.existsSync(fullPath)
+            if (exists) {
+              bytes = fs.statSync(fullPath).size
+            }
+          } catch {
+            nodeChecked = false
+          }
+        }
+
+        if (nodeChecked) {
+          if (!exists || bytes === 0) {
+            return {
+              satisfied: false,
+              reason: `Required file on disk verification failed: "${file}" does not exist or is empty at ${fullPath}.`,
+            }
+          }
+        } else {
+          const normFile = file.replace(/\\/g, '/').toLowerCase().replace(/^\.?\//, '')
+          const fileVerifiedInSubtask = task.subtasks.some((s) => {
+            const dataSources = [
+              s.observation?.data as Record<string, unknown> | undefined,
+              s.result?.output as Record<string, unknown> | undefined,
+            ]
+            for (const obs of dataSources) {
+              if (!obs) continue
+              if (Array.isArray(obs?.expectedFiles)) {
+                const matched = obs.expectedFiles.some((ef: any) => {
+                  const normEf = String(ef.path ?? '').replace(/\\/g, '/').toLowerCase().replace(/^\.?\//, '')
+                  return (normEf === normFile || normEf.endsWith('/' + normFile)) && ef.exists && ef.bytes > 0
+                })
+                if (matched) return true
+              }
+              if (obs?.filePath && obs?.verified === true) {
+                const normFp = String(obs.filePath).replace(/\\/g, '/').toLowerCase().replace(/^\.?\//, '')
+                if (normFp === normFile || normFp.endsWith('/' + normFile)) return true
+              }
+            }
+            return false
+          })
+          if (!fileVerifiedInSubtask) {
+            return {
+              satisfied: false,
+              reason: `Required file verification evidence missing for: "${file}".`,
+            }
+          }
+          bytes = 1
+          exists = true
+        }
+
+        verifiedFilesEvidence.push({ path: file, bytes, exists })
+      }
+    }
+
+    const demandsExecution =
+      Boolean(meta.demandsExecution) ||
+      /\b(run|execute)\b.*\b(file|script|code|it|tests?)\b/i.test(objText)
+
+    const executionSubtasks = task.subtasks.filter(
+      (s) =>
+        s.capability === 'dev.runTests' ||
+        s.capability === 'runTests' ||
+        s.capability === 'dev.test' ||
+        s.capability === 'test' ||
+        s.capability === 'dev.build' ||
+        s.toolId === 'dev.runTests' ||
+        s.toolId === 'dev.test' ||
+        s.toolId === 'dev.build' ||
+        s.capability?.includes('test') ||
+        s.capability?.includes('execute') ||
+        s.capability === 'run_project_tests',
+    )
+
+    if (demandsExecution && executionSubtasks.length === 0) {
+      return {
+        satisfied: false,
+        reason: 'Objective demanded code execution, but no execution subtask was planned or run.',
+      }
+    }
+
+    const executionEvidence: Array<{ command: string; exitCode: number; passed: boolean; stdoutSnippet?: string }> = []
+    if (executionSubtasks.length > 0) {
+      for (const sub of executionSubtasks) {
+        const obsData = (sub.observation?.data ?? sub.result?.output ?? {}) as Record<string, unknown>
+        const exitCode = typeof obsData.exitCode === 'number' ? obsData.exitCode : (sub.verification?.passed ? 0 : -1)
+        const passed = (typeof obsData.exitCode === 'number' ? obsData.exitCode === 0 : sub.verification?.passed === true) && (obsData.passed !== false)
+        const expectedMatched = obsData.expectedOutputMatched !== false
+
+        executionEvidence.push({
+          command: String(obsData.command ?? sub.title),
+          exitCode,
+          passed,
+          stdoutSnippet: String(obsData.stdout ?? obsData.outputSnippet ?? '').slice(-500),
+        })
+
+        if (!passed) {
+          return {
+            satisfied: false,
+            reason: `Execution subtask "${sub.title}" failed with exit code ${exitCode}.`,
+          }
+        }
+        if (!expectedMatched) {
+          return {
+            satisfied: false,
+            reason: `Execution subtask "${sub.title}" failed output verification: expected output did not match.`,
+          }
+        }
+      }
+    }
+
+    const reportSubtask = task.subtasks.find(
+      (s) => s.capability === 'dev.generateReport' || s.toolId === 'dev.generateReport',
+    )
+    if (reportSubtask) {
+      const repData = (reportSubtask.observation?.data ?? reportSubtask.result?.output ?? {}) as Record<string, unknown>
+      if (repData.verified !== true) {
+        return {
+          satisfied: false,
+          reason: 'Execution report could not be verified on disk.',
+        }
+      }
+      if (repData.requiredFilesVerified === false) {
+        return {
+          satisfied: false,
+          reason: 'Execution report recorded required files verification failure.',
+        }
+      }
+    }
+
+    return {
+      satisfied: true,
+      evidence: {
+        verifiedAt: Date.now(),
+        projectPath,
+        files: verifiedFilesEvidence,
+        executions: executionEvidence,
+      },
     }
   }
 

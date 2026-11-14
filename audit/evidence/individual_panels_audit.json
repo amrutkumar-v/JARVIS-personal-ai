@@ -1,0 +1,97 @@
+[
+  {
+    "id": "core",
+    "title": "JARVIS Core",
+    "navLabel": "Overview",
+    "opened": true,
+    "contentSnippet": "◉ | JARVIS CORE | SYS // CORE | ◳ | ✕ | JARVIS CORE | CONNECTED | Backend | JARVIS CORE V0.10.0 | PID | 24156 | Uptime | 577S | Native agent | RUNNING (BACKEND-SUPERVISED) | Last device message | — | TRUSTED DEVICES (4 of 4) | Main PC (this machine) · Dell laptop · S26 Ultra · S23 FE. Phones/Dell show online only while their companion bridge is actively heartbeating. | Amrut's Victus · this machine | ONLINE · LOCAL · FILESYSTEM · APPL",
+    "screenshot": "D:\\JARVIS\\audit\\evidence\\panel_individual_core.png"
+  },
+  {
+    "id": "conversation",
+    "title": "Session Log",
+    "navLabel": "Assistant",
+    "opened": true,
+    "contentSnippet": "▤ | SESSION LOG | SYS // CONVERSATION | ◳ | ✕ | Silence so far. Say something.",
+    "screenshot": "D:\\JARVIS\\audit\\evidence\\panel_individual_conversation.png"
+  },
+  {
+    "id": "tasks",
+    "title": "Task Monitor",
+    "navLabel": "Tasks",
+    "opened": true,
+    "contentSnippet": "⦿ | TASK MONITOR | SYS // TASKS | ◳ | ✕ | ACTIVE: 0 | QUEUED: 0 | DONE: 25 | ALL | ACTIVE | COMPLETED | FAILED | COMPLETED | Desktop Task: Open C... | COMPLETED | Desktop Task: Open C... | COMPLETED | Desktop Task: Open C... | COMPLETED | Desktop Task: Open C... | COMPLETED | Desktop Task: Open C... | COMPLETED | Desktop Task: Open C... | FAILED | Desktop Task: Open C... | FAILED | Desktop Task: Open C... | COMPLETED | Autonomous Task: Cre... | COMPLETED | A",
+    "screenshot": "D:\\JARVIS\\audit\\evidence\\panel_individual_tasks.png"
+  },
+  {
+    "id": "applications",
+    "title": "Applications",
+    "navLabel": "Applications",
+    "opened": true,
+    "contentSnippet": "⬜ | APPLICATIONS | SYS // APPLICATIONS | ◳ | ✕ | DESKTOP OBSERVATION | Refresh | Screenshot | ACTIVE FOREGROUND WINDOW | New Volume (D:) - File Explorer | Process: explorer.exe · PID: 11312 | OPEN APPLICATION WINDOWS (6) | New Volume (D:) - File Explorer(explorer.exe) | Focus | _ | [] | NVIDIA GeForce Overlay(NVIDIA Overlay.exe) | Focus | _ | [] | Program Manager(explorer.exe) | Focus | _ | [] | Settings(SystemSettings.exe) | Focus | _ | [] | Settings(",
+    "screenshot": "D:\\JARVIS\\audit\\evidence\\panel_individual_applications.png"
+  },
+  {
+    "id": "files",
+    "title": "Files",
+    "navLabel": "Files",
+    "opened": true,
+    "contentSnippet": "⬚ | FILES | SYS // FILES | ◳ | ✕ | COPY A FILE | REGISTERED | CREATE A DIRECTORY | REGISTERED | DELETE A FILE | REGISTERED | INSPECT A FILE | REGISTERED | LIST FILES IN A DIRECTORY | REGISTERED | MOVE A FILE | REGISTERED | READ A FILE | REGISTERED | SEARCH FILES | REGISTERED | WRITE A FILE | REGISTERED | NATIVE AGENT | READY | FILE SYSTEM | READY | OBSERVATION | READY",
+    "screenshot": "D:\\JARVIS\\audit\\evidence\\panel_individual_files.png"
+  },
+  {
+    "id": "camera",
+    "title": "Camera",
+    "navLabel": "Camera",
+    "opened": true,
+    "contentSnippet": "◎ | CAMERA | SYS // CAMERA | ◳ | ✕ | CAMERA | PERMISSION NOT REQUESTED | CAMERA OFF | TURN ON | CAPTURE FRAME",
+    "screenshot": "D:\\JARVIS\\audit\\evidence\\panel_individual_camera.png"
+  },
+  {
+    "id": "vision",
+    "title": "Vision",
+    "navLabel": "Vision",
+    "opened": true,
+    "contentSnippet": "◃ | VISION | SYS // VISION | ◳ | ✕ | VISION | UNAVAILABLE | OCR | UNAVAILABLE | UI ELEMENT DETECTION | UNAVAILABLE | TARGET LOCALIZATION | UNAVAILABLE",
+    "screenshot": "D:\\JARVIS\\audit\\evidence\\panel_individual_vision.png"
+  },
+  {
+    "id": "activity",
+    "title": "Activity",
+    "navLabel": "Activity",
+    "opened": true,
+    "contentSnippet": "⚡ | ACTIVITY | SYS // ACTIVITY | ◳ | ✕ | No operations yet.",
+    "screenshot": "D:\\JARVIS\\audit\\evidence\\panel_individual_activity.png"
+  },
+  {
+    "id": "system",
+    "title": "System",
+    "navLabel": "System Monitor",
+    "opened": true,
+    "contentSnippet": "◐ | SYSTEM | SYS // SYSTEM | ◳ | ✕ | AI | CONFIGURED | PC CONTROL | INPUT+APPS | FILES | CORE | 4 DEVICES | CAMERA | VISION | WEB",
+    "screenshot": "D:\\JARVIS\\audit\\evidence\\panel_individual_system.png"
+  },
+  {
+    "id": "devices",
+    "title": "Devices",
+    "navLabel": "Devices",
+    "opened": true,
+    "contentSnippet": "⬢ | DEVICES | SYS // DEVICES | ◳ | ✕ | TOPOLOGY | CORE | 1/4 | J | Amrut's Victus | MAIN PC | ONLINE | N/A | N/A | 1550h | Amrut's Dell | DUAL PC | OFFLINE | N/A | N/A | 498488h | S26 Ultra | PHONE | OFFLINE | 87% | wifi | 1414h | Amrut's S23 FE | PHONE 2 | OFFLINE | N/A | N/A | 498488h | OPEN A URL ON A DEVICE | REGISTERED | REFRESH DEVICE STATE | REGISTERED | LIST COMPANION DEVICES | REGISTERED | SEND A DEVICE NOTIFICATION | REGISTERED | SEND A FILE TO A DEVICE | REGISTERED | DEV",
+    "screenshot": "D:\\JARVIS\\audit\\evidence\\panel_individual_devices.png"
+  },
+  {
+    "id": "environments",
+    "title": "Environments",
+    "navLabel": "Environments",
+    "opened": true,
+    "contentSnippet": "☆ | ENVIRONMENTS | SYS // ENVIRONMENTS | ◳ | ✕ | ARC REACTOR | ASTRA HUD | CONTROL PANEL | SPACE | TUNNEL | NEURAL",
+    "screenshot": "D:\\JARVIS\\audit\\evidence\\panel_individual_environments.png"
+  },
+  {
+    "id": "settings_modal",
+    "title": "Settings Modal",
+    "opened": true,
+    "contentSnippet": "SYSTEM SETTINGS | ✕ | APPEARANCE | Theme | CLASSIC | CYBER | STEALTH | HOLOGRAPHIC | MINIMAL | The iconic cyan arc reactor on deep midnight. | Demo mode | Demo mode only enlarges the Arc Reactor and declutters the UI for presentations. It never fakes execution, verification or permissions. | VOICE | Voice interaction | Wake word (say \"Wake up, JARVIS\") | Output volume | 90% | HAND GESTURES | Status | Off (turn on the camera) — han",
+    "screenshot": "D:\\JARVIS\\audit\\evidence\\modal_settings_detailed.png"
+  }
+]

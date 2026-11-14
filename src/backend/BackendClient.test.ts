@@ -111,6 +111,43 @@ describe('BackendClient', () => {
     client.stop()
   })
 
+  it('drops summary-shaped task frames and only delivers full PersistentTask frames', () => {
+    const es = new FakeEventSource('')
+    const client = makeClient(es)
+    const onTask = vi.fn()
+    client.on('onTask', onTask)
+    client.start()
+    es.push('ready', HEALTH)
+
+    // The task service's state_changed frame is a SUMMARY (taskId, no
+    // subtasks). Forwarding it as a PersistentTask corrupts the store —
+    // rows keyed by undefined id pile up and the Task Monitor crashes on
+    // subtasks.length — so it must be dropped.
+    es.push('task', {
+      event: 'state_changed',
+      taskId: 'task-1',
+      state: 'EXECUTING',
+      title: 'summary frame',
+      priority: 50,
+    })
+    expect(onTask).not.toHaveBeenCalled()
+
+    // A real task frame (string id + subtasks array) is delivered intact.
+    const fullTask = {
+      id: 'task-1',
+      title: 'real task',
+      state: 'EXECUTING',
+      subtasks: [],
+      requiredApprovals: [],
+      checkpoints: [],
+      logs: [],
+    }
+    es.push('task', fullTask)
+    expect(onTask).toHaveBeenCalledTimes(1)
+    expect(onTask).toHaveBeenCalledWith(fullTask)
+    client.stop()
+  })
+
   it('routes a real call-state frame pushed by the backend', () => {
     const es = new FakeEventSource('')
     const client = makeClient(es)
@@ -241,5 +278,81 @@ describe('BackendClient default fetch binding (browser Illegal invocation regres
     const impl: unknown = (client as unknown as { fetchImpl: unknown }).fetchImpl
     expect(typeof impl).toBe('function')
     expect(impl).not.toBe(globalThis.fetch)
+  })
+})
+
+describe('BackendClient durable task API', () => {
+  function jsonResponse(status: number, body: unknown): Response {
+    return new Response(JSON.stringify(body), {
+      status,
+      headers: { 'content-type': 'application/json' },
+    })
+  }
+
+  it('re-handshakes once after a 401 and replays createTask', async () => {
+    let taskPosts = 0
+    const fetchImpl = vi.fn(async (url: string | URL | Request) => {
+      const href = String(url)
+      if (href.endsWith('/api/session')) return jsonResponse(200, { ok: true })
+      taskPosts += 1
+      if (taskPosts === 1) return jsonResponse(401, { ok: false, error: 'unauthorized' })
+      return jsonResponse(201, {
+        ok: true,
+        task: { id: 'task-after-restart', state: 'QUEUED', subtasks: [] },
+      })
+    })
+
+    const client = new BackendClient({
+      baseUrl: 'http://backend.test',
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    })
+    const result = await client.createTask({ title: 'Restart probe', objective: 'survive a backend restart' })
+
+    expect(taskPosts).toBe(2)
+    expect(result.ok).toBe(true)
+    expect(result.task?.id).toBe('task-after-restart')
+  })
+
+  it('re-handshakes once after a 401 and replays getTask', async () => {
+    let gets = 0
+    const fetchImpl = vi.fn(async (url: string | URL | Request) => {
+      const href = String(url)
+      if (href.endsWith('/api/session')) return jsonResponse(200, { ok: true })
+      gets += 1
+      if (gets === 1) return jsonResponse(401, { ok: false, error: 'unauthorized' })
+      return jsonResponse(200, {
+        ok: true,
+        task: { id: 'task-read-after-restart', state: 'COMPLETED', subtasks: [] },
+      })
+    })
+
+    const client = new BackendClient({
+      baseUrl: 'http://backend.test',
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    })
+    const task = await client.getTask('task-read-after-restart')
+
+    expect(gets).toBe(2)
+    expect(task?.id).toBe('task-read-after-restart')
+    expect(task?.state).toBe('COMPLETED')
+  })
+
+  it('treats HTTP 200 with ok:false as a failed control action', async () => {
+    let posts = 0
+    const fetchImpl = vi.fn(async (url: string | URL | Request) => {
+      const href = String(url)
+      if (href.endsWith('/api/session')) return jsonResponse(200, { ok: true })
+      posts += 1
+      return posts === 1
+        ? jsonResponse(200, { ok: false, error: 'task is PAUSED' })
+        : jsonResponse(200, { ok: true })
+    })
+
+    const client = new BackendClient({
+      baseUrl: 'http://backend.test',
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    })
+    expect(await client.pauseTask('task-1')).toBe(false)
+    expect(await client.pauseTask('task-1')).toBe(true)
   })
 })

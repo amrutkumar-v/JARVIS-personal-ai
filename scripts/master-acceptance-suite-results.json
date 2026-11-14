@@ -1,0 +1,225 @@
+{
+  "summary": {
+    "total": 10,
+    "passed": 10,
+    "failed": 0
+  },
+  "results": [
+    {
+      "workflowId": 1,
+      "name": "Basic Autonomous Development",
+      "status": "PASS",
+      "durationMs": 244,
+      "timestamp": "2026-11-13T05:51:41.198Z",
+      "details": "Created hello_world.py, executed script, verified stdout matches expected output, generated execution report.",
+      "evidence": {
+        "projectPath": "D:\\JARVIS-Test\\acceptance-workflows\\workflow-1-basic-dev",
+        "hello_world_py": {
+          "path": "D:\\JARVIS-Test\\acceptance-workflows\\workflow-1-basic-dev\\hello_world.py",
+          "sha256": "d6bc33cbe47d58f2ea5685be03ca5bd63123e19d01d368c345250df94a2d990f",
+          "size": 109
+        },
+        "report": {
+          "path": "D:\\JARVIS-Test\\acceptance-workflows\\workflow-1-basic-dev\\JARVIS_EXECUTION_REPORT.md",
+          "sha256": "804df748e5902aa88657fa96efb5dd2374962d39b7a20d82782f532f2e8c80a5",
+          "size": 1593
+        },
+        "stdout": "Tests/Execution passed cleanly in 108ms (exit code 0). Output verified.",
+        "exitCode": 0
+      }
+    },
+    {
+      "workflowId": 2,
+      "name": "Multi-File Development",
+      "status": "PASS",
+      "durationMs": 351,
+      "timestamp": "2026-11-13T05:51:41.552Z",
+      "details": "Created math_utils.py, test_math_utils.py, and README.md. Ran unittests with 100% pass rate and generated report.",
+      "evidence": {
+        "projectPath": "D:\\JARVIS-Test\\acceptance-workflows\\workflow-2-multi-file",
+        "files": {
+          "math_utils.py": {
+            "sha256": "6b8cb09ba8ffb74998fbafef948ea725f0cb3307b63f15c975530e1d0e478fa5",
+            "size": 622
+          },
+          "test_math_utils.py": {
+            "sha256": "9885195655ed2ffb65ae871681bf48258e93c583077baba35b040451b485ba08",
+            "size": 755
+          },
+          "README.md": {
+            "sha256": "84c753f440b1dff8b096916fc765f9de384aa90b1802b01020fe3fb53c8164ee",
+            "size": 231
+          },
+          "report": {
+            "sha256": "c2c83ad69f48d268f53b5574f4eb7d6f889f4b8bfc9f300f50e3f99851cbb084",
+            "size": 1809
+          }
+        },
+        "testOutput": "Tests/Execution passed cleanly in 306ms (exit code 0): 3 passed, 0 failed.",
+        "exitCode": 0
+      }
+    },
+    {
+      "workflowId": 3,
+      "name": "Failure Recovery & False-Completion Prevention",
+      "status": "PASS",
+      "durationMs": 862,
+      "timestamp": "2026-11-13T05:51:42.414Z",
+      "details": "Intentionally injected bug was detected; task blocked completion; recovery patch applied; verified test suite passed.",
+      "evidence": {
+        "projectPath": "D:\\JARVIS-Test\\acceptance-workflows\\workflow-3-failure-recovery",
+        "initialFailure": {
+          "detectedFailure": true,
+          "exitCode": 1,
+          "outputSnippet": "Tests/Execution failed (exit code 1): 0 passed, 1 failed."
+        },
+        "recoveryVerified": true,
+        "finalExitCode": 0,
+        "tax_py_sha256": "a0b4a360912ee8cacb966ce87e41cde99ca780b7adbaaa3c7dfe730d42888fe2"
+      }
+    },
+    {
+      "workflowId": 4,
+      "name": "Forceful Task Cancellation & Process Tree Cleanup",
+      "status": "PASS",
+      "durationMs": 1128,
+      "timestamp": "2026-11-13T05:51:43.543Z",
+      "details": "Started long-running child process, registered in ChildProcessRegistry, invoked killProcessTree, verified immediate process termination without orphans.",
+      "evidence": {
+        "taskId": "task-wf4-cancel-test",
+        "terminatedPid": 35952,
+        "killedCount": 1,
+        "processTableVerifiedDead": true
+      }
+    },
+    {
+      "workflowId": 5,
+      "name": "Restart Recovery & State Persistence",
+      "status": "PASS",
+      "durationMs": 35,
+      "timestamp": "2026-11-13T05:51:43.578Z",
+      "details": "Created task with partial progress, persisted to disk, recreated storage to simulate restart, successfully recovered state without progress loss, and finalized to COMPLETED.",
+      "evidence": {
+        "storagePath": "D:\\JARVIS-Test\\acceptance-workflows\\workflow-5-restart-recovery\\.jarvis\\tasks",
+        "taskId": "task-wf5-restart-persistence",
+        "recoveredSubtasksCompleted": 2,
+        "finalState": "COMPLETED",
+        "diskFile": "D:\\JARVIS-Test\\acceptance-workflows\\workflow-5-restart-recovery\\.jarvis\\tasks\\task-wf5-restart-persistence.json"
+      }
+    },
+    {
+      "workflowId": 6,
+      "name": "Multiple Concurrent Tasks & Workspace Isolation",
+      "status": "PASS",
+      "durationMs": 559,
+      "timestamp": "2026-11-13T05:51:44.137Z",
+      "details": "Executed two independent development pipelines simultaneously in separate directories without race conditions or shared state corruption.",
+      "evidence": {
+        "taskAlpha": {
+          "path": "D:\\JARVIS-Test\\acceptance-workflows\\workflow-6-concurrency\\task_alpha",
+          "sha256": "18351bab8e120e7f32d716ff6f91768797f62a5bb0ecd563e013781b914a3d94",
+          "ok": true
+        },
+        "taskBeta": {
+          "path": "D:\\JARVIS-Test\\acceptance-workflows\\workflow-6-concurrency\\task_beta",
+          "sha256": "4ba0a3571526a9cb4d2648b8bc968d112bf463cc6bf8691fdebb823828b2f58f",
+          "ok": true
+        }
+      }
+    },
+    {
+      "workflowId": 7,
+      "name": "Local AI Integration (Live Ollama Qwen3-Coder)",
+      "status": "PASS",
+      "durationMs": 45525,
+      "timestamp": "2026-11-13T05:52:29.663Z",
+      "details": "Discovered and queried local Ollama instance with qwen3-coder:latest. Generated working Python implementation with latency metrics recorded.",
+      "evidence": {
+        "model": "qwen3-coder:latest",
+        "endpoint": "http://127.0.0.1:11434/api/generate",
+        "latencyMs": 45507,
+        "evalCount": 49,
+        "evalDurationNs": 5111902000,
+        "generatedFile": {
+          "path": "D:\\JARVIS-Test\\acceptance-workflows\\workflow-7-local-ai\\palindrome.py",
+          "sha256": "1d3d54da5f13f60aa4d513615a18ba6078503dd2a15ebf4e72c057b9b5cdb8a0",
+          "size": 210
+        }
+      }
+    },
+    {
+      "workflowId": 8,
+      "name": "Security & Permission Enforcement",
+      "status": "PASS",
+      "durationMs": 244,
+      "timestamp": "2026-11-13T05:52:29.912Z",
+      "details": "Command chaining attempts safely neutralized without shell execution; sensitive subtasks default-denied, halted in WAITING_FOR_PERMISSION, and strictly gated by operator approval.",
+      "evidence": {
+        "commandInjectionBlocked": true,
+        "permissionGateVerified": true,
+        "initialState": "WAITING_FOR_PERMISSION",
+        "approvalId": "appr-1794549149729-hbgp",
+        "approvalGranted": true
+      }
+    },
+    {
+      "workflowId": 9,
+      "name": "Browser Automation & Responsive UI Verification",
+      "status": "PASS",
+      "durationMs": 11651,
+      "timestamp": "2026-11-13T05:52:41.564Z",
+      "details": "Tested UI across 4 responsive breakpoints (1440px, 1024px, 768px, 390px) via Playwright Chromium. Zero layout crashes, full-page screenshots captured and verified.",
+      "evidence": {
+        "1440px_desktop": {
+          "viewport": "1440x900",
+          "path": "D:\\JARVIS-Test\\acceptance-workflows\\workflow-9-browser-ui\\ui_1440px_desktop.png",
+          "sha256": "315f714f039f571fdcdfffaf7167dcbd96c6c63d6487bb2c03148921ee7d6d89",
+          "rootWidth": 1440,
+          "rootHeight": 900
+        },
+        "1024px_laptop": {
+          "viewport": "1024x768",
+          "path": "D:\\JARVIS-Test\\acceptance-workflows\\workflow-9-browser-ui\\ui_1024px_laptop.png",
+          "sha256": "7962c1a4fd5fb0219991015eec16d55a8e10c298657caeb0035564ca9fea7f3a",
+          "rootWidth": 1024,
+          "rootHeight": 768
+        },
+        "768px_tablet": {
+          "viewport": "768x1024",
+          "path": "D:\\JARVIS-Test\\acceptance-workflows\\workflow-9-browser-ui\\ui_768px_tablet.png",
+          "sha256": "c3d12de7564d2caa1775177c2ac42bc78604cd36d3eeed36e724343271c43a05",
+          "rootWidth": 768,
+          "rootHeight": 1024
+        },
+        "390px_mobile": {
+          "viewport": "390x844",
+          "path": "D:\\JARVIS-Test\\acceptance-workflows\\workflow-9-browser-ui\\ui_390px_mobile.png",
+          "sha256": "08cff78eb77865c01254fcdfea583c08799cc0983e00702e9a58d24b0db34d82",
+          "rootWidth": 390,
+          "rootHeight": 844
+        }
+      }
+    },
+    {
+      "workflowId": 10,
+      "name": "Long-Running Reliability & Resource Accounting",
+      "status": "PASS",
+      "durationMs": 2430,
+      "timestamp": "2026-11-13T05:52:43.998Z",
+      "details": "Completed 6-step autonomous pipeline (git init -> checkpoint -> patch -> test -> checkpoint -> report). Measured zero process leakage.",
+      "evidence": {
+        "projectPath": "D:\\JARVIS-Test\\acceptance-workflows\\workflow-10-long-running",
+        "heapUsedInitialMb": 43.14,
+        "heapUsedFinalMb": 44.62,
+        "heapDeltaMb": 1.48,
+        "initialCpuLoad": 0.05,
+        "finalCpuLoad": 0.237,
+        "pipelineFiles": {
+          "data_pipeline.py": "459250ede7c7a1b33316eac9ab95458ca6e330fd1f335ab031ff086fdaf18c80",
+          "test_data_pipeline.py": "fc7f3b1ea4a48281c640ebefdfdbba672152c574f2dc2f98bf78f26661d438ce",
+          "report": "70b3fbbeda374b4854510933071c6b3a09a9cd3b5d4dc8127348e18a58153aa1"
+        }
+      }
+    }
+  ]
+}

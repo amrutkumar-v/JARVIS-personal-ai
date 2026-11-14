@@ -15,7 +15,7 @@
 
 import { getBackendConfig, type BackendConfig } from './config'
 import { ReconnectController, type ReconnectPhase } from './reconnect'
-import { ensureBackendSession } from './session'
+import { ensureBackendSession, getNodeSessionCookie, resetBackendSession } from './session'
 import type {
   BackendEventType,
   BackendHealth,
@@ -31,6 +31,7 @@ import type {
   OutboundFile,
 } from './types'
 import type { PersistentTask } from '../engine/tasks/types'
+import type { CreatePersistentTaskRequest } from '../engine/tasks/TaskGateway'
 
 export type BackendListener<T = unknown> = (data: T) => void
 
@@ -51,6 +52,7 @@ export interface BackendEventHandlers {
 }
 
 export interface BackendClientDeps {
+  baseUrl?: string
   config?: BackendConfig
   makeEventSource?: (url: string) => EventSourceLike
   fetchImpl?: typeof fetch
@@ -86,7 +88,8 @@ export class BackendClient {
   private readyHandler: ((event: { data: string }) => void) | null = null
 
   constructor(deps: BackendClientDeps = {}) {
-    this.config = deps.config ?? getBackendConfig()
+    const baseConfig = deps.config ?? getBackendConfig()
+    this.config = deps.baseUrl ? { ...baseConfig, baseUrl: deps.baseUrl.replace(/\/+$/, '') } : baseConfig
     this.fetchImpl = deps.fetchImpl ?? (typeof fetch === 'function' ? fetch.bind(globalThis) : async () => { throw new Error('fetch unavailable') })
     this.makeEventSource = deps.makeEventSource ?? ((url: string) => new EventSource(url, { withCredentials: true }) as unknown as EventSourceLike)
     this.handlers = {}
@@ -144,6 +147,7 @@ export class BackendClient {
       this.connectWithSession()
       return
     }
+    void resetBackendSession(this.config.baseUrl, this.fetchImpl)
     void ensureBackendSession(this.config.baseUrl, this.fetchImpl)
       .then(() => {
         if (this.started) this.connectWithSession()
@@ -252,9 +256,18 @@ export class BackendClient {
         case 'call':
           this.handlers.onCall?.(payload as CallEventData)
           break
-        case 'task':
-          this.handlers.onTask?.(payload as PersistentTask)
+        case 'task': {
+          // A task frame must be a full PersistentTask. A summary-shaped
+          // payload (id undefined, no subtasks) would corrupt the store —
+          // rows keyed by undefined pile up and the Task Monitor crashes on
+          // subtasks.length. Drop malformed frames; the panel's poll
+          // reconciles from GET /api/tasks.
+          const taskFrame = payload as PersistentTask | null
+          if (taskFrame && typeof taskFrame.id === 'string' && Array.isArray(taskFrame.subtasks)) {
+            this.handlers.onTask?.(taskFrame)
+          }
           break
+        }
         case 'assistant':
           break
       }
@@ -287,16 +300,30 @@ export class BackendClient {
     path: string,
     body: unknown,
   ): Promise<{ status: number; ok: boolean; error?: string; body: Record<string, unknown> }> {
-    const headers: Record<string, string> = { 'content-type': 'application/json' }
-    try {
+    const send = async (): Promise<Response> => {
+      const headers: Record<string, string> = { 'content-type': 'application/json' }
+      const nodeCookie = getNodeSessionCookie()
+      if (nodeCookie) {
+        headers['Cookie'] = nodeCookie
+      }
       await ensureBackendSession(this.config.baseUrl, this.fetchImpl)
-      const res = await this.fetchImpl(`${this.config.baseUrl}${path}`, {
+      return this.fetchImpl(`${this.config.baseUrl}${path}`, {
         method: 'POST',
         headers,
         body: JSON.stringify(body),
         credentials: 'include',
         signal: this.requestSignal(),
       })
+    }
+    try {
+      let res = await send()
+      if (res.status === 401) {
+        // The backend regenerates its session id on every process start. A
+        // cached pre-restart session would otherwise 401 forever; re-handshake
+        // once and replay the request.
+        resetBackendSession(this.config.baseUrl, this.fetchImpl)
+        res = await send()
+      }
       const parsed = (await res.json().catch(() => ({}))) as Record<string, unknown>
       return { status: res.status, ok: res.ok, error: typeof parsed.error === 'string' ? parsed.error : undefined, body: parsed }
     } catch {
@@ -308,8 +335,14 @@ export class BackendClient {
 
   async listDevices(): Promise<DeviceRecord[]> {
     try {
+      const headers: Record<string, string> = {}
+      const nodeCookie = getNodeSessionCookie()
+      if (nodeCookie) {
+        headers['Cookie'] = nodeCookie
+      }
       await ensureBackendSession(this.config.baseUrl, this.fetchImpl)
       const res = await this.fetchImpl(`${this.config.baseUrl}/api/device/registry`, {
+        headers,
         credentials: 'include',
         signal: this.requestSignal(),
       })
@@ -362,8 +395,14 @@ export class BackendClient {
 
   async listFiles(): Promise<OutboundFile[]> {
     try {
+      const headers: Record<string, string> = {}
+      const nodeCookie = getNodeSessionCookie()
+      if (nodeCookie) {
+        headers['Cookie'] = nodeCookie
+      }
       await ensureBackendSession(this.config.baseUrl, this.fetchImpl)
       const res = await this.fetchImpl(`${this.config.baseUrl}/api/files`, {
+        headers,
         credentials: 'include',
         signal: this.requestSignal(),
       })
@@ -436,12 +475,25 @@ export class BackendClient {
   /* --------------------------------------------------- Persistent Task API */
 
   async getTasks(): Promise<PersistentTask[]> {
-    try {
+    const send = async (): Promise<Response> => {
+      const headers: Record<string, string> = {}
+      const nodeCookie = getNodeSessionCookie()
+      if (nodeCookie) {
+        headers['Cookie'] = nodeCookie
+      }
       await ensureBackendSession(this.config.baseUrl, this.fetchImpl)
-      const res = await this.fetchImpl(`${this.config.baseUrl}/api/tasks`, {
+      return this.fetchImpl(`${this.config.baseUrl}/api/tasks`, {
+        headers,
         credentials: 'include',
         signal: this.requestSignal(),
       })
+    }
+    try {
+      let res = await send()
+      if (res.status === 401) {
+        resetBackendSession(this.config.baseUrl, this.fetchImpl)
+        res = await send()
+      }
       const body = (await res.json().catch(() => ({}))) as { tasks?: PersistentTask[] }
       return body.tasks ?? []
     } catch {
@@ -449,10 +501,61 @@ export class BackendClient {
     }
   }
 
+  async getTask(taskId: string): Promise<PersistentTask | null> {
+    const send = async (): Promise<Response> => {
+      const headers: Record<string, string> = {}
+      const nodeCookie = getNodeSessionCookie()
+      if (nodeCookie) {
+        headers['Cookie'] = nodeCookie
+      }
+      await ensureBackendSession(this.config.baseUrl, this.fetchImpl)
+      return this.fetchImpl(
+        `${this.config.baseUrl}/api/tasks/${encodeURIComponent(taskId)}`,
+        {
+          headers,
+          credentials: 'include',
+          signal: this.requestSignal(),
+        },
+      )
+    }
+    try {
+      let res = await send()
+      if (res.status === 401) {
+        resetBackendSession(this.config.baseUrl, this.fetchImpl)
+        res = await send()
+      }
+      if (!res.ok) return null
+      const body = (await res.json().catch(() => ({}))) as { task?: PersistentTask }
+      return body.task ?? null
+    } catch {
+      return null
+    }
+  }
+
+  /**
+   * Submit an objective (or an explicit DAG) to the durable backend task
+   * service. The backend returns the stored task; a failed submission is
+   * reported as a failure, never silently retried in the browser.
+   */
+  async createTask(
+    request: CreatePersistentTaskRequest,
+  ): Promise<{ ok: boolean; task?: PersistentTask; error?: string }> {
+    const res = await this.postJson('/api/tasks', request)
+    const task = res.body.task as PersistentTask | undefined
+    return {
+      ok: res.status === 201 && task !== undefined,
+      task,
+      error:
+        res.error ||
+        (typeof res.body.error === 'string' ? res.body.error : undefined) ||
+        (task === undefined ? 'The backend did not return a task.' : undefined),
+    }
+  }
+
   async pauseTask(taskId: string): Promise<boolean> {
     try {
       const res = await this.postJson(`/api/tasks/${encodeURIComponent(taskId)}/pause`, {})
-      return res.ok
+      return res.ok && res.body.ok === true
     } catch {
       return false
     }
@@ -461,7 +564,7 @@ export class BackendClient {
   async resumeTask(taskId: string): Promise<boolean> {
     try {
       const res = await this.postJson(`/api/tasks/${encodeURIComponent(taskId)}/resume`, {})
-      return res.ok
+      return res.ok && res.body.ok === true
     } catch {
       return false
     }
@@ -470,7 +573,7 @@ export class BackendClient {
   async cancelTask(taskId: string): Promise<boolean> {
     try {
       const res = await this.postJson(`/api/tasks/${encodeURIComponent(taskId)}/cancel`, {})
-      return res.ok
+      return res.ok && res.body.ok === true
     } catch {
       return false
     }
@@ -479,7 +582,7 @@ export class BackendClient {
   async approveTask(taskId: string, approvalId: string): Promise<boolean> {
     try {
       const res = await this.postJson(`/api/tasks/${encodeURIComponent(taskId)}/approve`, { approvalId })
-      return res.ok
+      return res.ok && res.body.ok === true
     } catch {
       return false
     }
@@ -488,7 +591,7 @@ export class BackendClient {
   async rejectTask(taskId: string, approvalId: string, reason?: string): Promise<boolean> {
     try {
       const res = await this.postJson(`/api/tasks/${encodeURIComponent(taskId)}/reject`, { approvalId, reason })
-      return res.ok
+      return res.ok && res.body.ok === true
     } catch {
       return false
     }

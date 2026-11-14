@@ -39,6 +39,8 @@ export interface WindowSummary {
    * to `bounds` with an explicit, documented frame-offset estimate.
    */
   clientBounds?: WindowBounds
+  /** True when this window is the active foreground window. */
+  isForeground?: boolean
 }
 
 export interface WindowStatus extends WindowSummary {

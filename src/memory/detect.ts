@@ -104,6 +104,21 @@ const PROFILE_PATTERNS: RegExp[] = [
   /\bname:\s*[A-Za-z]/i,
 ]
 
+const PROJECT_DECISION_PATTERNS: RegExp[] = [
+  /\b(?:architecture\s+decision|we\s+decided\s+to|decision\s+is\s+to|chose\s+to\s+use|standardized\s+on|convention\s+is|tech\s+stack\s+is)\b/i,
+  /\b(?:we\s+use|we\s+chose|decision:)\b/i,
+]
+
+const WORKFLOW_PATTERNS: RegExp[] = [
+  /\b(?:workflow|routine|procedure|every\s+time\s+we|to\s+deploy|run\s+tests\s+using|steps\s+to|test\s+procedure)\b/i,
+  /\b(?:to\s+build|to\s+test|to\s+run|to\s+start)\s+the\s+project\b/i,
+]
+
+const REFERENCE_PATTERNS: RegExp[] = [
+  /\b(?:docs?\s+(?:url|is|at)|documentation\s+(?:url|is\s+at|at|is)|repository\s+(?:is\s+at|at|path)|path\s+is|environment\s+variable|endpoint\s+is|reference:)\b/i,
+  /\b(?:api\s+docs?|api\s+documentation|handbook\s+at|wiki\s+is\s+at)\b/i,
+]
+
 const PREFERENCE_PATTERNS: RegExp[] = [
   /\bi (prefer|like|love|enjoy|favorite|favourite)\b/i,
   /\bmy favorite\b/i,
@@ -111,6 +126,7 @@ const PREFERENCE_PATTERNS: RegExp[] = [
   /\bprefer concise\b/i,
   /\bprefer (long|short|detailed|concise|verbose)/i,
   /\bmy (favourite|favorite)\b/i,
+  /\b(dark mode|light mode|coding style|communication tone)\b/i,
 ]
 
 const FACT_PATTERNS: RegExp[] = [
@@ -126,6 +142,9 @@ export function detectMemoryType(content: string): MemoryType {
   const c = (content ?? '').trim()
   if (!c) return 'FACT'
   if (PROFILE_PATTERNS.some((re) => re.test(c))) return 'PROFILE'
+  if (PROJECT_DECISION_PATTERNS.some((re) => re.test(c))) return 'PROJECT_DECISION'
+  if (WORKFLOW_PATTERNS.some((re) => re.test(c))) return 'WORKFLOW'
+  if (REFERENCE_PATTERNS.some((re) => re.test(c))) return 'REFERENCE'
   if (PREFERENCE_PATTERNS.some((re) => re.test(c))) return 'PREFERENCE'
   if (FACT_PATTERNS.some((re) => re.test(c))) return 'FACT'
   return 'FACT'

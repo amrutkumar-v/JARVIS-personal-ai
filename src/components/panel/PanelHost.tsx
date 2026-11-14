@@ -8,16 +8,26 @@ import { PanelWindow } from './PanelWindow'
 
 interface Props {
   renderPanel: (id: PanelId) => ReactNode
+  isSidebarCollapsed?: boolean
 }
 
-export function PanelHost({ renderPanel }: Props) {
+export function PanelHost({ renderPanel, isSidebarCollapsed }: Props) {
   const panels = usePanelLayoutStore((s) => s.panels)
   const focusPanel = usePanelLayoutStore((s) => s.focusPanel)
   const viewport = useViewport()
 
+  const offsets = useMemo(() => {
+    const isMobile = viewport.w <= 768
+    const sidebarWidth = isMobile ? 0 : isSidebarCollapsed ? 64 : 240
+    const margin = isMobile ? 12 : 16
+    const topbarHeight = 54
+    const dockHeight = isMobile ? 84 : 110
+    return { sidebarWidth, topbarHeight, dockHeight, margin }
+  }, [viewport.w, isSidebarCollapsed])
+
   const rects = useMemo(
-    () => computePanelRects(panels, PANEL_BY_ID, viewport),
-    [panels, viewport],
+    () => computePanelRects(panels, PANEL_BY_ID, viewport, offsets),
+    [panels, viewport, offsets],
   )
 
   const sorted = useMemo(() => {
@@ -53,6 +63,7 @@ export function PanelHost({ renderPanel }: Props) {
             def={def}
             rect={rect}
             viewport={viewport}
+            offsets={offsets}
             open={state.open}
             focused={state.open && rect.z === topZ}
             onPointerDown={handlePointerDown}

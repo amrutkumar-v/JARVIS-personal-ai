@@ -6,10 +6,10 @@ describe('CalculatorTool', () => {
   const tool = new CalculatorTool()
   const ctx: ToolContext = { requestId: 'calc-test' }
 
-  it('is a low-risk compute tool with a schema', () => {
+  it('is a read-only compute tool with a schema', () => {
     expect(tool.id).toBe('calculator')
     expect(tool.category).toBe('compute')
-    expect(tool.permission).toBe('low_risk')
+    expect(tool.permission).toBe('read_only')
     expect(tool.inputSchema.required).not.toContain('expression')
     expect(tool.inputSchema.properties.expression.type).toBe('string')
   })

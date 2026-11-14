@@ -15,6 +15,7 @@ import type {
   DesktopFocusResult,
   DesktopKeyResult,
   DesktopMoveResult,
+  DesktopWindowStateResult,
 } from './provider'
 import {
   parseClientCoord,
@@ -563,6 +564,122 @@ export class WindowFocusTool extends DesktopTool {
   }
 }
 
+/* ---------------------------------------------------------------- window state */
+
+export class WindowMinimizeTool extends DesktopTool {
+  readonly id = 'window.minimize'
+  readonly name = 'Minimize a window'
+  readonly description = 'Minimizes a visible window to the taskbar.'
+  readonly permission: ToolPermission = 'low_risk'
+  readonly verifiable = true
+  readonly inputSchema: ToolInputSchema = {
+    type: 'object',
+    properties: { window_id: { type: 'string', description: 'Window id from window.list.' } },
+    required: ['window_id'],
+  }
+
+  canRun(query: string): boolean {
+    return /\b(minimize)\b/i.test(query) && /\b(window|app)\b/i.test(query)
+  }
+
+  async execute(input: ToolInput): Promise<ToolResult> {
+    const blocker = availabilityBlocker(this.provider)
+    if (blocker) return blocker
+    const win = windowParam(input)
+    if ('error' in win) return { ok: false, message: win.error, data: { kind: 'invalid_input' } }
+    try {
+      const result: DesktopWindowStateResult = await this.provider.minimizeWindow(win.id)
+      return { ok: result.success, message: result.detail, data: result }
+    } catch (error) {
+      return desktopFailure(error)
+    }
+  }
+
+  verify(_input: ToolInput, result: ToolResult): Promise<ToolVerification> {
+    const data = result.data as DesktopWindowStateResult | undefined
+    return Promise.resolve({
+      ok: data?.success === true,
+      message: data?.detail || 'Window state change completed.',
+    })
+  }
+}
+
+export class WindowMaximizeTool extends DesktopTool {
+  readonly id = 'window.maximize'
+  readonly name = 'Maximize a window'
+  readonly description = 'Maximizes a window to occupy the entire screen.'
+  readonly permission: ToolPermission = 'low_risk'
+  readonly verifiable = true
+  readonly inputSchema: ToolInputSchema = {
+    type: 'object',
+    properties: { window_id: { type: 'string', description: 'Window id from window.list.' } },
+    required: ['window_id'],
+  }
+
+  canRun(query: string): boolean {
+    return /\b(maximize)\b/i.test(query) && /\b(window|app)\b/i.test(query)
+  }
+
+  async execute(input: ToolInput): Promise<ToolResult> {
+    const blocker = availabilityBlocker(this.provider)
+    if (blocker) return blocker
+    const win = windowParam(input)
+    if ('error' in win) return { ok: false, message: win.error, data: { kind: 'invalid_input' } }
+    try {
+      const result: DesktopWindowStateResult = await this.provider.maximizeWindow(win.id)
+      return { ok: result.success, message: result.detail, data: result }
+    } catch (error) {
+      return desktopFailure(error)
+    }
+  }
+
+  verify(_input: ToolInput, result: ToolResult): Promise<ToolVerification> {
+    const data = result.data as DesktopWindowStateResult | undefined
+    return Promise.resolve({
+      ok: data?.success === true,
+      message: data?.detail || 'Window state change completed.',
+    })
+  }
+}
+
+export class WindowRestoreTool extends DesktopTool {
+  readonly id = 'window.restore'
+  readonly name = 'Restore a window'
+  readonly description = 'Restores a window to its normal position and size.'
+  readonly permission: ToolPermission = 'low_risk'
+  readonly verifiable = true
+  readonly inputSchema: ToolInputSchema = {
+    type: 'object',
+    properties: { window_id: { type: 'string', description: 'Window id from window.list.' } },
+    required: ['window_id'],
+  }
+
+  canRun(query: string): boolean {
+    return /\b(restore)\b/i.test(query) && /\b(window|app)\b/i.test(query)
+  }
+
+  async execute(input: ToolInput): Promise<ToolResult> {
+    const blocker = availabilityBlocker(this.provider)
+    if (blocker) return blocker
+    const win = windowParam(input)
+    if ('error' in win) return { ok: false, message: win.error, data: { kind: 'invalid_input' } }
+    try {
+      const result: DesktopWindowStateResult = await this.provider.restoreWindow(win.id)
+      return { ok: result.success, message: result.detail, data: result }
+    } catch (error) {
+      return desktopFailure(error)
+    }
+  }
+
+  verify(_input: ToolInput, result: ToolResult): Promise<ToolVerification> {
+    const data = result.data as DesktopWindowStateResult | undefined
+    return Promise.resolve({
+      ok: data?.success === true,
+      message: data?.detail || 'Window state change completed.',
+    })
+  }
+}
+
 /** All desktop-interaction tools bound to one provider (empty when none supplied). */
 export function createDesktopTools(provider: DesktopProvider | undefined): Tool[] {
   if (!provider) return []
@@ -577,5 +694,8 @@ export function createDesktopTools(provider: DesktopProvider | undefined): Tool[
     new DesktopHotkeyTool(provider),
     new DesktopTypeTool(provider),
     new WindowFocusTool(provider),
+    new WindowMinimizeTool(provider),
+    new WindowMaximizeTool(provider),
+    new WindowRestoreTool(provider),
   ]
 }

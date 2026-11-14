@@ -22,37 +22,55 @@ import {
   mkdirSync,
   readFileSync,
   readdirSync,
+  realpathSync,
+  renameSync,
   statSync,
+  unlinkSync,
   writeFileSync,
 } from 'node:fs'
 import { spawn } from 'node:child_process'
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path'
+import { childProcessRegistry } from '../process/ChildProcessRegistry.js'
+import {
+  normalizeProjectPath,
+  resolveProjectDir,
+  getDefaultAllowedWorkspaceRoots,
+  isAbsoluteProjectPath,
+  isPathInsideRoot,
+  isPathWithinAuthorizedRoots,
+  isUncOrDevicePath,
+  isExcessivelyBroadPath,
+  getDedicatedTempWorkspace,
+  parseExplicitWorkspaceRoots,
+  isDosDeviceSegment,
+  hasReservedDosDeviceSegment,
+  type WorkspaceConfigOptions,
+  type ResolvedProjectDir,
+  type ResolvedProjectDirError,
+} from './workspaceBoundary.js'
+
+export {
+  normalizeProjectPath,
+  resolveProjectDir,
+  getDefaultAllowedWorkspaceRoots,
+  isAbsoluteProjectPath,
+  isPathInsideRoot,
+  isPathWithinAuthorizedRoots,
+  isUncOrDevicePath,
+  isExcessivelyBroadPath,
+  getDedicatedTempWorkspace,
+  parseExplicitWorkspaceRoots,
+  isDosDeviceSegment,
+  hasReservedDosDeviceSegment,
+  type WorkspaceConfigOptions,
+  type ResolvedProjectDir,
+  type ResolvedProjectDirError,
+}
 
 const TEST_TIMEOUT_MS = 120_000
 const COMMAND_TIMEOUT_MS = 60_000
 
 /* --------------------------------------------------------------- helpers */
-
-/** Strip sentence punctuation and surrounding quotes from a user-supplied path. */
-export function normalizeProjectPath(raw: string): string {
-  let value = String(raw ?? '').trim()
-  value = value.replace(/^["'`]+/, '').replace(/["'`]+$/, '')
-  // A trailing sentence period is not part of a Windows directory name. The
-  // Win32 API can silently create an addressable-looking but non-normal path
-  // (`D:\Project.`) that later child-process spawns cannot use as a cwd.
-  value = value.replace(/[.,;:!?]+$/g, '')
-  value = value.replace(/[ .]+$/g, '')
-  if (process.platform === 'win32') {
-    value = value.replace(/\//g, '\\')
-    value = value.replace(/\\{2,}/g, '\\')
-  }
-  return value
-}
-
-function isAbsoluteProjectPath(value: string): boolean {
-  if (process.platform === 'win32') return /^[a-zA-Z]:\\/.test(value)
-  return isAbsolute(value)
-}
 
 function sha256(content: string): string {
   return createHash('sha256').update(content, 'utf8').digest('hex')
@@ -73,57 +91,40 @@ function isInside(baseDir: string, candidate: string): boolean {
   return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel))
 }
 
-interface ResolvedProjectDir {
-  ok: true
-  dir: string
-  created: boolean
-}
-
-interface ResolvedProjectDirError {
-  ok: false
-  message: string
-}
-
 /**
- * Normalize and validate a project directory.
- *
- * A missing directory is only created when `ensure` is true (a plan step that
- * explicitly builds a new project). Inspection of a typo'd path must fail
- * loudly instead of operating on a freshly invented empty folder.
+ * True when `candidate` is inside `baseDir` both lexically and on disk (resolving
+ * symbolic links and Windows junctions to prevent sandbox escape).
  */
-function resolveProjectDir(raw: unknown, ensure = false): ResolvedProjectDir | ResolvedProjectDirError {
-  const normalized = normalizeProjectPath(typeof raw === 'string' ? raw : '')
-  if (!normalized) {
-    return { ok: false, message: 'projectPath is required and must be a concrete absolute path.' }
+function isSafeInside(baseDir: string, candidate: string): boolean {
+  if (hasReservedDosDeviceSegment(candidate) || hasReservedDosDeviceSegment(baseDir)) {
+    return false
   }
-  if (!isAbsoluteProjectPath(normalized)) {
-    return {
-      ok: false,
-      message: `projectPath must be an absolute path, received "${normalized}".`,
+  if (!isInside(baseDir, candidate)) {
+    return false
+  }
+  try {
+    const realBase = existsSync(baseDir) ? realpathSync(baseDir) : resolve(baseDir)
+    if (existsSync(candidate)) {
+      const realCandidate = realpathSync(candidate)
+      return isInside(realBase, realCandidate)
     }
-  }
-
-  const dir = resolve(normalized)
-  const stat = safeStat(dir)
-  if (stat.exists && !stat.isDirectory) {
-    return { ok: false, message: `projectPath is not a directory: ${dir}` }
-  }
-  if (!stat.exists) {
-    if (!ensure) {
-      return { ok: false, message: `Project directory does not exist: ${dir}` }
-    }
-    try {
-      mkdirSync(dir, { recursive: true })
-    } catch (err) {
-      return {
-        ok: false,
-        message: `Could not create project directory ${dir}: ${err instanceof Error ? err.message : String(err)}`,
+    // If candidate does not exist yet, inspect its deepest existing ancestor directory.
+    let ancestor = dirname(candidate)
+    while (ancestor && ancestor !== dirname(ancestor)) {
+      if (existsSync(ancestor)) {
+        const realAncestor = realpathSync(ancestor)
+        return isInside(realBase, realAncestor)
       }
+      ancestor = dirname(ancestor)
     }
-    return { ok: true, dir, created: true }
+    return true
+  } catch {
+    // If filesystem inspection throws an unexpected access error, deny access.
+    return false
   }
-  return { ok: true, dir, created: false }
 }
+
+
 
 /**
  * Resolve a project-relative file path and reject paths that escape the
@@ -133,20 +134,33 @@ function resolveProjectFile(baseDir: string, filePath: unknown): { ok: true; pat
   const normalized = normalizeProjectPath(typeof filePath === 'string' ? filePath : '')
     .replace(/[\\/]+$/, '')
   if (!normalized) return { ok: false, message: 'filePath is required.' }
+  if (hasReservedDosDeviceSegment(normalized)) {
+    return { ok: false, message: `Refusing to access reserved Win32 device path: ${normalized}` }
+  }
 
   const candidate = isAbsoluteProjectPath(normalized) ? resolve(normalized) : resolve(baseDir, normalized)
-  if (!isInside(baseDir, candidate) || candidate === baseDir) {
+  if (hasReservedDosDeviceSegment(candidate) || !isSafeInside(baseDir, candidate) || candidate === baseDir) {
     return { ok: false, message: `Refusing to modify a path outside the project: ${normalized}` }
   }
   return { ok: true, path: candidate, relativePath: relative(baseDir, candidate) }
+}
+
+export interface ProcessExecutionOptions {
+  timeoutMs?: number
+  taskId?: string
+  signal?: AbortSignal
 }
 
 function runProcess(
   cmd: string,
   args: string[],
   cwd: string,
-  timeoutMs = COMMAND_TIMEOUT_MS,
+  options: number | ProcessExecutionOptions = COMMAND_TIMEOUT_MS,
 ): Promise<{ exitCode: number; stdout: string; stderr: string; error?: string }> {
+  const timeoutMs = typeof options === 'number' ? options : (options.timeoutMs ?? COMMAND_TIMEOUT_MS)
+  const taskId = typeof options === 'object' ? options.taskId : undefined
+  const signal = typeof options === 'object' ? options.signal : undefined
+
   return new Promise((resolvePromise) => {
     let stdout = ''
     let stderr = ''
@@ -156,6 +170,9 @@ function runProcess(
       if (settled) return
       settled = true
       clearTimeout(timer)
+      if (taskId && child) {
+        childProcessRegistry.unregister(taskId, child)
+      }
       resolvePromise(value)
     }
 
@@ -178,17 +195,39 @@ function runProcess(
       if (cmd === 'npx') execCmd = 'npx.cmd'
     }
 
-    const useShell =
+    const isCmdShim =
       process.platform === 'win32' && (execCmd.endsWith('.cmd') || execCmd.endsWith('.bat'))
 
-    let child
+    if (isCmdShim) {
+      for (const arg of args) {
+        if (UNSAFE_SHELL_ARGS.test(arg)) {
+          resolvePromise({
+            exitCode: -1,
+            stdout: '',
+            stderr: `Refusing command execution: argument "${arg}" contains characters unsafe for Windows cmd.exe under DEP0190.`,
+            error: 'unsafe_shell_argument',
+          })
+          return
+        }
+      }
+    }
+
+    let child: any
     try {
-      child = spawn(execCmd, args, {
-        cwd,
-        shell: useShell,
-        windowsHide: true,
-        env: { ...process.env, CI: 'true' },
-      })
+      if (isCmdShim) {
+        const comSpec = process.env.ComSpec || 'cmd.exe'
+        child = spawn(comSpec, ['/d', '/s', '/c', execCmd, ...args], {
+          cwd,
+          windowsHide: true,
+          env: { ...process.env, CI: 'true' },
+        })
+      } else {
+        child = spawn(execCmd, args, {
+          cwd,
+          windowsHide: true,
+          env: { ...process.env, CI: 'true' },
+        })
+      }
     } catch (err) {
       resolvePromise({
         exitCode: -1,
@@ -199,8 +238,35 @@ function runProcess(
       return
     }
 
-    const timer = setTimeout(() => {
-      child.kill('SIGTERM')
+    if (taskId && child) {
+      childProcessRegistry.register(taskId, child, `${cmd} ${args.join(' ')}`)
+    }
+
+    // Handle abort signal
+    if (signal) {
+      if (signal.aborted) {
+        void childProcessRegistry.killChildTree(child)
+        finish({
+          exitCode: -1,
+          stdout,
+          stderr: 'Process execution was aborted.',
+          error: 'aborted',
+        })
+        return
+      }
+      signal.addEventListener('abort', () => {
+        void childProcessRegistry.killChildTree(child)
+        finish({
+          exitCode: -1,
+          stdout,
+          stderr: 'Process execution was aborted.',
+          error: 'aborted',
+        })
+      })
+    }
+
+    const timer = setTimeout(async () => {
+      await childProcessRegistry.killChildTree(child)
       finish({
         exitCode: -1,
         stdout,
@@ -255,6 +321,15 @@ function fileEvidence(baseDir: string, relativeOrAbsolute: string): FileEvidence
   const resolved = isAbsoluteProjectPath(relativeOrAbsolute)
     ? resolve(relativeOrAbsolute)
     : resolve(baseDir, relativeOrAbsolute)
+  // Evidence collection must not become a read-outside-the-project primitive.
+  // An absolute path outside the project or escaping through symlinks is reported as missing, never hashed.
+  if (!isSafeInside(baseDir, resolved)) {
+    return {
+      path: relativeOrAbsolute,
+      exists: false,
+      bytes: 0,
+    }
+  }
   const stat = safeStat(resolved)
   const evidence: FileEvidence = {
     path: relative(baseDir, resolved) || resolved,
@@ -305,13 +380,46 @@ export interface GenerateReportOptions {
   reportFile?: string
   requiredFiles?: string[]
   evidence?: Record<string, unknown>
+  demandsFileCreation?: boolean
+  demandsExecution?: boolean
+  expectedOutput?: string
 }
 
 /* ---------------------------------------------------------------- engine */
 
+export interface DevEngineOptions {
+  allowedRoots?: string[]
+}
+
 export class DevEngine {
+  private allowedRoots: string[]
+
+  constructor(options: DevEngineOptions = {}) {
+    this.allowedRoots = options.allowedRoots !== undefined
+      ? [...options.allowedRoots]
+      : getDefaultAllowedWorkspaceRoots()
+  }
+
+  getAllowedWorkspaceRoots(): string[] {
+    return [...this.allowedRoots]
+  }
+
+  setAllowedWorkspaceRoots(roots: string[]): void {
+    this.allowedRoots = [...roots]
+  }
+
+  addAllowedWorkspaceRoot(root: string): void {
+    if (!this.allowedRoots.includes(root)) {
+      this.allowedRoots.push(root)
+    }
+  }
+
+  resolveProjectDir(projectPath: string, ensure = false): ResolvedProjectDir | ResolvedProjectDirError {
+    return resolveProjectDir(projectPath, ensure, this.allowedRoots)
+  }
+
   async inspectProject(projectPath: string, options: InspectProjectOptions = {}): Promise<DevActionResult> {
-    const resolvedDir = resolveProjectDir(projectPath, options.ensureDirectory === true)
+    const resolvedDir = this.resolveProjectDir(projectPath, options.ensureDirectory === true)
     if (!resolvedDir.ok) return { ok: false, message: resolvedDir.message, error: 'invalid_project_path' }
     const targetDir = resolvedDir.dir
 
@@ -417,7 +525,7 @@ export class DevEngine {
   }
 
   async gitStatus(projectPath: string): Promise<DevActionResult> {
-    const resolvedDir = resolveProjectDir(projectPath)
+    const resolvedDir = this.resolveProjectDir(projectPath)
     if (!resolvedDir.ok) return { ok: false, message: resolvedDir.message, error: 'invalid_project_path' }
     const targetDir = resolvedDir.dir
 
@@ -466,7 +574,7 @@ export class DevEngine {
   }
 
   async gitCheckpoint(projectPath: string, checkpointName?: string): Promise<DevActionResult> {
-    const resolvedDir = resolveProjectDir(projectPath)
+    const resolvedDir = this.resolveProjectDir(projectPath)
     if (!resolvedDir.ok) return { ok: false, message: resolvedDir.message, error: 'invalid_project_path' }
     const targetDir = resolvedDir.dir
 
@@ -487,8 +595,6 @@ export class DevEngine {
     // repository JARVIS just created is committed automatically.
     const revCheck = await runProcess('git', ['rev-parse', '--verify', 'HEAD'], targetDir, 10_000)
     if (revCheck.exitCode !== 0) {
-      await runProcess('git', ['config', 'user.name', 'JARVIS'], targetDir, 5000)
-      await runProcess('git', ['config', 'user.email', 'jarvis@local'], targetDir, 5000)
       const addRes = await runProcess('git', ['add', '-A'], targetDir, 15_000)
       if (addRes.exitCode !== 0) {
         return {
@@ -499,7 +605,7 @@ export class DevEngine {
       }
       const commitRes = await runProcess(
         'git',
-        ['commit', '--allow-empty', '-m', 'Initial commit before JARVIS checkpoint'],
+        ['-c', 'user.name=JARVIS', '-c', 'user.email=jarvis@local', 'commit', '--allow-empty', '-m', 'Initial commit before JARVIS checkpoint'],
         targetDir,
         15_000,
       )
@@ -585,7 +691,7 @@ export class DevEngine {
     replacement: string,
     extraParams?: Record<string, unknown>,
   ): Promise<DevActionResult> {
-    const resolvedDir = resolveProjectDir(projectPath)
+    const resolvedDir = this.resolveProjectDir(projectPath)
     if (!resolvedDir.ok) return { ok: false, message: resolvedDir.message, error: 'invalid_project_path' }
     const baseDir = resolvedDir.dir
 
@@ -612,7 +718,17 @@ export class DevEngine {
         return { ok: false, message: `Refusing to create an empty file: ${relativePath}`, error: 'empty_file' }
       }
       mkdirSync(dirname(fullPath), { recursive: true })
-      writeFileSync(fullPath, replacement, 'utf-8')
+      // SEC-03: Re-verify boundary containment after directory creation to prevent race escapes
+      if (!isSafeInside(baseDir, fullPath)) {
+        return { ok: false, message: `Refusing to create file outside project boundary: ${relativePath}`, error: 'invalid_file_path' }
+      }
+      const tempPath = `${fullPath}.tmp.${process.pid}.${Date.now()}`
+      writeFileSync(tempPath, replacement, 'utf-8')
+      if (!isSafeInside(baseDir, tempPath)) {
+        try { unlinkSync(tempPath) } catch {}
+        return { ok: false, message: `Refusing to write to unsafe location: ${relativePath}`, error: 'invalid_file_path' }
+      }
+      renameSync(tempPath, fullPath)
       const onDisk = readFileSync(fullPath, 'utf-8')
       const verified = onDisk === replacement
       return {
@@ -668,11 +784,25 @@ export class DevEngine {
       }
     }
 
+    // SEC-03: Re-verify boundary containment immediately before disk mutation
+    if (!isSafeInside(baseDir, fullPath)) {
+      return { ok: false, message: `Refusing to modify file outside project boundary: ${relativePath}`, error: 'invalid_file_path' }
+    }
+
     const backupPath = `${fullPath}.jarvis.bak`
+    if (!isSafeInside(baseDir, backupPath)) {
+      return { ok: false, message: `Refusing to write backup outside project boundary: ${relativePath}`, error: 'invalid_file_path' }
+    }
     writeFileSync(backupPath, originalContent, 'utf-8')
 
     const updatedContent = originalContent.replace(target, replacement)
-    writeFileSync(fullPath, updatedContent, 'utf-8')
+    const tempPath = `${fullPath}.tmp.${process.pid}.${Date.now()}`
+    writeFileSync(tempPath, updatedContent, 'utf-8')
+    if (!isSafeInside(baseDir, tempPath)) {
+      try { unlinkSync(tempPath) } catch {}
+      return { ok: false, message: `Refusing to write to unsafe location: ${relativePath}`, error: 'invalid_file_path' }
+    }
+    renameSync(tempPath, fullPath)
     const onDisk = readFileSync(fullPath, 'utf-8')
     const verified = onDisk === updatedContent
 
@@ -696,8 +826,13 @@ export class DevEngine {
     }
   }
 
-  async runTests(projectPath: string, testCommand?: string, testFile?: string): Promise<DevActionResult> {
-    const resolvedDir = resolveProjectDir(projectPath)
+  async runTests(
+    projectPath: string,
+    testCommand?: string,
+    testFile?: string,
+    options?: { taskId?: string; signal?: AbortSignal; expectedOutput?: string },
+  ): Promise<DevActionResult> {
+    const resolvedDir = this.resolveProjectDir(projectPath)
     if (!resolvedDir.ok) return { ok: false, message: resolvedDir.message, error: 'invalid_project_path' }
     const targetDir = resolvedDir.dir
 
@@ -729,9 +864,29 @@ export class DevEngine {
         }
       }
       if (resolvedTestFile.relativePath.endsWith('.py')) {
+        const hasExpectedOutput = Boolean(
+          options?.expectedOutput &&
+          typeof options.expectedOutput === 'string' &&
+          options.expectedOutput.trim(),
+        )
         cmd = process.platform === 'win32' ? 'python' : 'python3'
-        args = ['-m', 'unittest', resolvedTestFile.relativePath]
+        args = hasExpectedOutput
+          ? [resolvedTestFile.relativePath]
+          : ['-m', 'unittest', resolvedTestFile.relativePath]
       } else {
+        // `npx` resolves to npx.cmd on Windows and is spawned with
+        // shell: true (see runProcess): Node passes args to .cmd shims by
+        // raw concatenation (DEP0190), so cmd.exe re-parses them. A test
+        // file name containing a command separator (e.g. `&`, a legal
+        // Windows filename character) would chain arbitrary commands and
+        // bypass the testCommand allow-list. Reject before spawning.
+        if (process.platform === 'win32' && UNSAFE_SHELL_ARGS.test(resolvedTestFile.relativePath)) {
+          return {
+            ok: false,
+            message: `Refusing to run tests: file name contains characters that are unsafe for the Windows test runner: ${resolvedTestFile.relativePath}`,
+            error: 'test_file_unsafe_characters',
+          }
+        }
         cmd = 'npx'
         args = ['vitest', 'run', resolvedTestFile.relativePath]
       }
@@ -761,22 +916,38 @@ export class DevEngine {
       }
     }
 
-    const proc = await runProcess(cmd, args, targetDir, TEST_TIMEOUT_MS)
+    const proc = await runProcess(cmd, args, targetDir, {
+      timeoutMs: TEST_TIMEOUT_MS,
+      taskId: options?.taskId,
+      signal: options?.signal,
+    })
     const durationMs = Date.now() - startTime
     const combinedOutput = `${proc.stdout}\n${proc.stderr}`
     const counts = parseTestCounts(combinedOutput)
     const failedFromCounts = counts.failedCount > 0
-    const passed = proc.exitCode === 0 && !failedFromCounts
+
+    let outputMatched = true
+    if (options?.expectedOutput && typeof options.expectedOutput === 'string' && options.expectedOutput.trim()) {
+      const target = options.expectedOutput.trim()
+      outputMatched = combinedOutput.includes(target)
+    }
+
+    const passed = proc.exitCode === 0 && !failedFromCounts && outputMatched
 
     const commandLine = [cmd, ...args].join(' ')
-    const summary = passed
-      ? `Tests passed cleanly in ${durationMs}ms (exit code 0)${counts.known ? `: ${counts.passedCount} passed, ${counts.failedCount} failed.` : '.'}`
-      : `Tests failed (exit code ${proc.exitCode})${counts.known ? `: ${counts.passedCount} passed, ${counts.failedCount} failed` : ''}.`
+    let summary: string
+    if (passed) {
+      summary = `Tests/Execution passed cleanly in ${durationMs}ms (exit code 0)${counts.known ? `: ${counts.passedCount} passed, ${counts.failedCount} failed.` : '.'}${options?.expectedOutput ? ' Output verified.' : ''}`
+    } else if (!outputMatched) {
+      summary = `Execution failed output verification: output did not contain expected text "${options?.expectedOutput}". Output snippet: ${combinedOutput.slice(-500).trim()}`
+    } else {
+      summary = `Tests/Execution failed (exit code ${proc.exitCode})${counts.known ? `: ${counts.passedCount} passed, ${counts.failedCount} failed` : ''}.`
+    }
 
     return {
       ok: passed,
       message: summary,
-      error: passed ? undefined : 'tests_failed',
+      error: passed ? undefined : (!outputMatched ? 'output_mismatch' : 'tests_failed'),
       data: {
         passed,
         verified: passed,
@@ -787,13 +958,17 @@ export class DevEngine {
         failedCount: counts.failedCount,
         countKnown: counts.known,
         spawnError: proc.error,
+        stdout: proc.stdout,
+        stderr: proc.stderr,
+        expectedOutput: options?.expectedOutput,
+        expectedOutputMatched: outputMatched,
         outputSnippet: combinedOutput.slice(-4000),
       },
     }
   }
 
   async auditProject(projectPath: string): Promise<DevActionResult> {
-    const resolvedDir = resolveProjectDir(projectPath)
+    const resolvedDir = this.resolveProjectDir(projectPath)
     if (!resolvedDir.ok) return { ok: false, message: resolvedDir.message, error: 'invalid_project_path' }
     const targetDir = resolvedDir.dir
 
@@ -902,7 +1077,7 @@ export class DevEngine {
     subtasksSummary?: string,
     options: GenerateReportOptions = {},
   ): Promise<DevActionResult> {
-    const resolvedDir = resolveProjectDir(projectPath)
+    const resolvedDir = this.resolveProjectDir(projectPath)
     if (!resolvedDir.ok) return { ok: false, message: resolvedDir.message, error: 'invalid_project_path' }
     const targetDir = resolvedDir.dir
 
@@ -921,10 +1096,25 @@ export class DevEngine {
       (file): file is string => typeof file === 'string' && file.trim().length > 0,
     )
     const fileChecks = requiredFiles.map((file) => fileEvidence(targetDir, file))
-    const requiredFilesVerified = fileChecks.every((file) => file.exists && file.bytes > 0)
+    const requiredFilesVerified =
+      requiredFiles.length > 0
+        ? fileChecks.every((file) => file.exists && file.bytes > 0)
+        : options.demandsFileCreation
+          ? false
+          : true
 
     const evidence = (options.evidence ?? {}) as Record<string, unknown>
-    const testResults = evidence.testResults as Record<string, unknown> | undefined
+    let testResults = evidence.testResults as Record<string, unknown> | undefined
+    if (options.demandsExecution && !testResults) {
+      const scriptToRun = requiredFiles.find((f) => f.endsWith('.py') || f.endsWith('.js'))
+      const runRes = await this.runTests(targetDir, undefined, scriptToRun, {
+        expectedOutput: options.expectedOutput,
+      })
+      if (runRes.ok) {
+        testResults = runRes.data as Record<string, unknown>
+      }
+    }
+
     const checkpointEvidence = evidence.checkpoint as Record<string, unknown> | undefined
     const fileChanges = Array.isArray(evidence.fileChanges)
       ? (evidence.fileChanges as Array<Record<string, unknown>>)
@@ -932,8 +1122,11 @@ export class DevEngine {
     const testVerified =
       testResults?.passed === true &&
       testResults?.exitCode === 0 &&
-      testResults?.failedCount !== undefined &&
-      Number(testResults.failedCount) === 0
+      (testResults?.failedCount === undefined || Number(testResults.failedCount) === 0)
+
+    const testExecutionVerified = options.demandsExecution
+      ? testVerified
+      : (testResults ? testVerified : true)
 
     const reportTitle = title || `JARVIS Execution Report: ${basename(targetDir) || targetDir}`
     const timestamp = new Date().toISOString()
@@ -979,11 +1172,24 @@ export class DevEngine {
           })
         : ['- No file changes were reported by the execution pipeline.']
 
+    const filesStatusLabel =
+      requiredFiles.length > 0
+        ? (requiredFilesVerified ? 'PASS' : 'FAIL')
+        : (options.demandsFileCreation ? 'FAIL (required files missing)' : 'N/A (no files required)')
+
+    const testStatusLabel = testVerified
+      ? 'PASS (exit code 0)'
+      : options.demandsExecution
+        ? 'FAIL (execution required but not verified)'
+        : (testResults ? `FAIL (exit code ${testResults.exitCode ?? 'unknown'})` : 'N/A (no execution declared)')
+
     const verificationLines = [
-      `- Required files on disk: ${requiredFilesVerified ? 'PASS' : 'FAIL'}`,
-      `- Test execution: ${testVerified ? 'PASS (exit code 0, 0 failures)' : 'NOT VERIFIED'}`,
+      `- Required files on disk: ${filesStatusLabel}`,
+      `- Test execution: ${testStatusLabel}`,
       `- Report written and re-read: PENDING`,
     ]
+
+    const objectiveVerified = requiredFilesVerified && testExecutionVerified
 
     const content = [
       `# ${reportTitle}`,
@@ -1027,6 +1233,12 @@ export class DevEngine {
       ),
       '```',
       '',
+      '## 8. Final Objective Verification',
+      `- **Objective:** ${subtasksSummary || 'Not supplied.'}`,
+      `- **Required Files on Disk:** ${filesStatusLabel}`,
+      `- **Execution Evidence:** ${testStatusLabel}`,
+      `- **Objective Status:** ${objectiveVerified ? 'VERIFIED' : 'FAILED / UNVERIFIED'}`,
+      '',
     ].join('\n')
 
     let written = false
@@ -1053,13 +1265,13 @@ export class DevEngine {
       writeFileSync(resolvedReport.path, finalContent, 'utf-8')
       reportVerified = readFileSync(resolvedReport.path, 'utf-8') === finalContent
     }
-    const verified = reportVerified && requiredFilesVerified && testVerified
+    const verified = reportVerified && objectiveVerified
 
     return {
       ok: verified,
       message: verified
         ? `Generated ${resolvedReport.relativePath} with verified files and real test evidence.`
-        : `Wrote ${resolvedReport.relativePath}, but completion verification failed (required files: ${requiredFilesVerified ? 'ok' : 'missing'}, test evidence: ${testVerified ? 'ok' : 'not verified'}).`,
+        : `Wrote ${resolvedReport.relativePath}, but completion verification failed (required files: ${requiredFilesVerified ? 'ok' : 'missing'}, test evidence: ${testExecutionVerified ? 'ok' : 'not verified'}).`,
       error: verified ? undefined : 'report_verification_failed',
       data: {
         reportPath: resolvedReport.path,
@@ -1069,8 +1281,10 @@ export class DevEngine {
         timestamp,
         requiredFiles: fileChecks,
         testVerified,
+        testExecutionVerified,
         requiredFilesVerified,
         reportVerified,
+        objectiveVerified,
         verified,
       },
     }
@@ -1128,6 +1342,11 @@ export class DevEngine {
           projectPath,
           typeof params.testCommand === 'string' ? params.testCommand : undefined,
           typeof params.testFile === 'string' ? params.testFile : undefined,
+          {
+            taskId: typeof params.taskId === 'string' ? params.taskId : undefined,
+            signal: (params.signal as AbortSignal) || undefined,
+            expectedOutput: typeof params.expectedOutput === 'string' ? params.expectedOutput : undefined,
+          },
         )
 
       case 'dev.auditProject':
@@ -1153,6 +1372,9 @@ export class DevEngine {
               params.evidence && typeof params.evidence === 'object'
                 ? (params.evidence as Record<string, unknown>)
                 : undefined,
+            demandsFileCreation: Boolean(params.demandsFileCreation),
+            demandsExecution: Boolean(params.demandsExecution),
+            expectedOutput: typeof params.expectedOutput === 'string' ? params.expectedOutput : undefined,
           },
         )
 
@@ -1216,6 +1438,14 @@ function parseTestCounts(output: string): ParsedTestCounts {
 /* ------------------------------------------------------ command allowlist */
 
 const SHELL_METACHARACTERS = /[&|;<>`$]|\r|\n/
+
+/**
+ * Stricter than SHELL_METACHARACTERS: characters cmd.exe would re-interpret
+ * (`^` escape, `%` env expansion, `()` grouping, `!` delayed expansion) plus
+ * the command separators. Used for arguments handed to `.cmd` shims under
+ * `shell: true`, where Node concatenates them unescaped (DEP0190).
+ */
+const UNSAFE_SHELL_ARGS = /[&|;<>`$^%()!\r\n"]/
 
 function tokenizeCommand(command: string): string[] {
   return command

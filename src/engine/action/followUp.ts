@@ -15,6 +15,10 @@ import { hasExplicitTarget, hasLocative } from './classifier'
 export type FollowUpResolution =
   | { kind: 'none' }
   | { kind: 'replay'; requestText: string }
+  | { kind: 'retry_last'; requestText: string }
+  | { kind: 'explain_last'; targetContext: ExecutionContext }
+  | { kind: 'save_last'; artifact?: ExecutionArtifact; text: string }
+  | { kind: 'candidate_select'; index: number; candidateText?: string }
   | { kind: 'augment'; text: string }
   | { kind: 'ask_which'; candidates: string[] }
   | { kind: 'ask_what' }
@@ -93,10 +97,66 @@ function isDeicticEntityReference(text: string): boolean {
 
 const DEICTIC_PRONOUN = /\b(?:it|this|that|them|those|these)\b/i
 
+const RETRY_PATTERNS = [
+  /^(?:please\s+)?(?:retry|try\s+again|run\s+it\s+again|redo\s+(?:that|it)|do\s+it\s+again)[.!]?$/i,
+]
+
+const EXPLAIN_PATTERNS = [
+  /^(?:why\s+did\s+you\s+do\s+that|explain\s+(?:what\s+you\s+(?:just\s+)?did|your\s+reasoning|the\s+result|that)|how\s+did\s+you\s+do\s+that|what\s+happened(?:\s+there)?)\??$/i,
+]
+
+const SAVE_PATTERNS = [
+  /^(?:please\s+)?save\s+(?:that|this|it|the\s+result|the\s+output|to\s+a\s+file)\b/i,
+]
+
+const ORDINAL_MAP: Record<string, number> = {
+  first: 0,
+  '1st': 0,
+  '1': 0,
+  second: 1,
+  '2nd': 1,
+  '2': 1,
+  third: 2,
+  '3rd': 2,
+  '3': 2,
+  fourth: 3,
+  '4th': 3,
+  '4': 3,
+  fifth: 4,
+  '5th': 4,
+  '5': 4,
+}
+
+function parseCandidateIndex(text: string): number | null {
+  const match = text.match(
+    /\b(?:option\s+(\d+)|candidate\s+(\d+)|(?:the\s+)?(first|second|third|fourth|fifth|1st|2nd|3rd|4th|5th)\s+(?:option|one|candidate)|(?:pick|choose|select)\s+(?:the\s+)?(\d+)(?:st|nd|rd|th)?)\b/i
+  )
+  if (!match) {
+    if (/\b(?:what\s+about\s+(?:the\s+)?(?:second|first|third|fourth|fifth|1st|2nd|3rd|4th|5th)\s+option)\b/i.test(text)) {
+      const ord = text.match(/\b(first|second|third|fourth|fifth|1st|2nd|3rd|4th|5th)\b/i)
+      if (ord && ord[1].toLowerCase() in ORDINAL_MAP) {
+        return ORDINAL_MAP[ord[1].toLowerCase()]
+      }
+    }
+    return null
+  }
+  const numStr = match[1] || match[2] || match[4]
+  if (numStr) {
+    const val = parseInt(numStr, 10)
+    return isNaN(val) ? null : val - 1
+  }
+  const ordStr = (match[3] || '').toLowerCase()
+  return ordStr in ORDINAL_MAP ? ORDINAL_MAP[ordStr] : null
+}
+
 /**
  * Resolve a follow-up request against the last execution context.
  * - Pure confirmatives replay the last request when it is unambiguous and
  *   fresh; otherwise they ask what the user means.
+ * - Retry requests replay the previous request directly.
+ * - Explain requests provide diagnostic/reasoning insights into the last action.
+ * - Save requests preserve the result or primary artifact of the last action.
+ * - Candidate indexing ("option 2", "the second one") resolves to that candidate.
  * - Deictic refs to a file are resolved to a concrete path when there is
  *   exactly one candidate; multiple candidates ask which one.
  * - Anything unresolvable or without fresh context asks for clarification.
@@ -116,6 +176,32 @@ export function resolveFollowUp(
     if (stale) return { kind: 'ask_what' }
     if (last.resolvedText) return { kind: 'replay', requestText: last.resolvedText }
     return { kind: 'replay', requestText: last.requestText }
+  }
+
+  // 1. Retry last command
+  if (RETRY_PATTERNS.some((p) => p.test(t))) {
+    if (stale) return { kind: 'ask_what' }
+    return { kind: 'retry_last', requestText: last.resolvedText || last.requestText }
+  }
+
+  // 2. Explain last action
+  if (EXPLAIN_PATTERNS.some((p) => p.test(t))) {
+    if (stale) return { kind: 'ask_what' }
+    return { kind: 'explain_last', targetContext: last }
+  }
+
+  // 3. Save last output/artifact
+  if (SAVE_PATTERNS.some((p) => p.test(t))) {
+    if (stale) return { kind: 'ask_what' }
+    return { kind: 'save_last', artifact: last.artifacts[0], text: t }
+  }
+
+  // 4. Candidate indexing ("What about the second option?", "choose option 2")
+  const candidateIdx = parseCandidateIndex(t)
+  if (candidateIdx !== null) {
+    if (stale) return { kind: 'ask_what' }
+    const candidateText = last.artifacts[candidateIdx]?.path ?? last.artifacts[candidateIdx]?.label
+    return { kind: 'candidate_select', index: candidateIdx, candidateText }
   }
 
   if (isDeicticEntityReference(t)) {

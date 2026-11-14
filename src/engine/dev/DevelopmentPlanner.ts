@@ -33,6 +33,9 @@ export interface DevelopmentPlan {
   subtasks: DevelopmentPlanSubtask[]
   /** Files the plan promises to create/modify, used by the final verification. */
   requiredFiles: string[]
+  demandsFileCreation?: boolean
+  demandsExecution?: boolean
+  expectedOutput?: string
 }
 
 export class DevelopmentPlanError extends Error {
@@ -98,6 +101,292 @@ if __name__ == "__main__":
     unittest.main()
 `
 
+const EXPENSE_TRACKER_IMPLEMENTATION = `"""Expense Tracker - Clean personal expense management with category aggregation and JSON persistence."""
+
+import json
+from dataclasses import dataclass, asdict
+from datetime import datetime
+from typing import List, Dict, Optional
+
+
+@dataclass
+class Expense:
+    id: int
+    amount: float
+    category: str
+    description: str
+    timestamp: str
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+
+class ExpenseTracker:
+    def __init__(self, storage_file: Optional[str] = None):
+        self.storage_file = storage_file
+        self.expenses: List[Expense] = []
+        self._next_id = 1
+
+    def add_expense(self, amount: float, category: str, description: str = "") -> Expense:
+        if isinstance(amount, bool) or not isinstance(amount, (int, float)) or amount <= 0:
+            raise ValueError("Amount must be a positive number")
+        if not category or not isinstance(category, str):
+            raise ValueError("Category must be a non-empty string")
+
+        expense = Expense(
+            id=self._next_id,
+            amount=float(amount),
+            category=category.strip().lower(),
+            description=description.strip(),
+            timestamp=datetime.now().isoformat(),
+        )
+        self.expenses.append(expense)
+        self._next_id += 1
+        return expense
+
+    def get_total(self) -> float:
+        return sum(e.amount for e in self.expenses)
+
+    def get_by_category(self, category: str) -> List[Expense]:
+        target = category.strip().lower()
+        return [e for e in self.expenses if e.category == target]
+
+    def get_summary_by_category(self) -> Dict[str, float]:
+        summary: Dict[str, float] = {}
+        for e in self.expenses:
+            summary[e.category] = summary.get(e.category, 0.0) + e.amount
+        return summary
+
+    def count(self) -> int:
+        return len(self.expenses)
+
+    def save_to_json(self, filepath: str) -> None:
+        data = [e.to_dict() for e in self.expenses]
+        with open(filepath, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+
+    def load_from_json(self, filepath: str) -> None:
+        with open(filepath, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        self.expenses = [Expense(**item) for item in data]
+        if self.expenses:
+            self._next_id = max(e.id for e in self.expenses) + 1
+`
+
+const EXPENSE_TRACKER_TESTS = `"""Automated tests for Expense Tracker."""
+
+import unittest
+import tempfile
+import os
+from expense_tracker import ExpenseTracker, Expense
+
+
+class TestExpenseTracker(unittest.TestCase):
+    def setUp(self):
+        self.tracker = ExpenseTracker()
+
+    def test_add_expense(self):
+        exp = self.tracker.add_expense(25.50, "Food", "Lunch at cafe")
+        self.assertEqual(exp.id, 1)
+        self.assertEqual(exp.amount, 25.50)
+        self.assertEqual(exp.category, "food")
+        self.assertEqual(self.tracker.count(), 1)
+
+    def test_total_calculation(self):
+        self.tracker.add_expense(50.0, "Food", "Groceries")
+        self.tracker.add_expense(20.0, "Transport", "Bus ticket")
+        self.tracker.add_expense(10.0, "Food", "Coffee")
+        self.assertEqual(self.tracker.get_total(), 80.0)
+
+    def test_category_filter(self):
+        self.tracker.add_expense(100.0, "Rent")
+        self.tracker.add_expense(15.0, "Food")
+        food_expenses = self.tracker.get_by_category("Food")
+        self.assertEqual(len(food_expenses), 1)
+        self.assertEqual(food_expenses[0].amount, 15.0)
+
+    def test_summary_by_category(self):
+        self.tracker.add_expense(30.0, "Books")
+        self.tracker.add_expense(20.0, "Books")
+        self.tracker.add_expense(40.0, "Food")
+        summary = self.tracker.get_summary_by_category()
+        self.assertEqual(summary["books"], 50.0)
+        self.assertEqual(summary["food"], 40.0)
+
+    def test_invalid_amount_raises(self):
+        with self.assertRaises(ValueError):
+            self.tracker.add_expense(-5.0, "Food")
+        with self.assertRaises(ValueError):
+            self.tracker.add_expense(0, "Food")
+
+    def test_invalid_category_raises(self):
+        with self.assertRaises(ValueError):
+            self.tracker.add_expense(10.0, "")
+
+    def test_json_persistence(self):
+        self.tracker.add_expense(42.0, "Electronics", "USB Cable")
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".json") as tmp:
+            tmp_path = tmp.name
+
+        try:
+            self.tracker.save_to_json(tmp_path)
+            new_tracker = ExpenseTracker()
+            new_tracker.load_from_json(tmp_path)
+            self.assertEqual(new_tracker.count(), 1)
+            self.assertEqual(new_tracker.get_total(), 42.0)
+            self.assertEqual(new_tracker.expenses[0].category, "electronics")
+        finally:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+
+
+if __name__ == "__main__":
+    unittest.main()
+`
+
+const FILE_EXT_REGEX = /\.(py|js|ts|json|txt|md|html|css|sh|bat|cmd)$/i
+
+export interface ExtractedRequirements {
+  demandsFileCreation: boolean
+  demandsExecution: boolean
+  filesToCreate: Array<{
+    relativePath: string
+    content: string
+    language: string
+  }>
+  filesToExecute: Array<{
+    relativePath: string
+    expectedOutput?: string
+    isTest: boolean
+  }>
+  expectedOutput?: string
+  doNotModifyExisting: boolean
+}
+
+/**
+ * Extract requirements from natural language objective.
+ */
+export function extractObjectiveRequirements(
+  objective: string,
+  _projectPath?: string,
+): ExtractedRequirements {
+  const text = objective ?? ''
+  const doNotModifyExisting = /\bdo not modify\b/i.test(text)
+  const demandsExecution = /\b(run|execute)\b.*\b(file|script|code|it|tests?)\b/i.test(text) || /\brun\s+the\s+file\b/i.test(text)
+
+  const candidateFiles: string[] = []
+
+  const namedMatch = text.match(/(?:file\s+)?named\s+([a-zA-Z0-9_.-]+\.[a-zA-Z0-9]+)/i)
+  if (namedMatch && namedMatch[1]) candidateFiles.push(namedMatch[1])
+
+  const createMatch = text.match(/\b(?:create|write|make|generate|implement)\s+(?:a\s+)?(?:new\s+)?(?:[a-zA-Z]+\s+)?(?:file\s+)?([a-zA-Z0-9_.-]+\.[a-zA-Z0-9]+)/i)
+  if (createMatch && createMatch[1] && !candidateFiles.includes(createMatch[1])) {
+    candidateFiles.push(createMatch[1])
+  }
+
+  const fullPathMatch = text.match(/[a-zA-Z]:[\\/][^\s"'<>|]+[\\/]([a-zA-Z0-9_.-]+\.[a-zA-Z0-9]+)/i)
+  if (fullPathMatch && fullPathMatch[1] && !candidateFiles.includes(fullPathMatch[1])) {
+    candidateFiles.push(fullPathMatch[1])
+  }
+
+  const quotedFileMatch = text.match(/["'`]([a-zA-Z0-9_.-]+\.(?:py|js|ts|json|txt|md|sh))["'`]/i)
+  if (quotedFileMatch && quotedFileMatch[1] && !candidateFiles.includes(quotedFileMatch[1])) {
+    candidateFiles.push(quotedFileMatch[1])
+  }
+
+  const validFiles = candidateFiles.filter((f) => FILE_EXT_REGEX.test(f))
+
+  let expectedOutput: string | undefined
+  const printFuncMatch = text.match(/print\s*\(\s*(["'])(.*?)\1\s*\)/)
+  if (printFuncMatch && printFuncMatch[2] && printFuncMatch[2].trim()) {
+    expectedOutput = printFuncMatch[2].trim()
+  } else {
+    const quotedPrint = text.match(/(?:must print|print|output):\s*["'`]([^"'`\r\n]+)["'`]/i)
+    if (quotedPrint && quotedPrint[1] && quotedPrint[1].trim()) {
+      expectedOutput = quotedPrint[1].trim()
+    } else {
+      const unquotedPrint = text.match(/(?:must print|print|output):\s*([^\r\n]+?)(?=\.\s+[A-Z]|\r?\n|$)/i)
+      if (unquotedPrint && unquotedPrint[1] && unquotedPrint[1].trim()) {
+        expectedOutput = unquotedPrint[1].trim()
+      }
+    }
+  }
+
+  const filesToCreate: Array<{ relativePath: string; content: string; language: string }> = []
+
+  if (validFiles.length > 0) {
+    for (const fileName of validFiles) {
+      let content = ''
+      const ext = fileName.split('.').pop()?.toLowerCase() || ''
+      const language = ext === 'py' ? 'python' : ext === 'ts' ? 'typescript' : ext === 'js' ? 'javascript' : ext
+
+      const codeBlockMatch = text.match(/```(?:[a-zA-Z0-9_-]+)?\r?\n([\s\S]*?)```/)
+      if (codeBlockMatch && codeBlockMatch[1] && codeBlockMatch[1].trim()) {
+        content = codeBlockMatch[1].trim() + '\n'
+      } else {
+        const containingQuoted = text.match(/containing:\s*["'`]([\s\S]*?)["'`]/i)
+        if (containingQuoted && containingQuoted[1] && containingQuoted[1].trim()) {
+          content = containingQuoted[1].trim() + '\n'
+        } else {
+          const containingBlock = text.match(/containing:\s*(\r?\n[\s\S]+?)(?=\r?\n\r?\n|\r?\n(?:Run|Verify|Do not|$)|$)/i)
+          if (containingBlock && containingBlock[1] && containingBlock[1].trim()) {
+            content = containingBlock[1].trim() + '\n'
+          } else if (printFuncMatch && printFuncMatch[0]) {
+            content = printFuncMatch[0] + '\n'
+          } else if (expectedOutput) {
+            if (ext === 'py') {
+              content = `print("${expectedOutput}")\n`
+            } else if (ext === 'js' || ext === 'ts') {
+              content = `console.log("${expectedOutput}");\n`
+            } else {
+              content = `${expectedOutput}\n`
+            }
+          }
+        }
+      }
+
+      if (!content.trim()) {
+        if (ext === 'py') {
+          content = `"""${fileName} implementation."""\n\nprint("Executed ${fileName}")\n`
+        } else if (ext === 'js' || ext === 'ts') {
+          content = `// ${fileName} implementation\nconsole.log("Executed ${fileName}");\n`
+        } else {
+          content = `# ${fileName}\n`
+        }
+      }
+
+      filesToCreate.push({
+        relativePath: fileName,
+        content,
+        language,
+      })
+    }
+  }
+
+  const filesToExecute: Array<{ relativePath: string; expectedOutput?: string; isTest: boolean }> = []
+  if (demandsExecution || /\brun\b/i.test(text)) {
+    for (const f of filesToCreate) {
+      const isTest = /^(test_.*|.*_test)\.[a-zA-Z0-9]+$/i.test(f.relativePath)
+      filesToExecute.push({
+        relativePath: f.relativePath,
+        expectedOutput,
+        isTest,
+      })
+    }
+  }
+
+  const demandsFileCreation = filesToCreate.length > 0 || /\b(create|write|make|generate|implement)\s+(?:a\s+)?(?:new\s+)?(?:file|script)\b/i.test(text)
+
+  return {
+    demandsFileCreation,
+    demandsExecution,
+    filesToCreate,
+    filesToExecute,
+    expectedOutput,
+    doNotModifyExisting,
+  }
+}
+
 const DRIVE_PATH = /\b([a-zA-Z]:[\\/][^\s"'<>|]+)/
 const QUOTED_DRIVE_PATH = /["'`]([a-zA-Z]:[\\/][^"'`]+)["'`]/
 
@@ -113,7 +402,16 @@ export function extractProjectPath(text: string): string | undefined {
   const quoted = input.match(QUOTED_DRIVE_PATH)?.[1]
   const raw = quoted ?? input.match(DRIVE_PATH)?.[1]
   if (!raw) return undefined
-  return normalizeProjectPath(raw)
+  let normalized = normalizeProjectPath(raw)
+  if (!normalized) return undefined
+
+  if (FILE_EXT_REGEX.test(normalized)) {
+    const lastSlash = Math.max(normalized.lastIndexOf('\\'), normalized.lastIndexOf('/'))
+    if (lastSlash > 2) {
+      normalized = normalized.slice(0, lastSlash)
+    }
+  }
+  return normalized
 }
 
 /** Normalize a Windows path without importing Node.js `path` in the browser. */
@@ -149,6 +447,10 @@ function isCircleAreaRequest(objective: string): boolean {
   return /\bcircle\b/i.test(objective) && /\barea\b/i.test(objective)
 }
 
+function isExpenseTrackerRequest(objective: string): boolean {
+  return /\b(expense\s*tracker|track\s*expenses?|expense\s*manager|budget\s*tracker|expenses)\b/i.test(objective)
+}
+
 function isFixRequest(objective: string): boolean {
   return /\b(fix|repair|patch|implement)\b/i.test(objective)
 }
@@ -179,7 +481,16 @@ export function buildDevelopmentPlan(
 
   const name = projectName?.trim() || projectNameFromPath(path)
   const isCircle = isCircleAreaRequest(objective)
-  const requiredFiles = isCircle ? ['circle.py', 'test_circle.py'] : []
+  const isExpenseTracker = isExpenseTrackerRequest(objective)
+  const requiredFiles = isCircle
+    ? ['circle.py', 'test_circle.py']
+    : isExpenseTracker
+    ? ['expense_tracker.py', 'test_expense_tracker.py']
+    : []
+
+  let demandsFileCreation = requiredFiles.length > 0
+  let demandsExecution = isCircle || isExpenseTracker
+  let expectedOutput: string | undefined = undefined
 
   const subtasks: DevelopmentPlanSubtask[] = [
     {
@@ -198,6 +509,15 @@ export function buildDevelopmentPlan(
       priority: 95,
     },
     {
+      title: 'Check Git Working Tree',
+      description: 'Read branch and uncommitted files so existing user work is never overwritten.',
+      capability: 'dev.gitStatus',
+      toolId: 'dev.gitStatus',
+      payload: { projectPath: path },
+      dependencies: ['step-1'],
+      priority: 90,
+    },
+    {
       title: 'Create Safety Checkpoint',
       description:
         'Create a local Git checkpoint branch at HEAD (initializing a repository only when none exists). No push, no reset.',
@@ -207,7 +527,7 @@ export function buildDevelopmentPlan(
         projectPath: path,
         checkpointName: `pre-dev-${Date.now()}`,
       },
-      dependencies: ['step-1'],
+      dependencies: ['step-2'],
       priority: 85,
     },
   ]
@@ -227,7 +547,7 @@ export function buildDevelopmentPlan(
           target: '',
           replacement: CIRCLE_IMPLEMENTATION,
         },
-        dependencies: ['step-2'],
+        dependencies: ['step-3'],
         priority: 80,
       },
       {
@@ -243,7 +563,7 @@ export function buildDevelopmentPlan(
           target: '',
           replacement: CIRCLE_TESTS,
         },
-        dependencies: ['step-3'],
+        dependencies: ['step-4'],
         priority: 80,
       },
       {
@@ -253,8 +573,81 @@ export function buildDevelopmentPlan(
         capability: 'dev.runTests',
         toolId: 'dev.runTests',
         payload: { projectPath: path, testFile: 'test_circle.py' },
+        dependencies: ['step-5'],
+        priority: 80,
+      },
+      {
+        title: 'Verify Generated Files On Disk',
+        description:
+          'Re-inspect the project and require circle.py and test_circle.py to exist with non-empty content.',
+        capability: 'dev.inspectProject',
+        toolId: 'dev.inspectProject',
+        payload: {
+          projectPath: path,
+          expectedFiles: requiredFiles,
+          minFileBytes: 1,
+        },
+        dependencies: ['step-6'],
+        priority: 75,
+      },
+    )
+  } else if (isExpenseTracker) {
+    subtasks.push(
+      {
+        title: 'Create expense_tracker.py Implementation',
+        description:
+          'Create expense_tracker.py implementing Expense and ExpenseTracker with category tracking, total calculation, and JSON persistence.',
+        capability: 'dev.patchFile',
+        toolId: 'dev.patchFile',
+        payload: {
+          projectPath: path,
+          filePath: 'expense_tracker.py',
+          createIfMissing: true,
+          target: '',
+          replacement: EXPENSE_TRACKER_IMPLEMENTATION,
+        },
+        dependencies: ['step-3'],
+        priority: 80,
+      },
+      {
+        title: 'Create test_expense_tracker.py Test Suite',
+        description:
+          'Create an automated unittest suite covering expense addition, category filters, totals, validation, and JSON serialization.',
+        capability: 'dev.patchFile',
+        toolId: 'dev.patchFile',
+        payload: {
+          projectPath: path,
+          filePath: 'test_expense_tracker.py',
+          createIfMissing: true,
+          target: '',
+          replacement: EXPENSE_TRACKER_TESTS,
+        },
         dependencies: ['step-4'],
         priority: 80,
+      },
+      {
+        title: 'Execute Python Test Suite',
+        description:
+          'Run python -m unittest test_expense_tracker.py in the project and capture the real process exit code.',
+        capability: 'dev.runTests',
+        toolId: 'dev.runTests',
+        payload: { projectPath: path, testFile: 'test_expense_tracker.py' },
+        dependencies: ['step-5'],
+        priority: 80,
+      },
+      {
+        title: 'Verify Generated Files On Disk',
+        description:
+          'Re-inspect the project and require expense_tracker.py and test_expense_tracker.py to exist with non-empty content.',
+        capability: 'dev.inspectProject',
+        toolId: 'dev.inspectProject',
+        payload: {
+          projectPath: path,
+          expectedFiles: requiredFiles,
+          minFileBytes: 1,
+        },
+        dependencies: ['step-6'],
+        priority: 75,
       },
     )
   } else if (isFixRequest(objective) && name.toLowerCase().includes('projecthub')) {
@@ -273,7 +666,7 @@ export function buildDevelopmentPlan(
           replacement:
             '  const completed = tasks.filter((t) => Boolean(t && t.completed)).length;\n  const total = tasks.length;\n  const completionRate = total > 0 ? completed / total : 0;\n  return {\n    total,\n    completed,\n    completionRate\n  };',
         },
-        dependencies: ['step-2'],
+        dependencies: ['step-3'],
         priority: 80,
       },
       {
@@ -282,22 +675,8 @@ export function buildDevelopmentPlan(
         capability: 'dev.runTests',
         toolId: 'dev.runTests',
         payload: { projectPath: path },
-        dependencies: ['step-3'],
+        dependencies: ['step-4'],
         priority: 80,
-      },
-    )
-  } else {
-    // A non-code-changing inspection/audit objective: execute the real baseline
-    // test suite and audit, never pretend a code change happened.
-    subtasks.push(
-      {
-        title: 'Run Baseline Tests',
-        description: 'Execute the project test suite and capture the real exit code and pass/fail counts.',
-        capability: 'dev.runTests',
-        toolId: 'dev.runTests',
-        payload: { projectPath: path },
-        dependencies: ['step-2'],
-        priority: 70,
       },
       {
         title: 'Audit Project Integrity',
@@ -305,10 +684,106 @@ export function buildDevelopmentPlan(
         capability: 'dev.auditProject',
         toolId: 'dev.auditProject',
         payload: { projectPath: path },
-        dependencies: ['step-3'],
-        priority: 65,
+        dependencies: ['step-5'],
+        priority: 70,
       },
     )
+  } else {
+    const req = extractObjectiveRequirements(objective, path)
+    demandsFileCreation = req.demandsFileCreation
+    demandsExecution = req.demandsExecution
+    expectedOutput = req.expectedOutput
+
+    if (req.filesToCreate.length > 0) {
+      requiredFiles.push(...req.filesToCreate.map((f) => f.relativePath))
+
+      for (const f of req.filesToCreate) {
+        const stepIdx = subtasks.length + 1
+        subtasks.push({
+          title: `Create ${f.relativePath} Implementation`,
+          description: `Create ${f.relativePath} with requested implementation and honest validation.`,
+          capability: 'dev.patchFile',
+          toolId: 'dev.patchFile',
+          payload: {
+            projectPath: path,
+            filePath: f.relativePath,
+            createIfMissing: true,
+            target: '',
+            replacement: f.content,
+          },
+          dependencies: [`step-${stepIdx - 1}`],
+          priority: 80,
+        })
+      }
+
+      const verifyStepIdx = subtasks.length + 1
+      subtasks.push({
+        title: 'Verify Generated Files On Disk',
+        description: `Re-inspect the project and require ${requiredFiles.join(', ')} to exist with non-empty content.`,
+        capability: 'dev.inspectProject',
+        toolId: 'dev.inspectProject',
+        payload: {
+          projectPath: path,
+          expectedFiles: requiredFiles,
+          minFileBytes: 1,
+        },
+        dependencies: [`step-${verifyStepIdx - 1}`],
+        priority: 75,
+      })
+
+      if (req.demandsExecution && req.filesToExecute.length > 0) {
+        for (const exec of req.filesToExecute) {
+          const execStepIdx = subtasks.length + 1
+          subtasks.push({
+            title: `Execute ${exec.relativePath}`,
+            description: `Run ${exec.relativePath} in the project and capture process exit code and output.`,
+            capability: 'dev.runTests',
+            toolId: 'dev.runTests',
+            payload: {
+              projectPath: path,
+              testFile: exec.relativePath,
+              expectedOutput: exec.expectedOutput,
+            },
+            dependencies: [`step-${execStepIdx - 1}`],
+            priority: 75,
+          })
+        }
+      }
+
+      const auditStepIdx = subtasks.length + 1
+      subtasks.push({
+        title: 'Audit Project Integrity',
+        description: 'Run the project compiler/typechecker and linter, if this stack provides them.',
+        capability: 'dev.auditProject',
+        toolId: 'dev.auditProject',
+        payload: { projectPath: path },
+        dependencies: [`step-${auditStepIdx - 1}`],
+        priority: 70,
+      })
+    } else {
+      // A non-code-changing inspection/audit objective: execute the real baseline
+      // test suite and audit, never pretend a code change happened.
+      subtasks.push(
+        {
+          title: 'Run Baseline Tests',
+          description: 'Execute the project test suite and capture the real exit code and pass/fail counts.',
+          capability: 'dev.runTests',
+          toolId: 'dev.runTests',
+          payload: { projectPath: path },
+          dependencies: ['step-3'],
+          priority: 70,
+        },
+        {
+          title: 'Audit Project Integrity',
+          description: 'Run the project compiler/typechecker and linter, if this stack provides them.',
+          capability: 'dev.auditProject',
+          toolId: 'dev.auditProject',
+          payload: { projectPath: path },
+          dependencies: ['step-4'],
+          priority: 65,
+        },
+      )
+    }
   }
 
   const insertReportAt = subtasks.length + 1
@@ -324,6 +799,9 @@ export function buildDevelopmentPlan(
       reportFile: 'JARVIS_EXECUTION_REPORT.md',
       requiredFiles,
       subtasksSummary: objective,
+      demandsFileCreation,
+      demandsExecution,
+      expectedOutput,
     },
     dependencies: [`step-${insertReportAt - 1}`],
     priority: 50,
@@ -336,5 +814,8 @@ export function buildDevelopmentPlan(
     explicitPath: true,
     subtasks,
     requiredFiles,
+    demandsFileCreation,
+    demandsExecution,
+    expectedOutput,
   }
 }

@@ -58,11 +58,12 @@ export const MIN_PANEL_W = 160
 export const MIN_PANEL_H = 96
 
 export function defaultPanelState(def: PanelDefinition, index: number): PanelUiState {
+  const cascadeOffset = (index % 8) * 32
   return {
     open: def.defaultOpen,
     placement: def.defaultPlacement,
-    x: PANEL_MARGIN,
-    y: PANEL_MARGIN,
+    x: 280 + cascadeOffset,
+    y: 80 + cascadeOffset,
     w: def.defaultSize.w,
     h: def.defaultSize.h,
     z: index,

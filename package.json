@@ -5,12 +5,14 @@
   "type": "module",
   "scripts": {
     "dev": "vite --host 0.0.0.0 --port 3000",
-    "build": "tsc -b && npm run build:backend && vite build && node scripts/check-frontend-secrets.mjs",
+    "build": "tsc -b && npm run build:backend && npm run build:engine && vite build && node scripts/check-frontend-secrets.mjs",
     "build:backend": "tsc -p server/tsconfig.build.json",
+    "build:engine": "node scripts/build-engine.mjs",
     "backend": "node --env-file-if-exists=.env.local server/dist/index.js",
     "backend:check": "tsc --noEmit -p server/tsconfig.json",
     "backend:watch": "tsc -w -p server/tsconfig.json",
     "lint": "oxlint",
+    "doctor": "node scripts/doctor.mjs",
     "test": "vitest run",
     "preview": "vite preview",
     "install:startup": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/windows/install-startup.ps1",
@@ -34,6 +36,7 @@
     "@types/react-dom": "^19.2.4",
     "@vitejs/plugin-react": "^6.1.0",
     "oxlint": "^1.79.0",
+    "playwright": "^1.65.0",
     "typescript": "~6.0.2",
     "vite": "^8.2.2",
     "vitest": "^5.0.0"

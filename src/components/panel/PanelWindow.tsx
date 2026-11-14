@@ -1,12 +1,13 @@
 import { useCallback, useRef, useState, type ReactNode } from 'react'
 import type { PanelDefinition, PanelRect, PanelPlacement, ViewportSize } from '../../panel/types'
 import { usePanelLayoutStore } from '../../panel/panelStore'
-import { snapPlacement, workspaceBounds, clampFloating, placementLabel } from '../../panel/geometry'
+import { snapPlacement, workspaceBounds, clampFloating, placementLabel, type WorkspaceOffsets } from '../../panel/geometry'
 
 interface Props {
   def: PanelDefinition
   rect: PanelRect
   viewport: ViewportSize
+  offsets?: WorkspaceOffsets
   open: boolean
   focused: boolean
   onPointerDown: (id: string) => void
@@ -15,7 +16,7 @@ interface Props {
 
 const PLACEMENTS: PanelPlacement[] = ['left', 'right', 'top', 'bottom', 'floating']
 
-export function PanelWindow({ def, rect, viewport, open, focused, onPointerDown, children }: Props) {
+export function PanelWindow({ def, rect, viewport, offsets, open, focused, onPointerDown, children }: Props) {
   const focusPanel = usePanelLayoutStore((s) => s.focusPanel)
   const moveFloating = usePanelLayoutStore((s) => s.moveFloating)
   const setPlacement = usePanelLayoutStore((s) => s.setPlacement)
@@ -60,7 +61,7 @@ export function PanelWindow({ def, rect, viewport, open, focused, onPointerDown,
       drag.moved = true
       setIsDragging(true)
 
-      const bounds = workspaceBounds(viewport)
+      const bounds = workspaceBounds(viewport, offsets)
       const nx = clampFloating(drag.origX + dx, drag.origY + dy, rect.w, rect.h, bounds).x
       const ny = clampFloating(drag.origX + dx, drag.origY + dy, rect.w, rect.h, bounds).y
 
@@ -68,7 +69,7 @@ export function PanelWindow({ def, rect, viewport, open, focused, onPointerDown,
         frameRef.current.style.transform = `translate(${nx}px, ${ny}px)`
       }
     },
-    [viewport, rect.w, rect.h],
+    [viewport, offsets, rect.w, rect.h],
   )
 
   const handlePointerUp = useCallback(
@@ -84,12 +85,12 @@ export function PanelWindow({ def, rect, viewport, open, focused, onPointerDown,
 
       const dx = e.clientX - drag.startX
       const dy = e.clientY - drag.startY
-      const nx = drag.origX + dx
-      const ny = drag.origY + dy
 
-      const snapped = snapPlacement(nx, ny, rect.w, rect.h, viewport)
+      const bounds = workspaceBounds(viewport, offsets)
+      const clamped = clampFloating(drag.origX + dx, drag.origY + dy, rect.w, rect.h, bounds)
+      const snapped = snapPlacement(clamped.x, clamped.y, rect.w, rect.h, viewport)
       if (snapped === 'floating') {
-        moveFloating(def.id, nx, ny)
+        moveFloating(def.id, clamped.x, clamped.y)
       } else {
         setPlacement(def.id, snapped)
       }
@@ -97,7 +98,7 @@ export function PanelWindow({ def, rect, viewport, open, focused, onPointerDown,
       frameRef.current.style.transform = ''
       setIsDragging(false)
     },
-    [def.id, rect.w, rect.h, viewport, moveFloating, setPlacement],
+    [def.id, rect.w, rect.h, viewport, offsets, moveFloating, setPlacement],
   )
 
   const handlePlacementSelect = useCallback(
@@ -132,7 +133,7 @@ export function PanelWindow({ def, rect, viewport, open, focused, onPointerDown,
       <span className="panel-corner corner-bl" aria-hidden="true" />
       <span className="panel-corner corner-br" aria-hidden="true" />
 
-      <div className="panel-window-titlebar" data-stop-drag>
+      <div className="panel-window-titlebar">
         <span className="panel-window-icon" aria-hidden="true">
           {def.icon}
         </span>
@@ -147,6 +148,7 @@ export function PanelWindow({ def, rect, viewport, open, focused, onPointerDown,
             className="panel-window-placement-btn"
             aria-haspopup="menu"
             aria-label={`Move panel — currently ${placementLabel(rect.placement)}`}
+            title={`Dock / Move panel (${placementLabel(rect.placement)})`}
             onClick={() => setMenuOpen((o) => !o)}
             data-stop-drag
           >
@@ -157,6 +159,7 @@ export function PanelWindow({ def, rect, viewport, open, focused, onPointerDown,
             type="button"
             className="panel-window-close-btn"
             aria-label={`Close ${def.title}`}
+            title={`Close ${def.title}`}
             onClick={() => togglePanel(def.id)}
             data-stop-drag
           >

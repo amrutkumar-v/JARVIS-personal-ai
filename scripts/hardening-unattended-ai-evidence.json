@@ -1,0 +1,90 @@
+{
+  "timestamp": "2026-11-13T05:42:19.970Z",
+  "securityAudit": {
+    "authEnforcement": {
+      "noTokenStatus": 401,
+      "badTokenStatus": 401,
+      "validTokenStatus": 200,
+      "passed": true
+    },
+    "arbitraryPathRejection": {
+      "taskId": "task-1794548451307-rlp0g4",
+      "state": "RECOVERY_REQUIRED",
+      "error": "Refusing to modify a path outside the project: ..\\..\\Windows\\System32\\drivers\\etc\\hosts",
+      "passed": true
+    },
+    "symlinkJunctionEscapeRejection": {
+      "taskId": "task-1794548453308-c4uxj0",
+      "state": "RECOVERY_REQUIRED",
+      "shadowPreserved": true,
+      "passed": true
+    },
+    "shellInjectionRejection": {
+      "taskId": "task-1794548455285-c5syb4",
+      "state": "RECOVERY_REQUIRED",
+      "pwnedDirCreated": false,
+      "passed": true
+    },
+    "defaultDenySensitiveAction": null,
+    "approvalReplayProtection": {
+      "approvalId": "appr-1794548458169-21to",
+      "firstAttemptOk": true,
+      "replayBlocked": true,
+      "passed": true
+    },
+    "loopbackOnlyBinding": {
+      "boundHost": "127.0.0.1",
+      "passed": true
+    }
+  },
+  "unattendedReliability": {
+    "pauseResume": {
+      "taskId": "task-1794548458408-qe5xqo",
+      "pausedSuccessfully": true,
+      "resumedSuccessfully": true,
+      "completedSuccessfully": true,
+      "passed": true
+    },
+    "cancellationAndChildCleanup": {
+      "taskId": "task-1794548459454-epcwpc",
+      "cancelled": true,
+      "orphanRunning": false,
+      "passed": true
+    },
+    "idempotencyKey": {
+      "idempotencyKey": "idem-key-1794548462099",
+      "firstTaskId": "task-1794548462126-h60vgi",
+      "secondTaskId": "task-1794548462126-h60vgi",
+      "deduplicated": true,
+      "passed": true
+    }
+  },
+  "localAiReliability": {
+    "ollamaEndpoint": null,
+    "modelDiscovery": {
+      "models": [
+        "qwen3-coder:latest",
+        "qwen3:8b"
+      ],
+      "passed": true
+    },
+    "liveInference": {
+      "model": "qwen3-coder:latest",
+      "promptLength": 117,
+      "responseLength": 252,
+      "validOutput": true,
+      "passed": true
+    },
+    "metrics": {
+      "totalDurationMs": 76718,
+      "promptEvalCount": 35,
+      "evalCount": 85,
+      "evalDurationNs": 12889092000
+    },
+    "offlineFallback": {
+      "passed": true,
+      "mechanism": "DevelopmentPlanner regex & rule-based template generation"
+    }
+  },
+  "overallStatus": "VERIFIED"
+}

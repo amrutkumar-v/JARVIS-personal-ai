@@ -1,0 +1,32 @@
+{
+  "timestamp": "2026-11-13T05:39:35.353Z",
+  "cleanShutdownRecovery": {
+    "scenario": "Graceful Shutdown & Resume",
+    "taskId": "task-1794548369013-4xiton",
+    "preShutdownVerifiedCount": 3,
+    "finalSubtasksCount": 6,
+    "preservedTimestamps": true,
+    "exitCodeP1": null,
+    "finalState": "COMPLETED",
+    "filesVerified": [
+      "math_lib.py",
+      "test_math_lib.py",
+      "RECOVERY_VERIFICATION_REPORT.md"
+    ]
+  },
+  "hardCrashRecovery": {
+    "scenario": "Hard Crash & Stale Lock Takeover",
+    "taskId": "task-1794548372004-2mecwb",
+    "deadPid": 28564,
+    "reclaimedByPid": 38868,
+    "staleLockOverwritten": true,
+    "recoveryCount": 1,
+    "finalState": "COMPLETED",
+    "filesVerified": [
+      "str_utils.py",
+      "test_str_utils.py",
+      "CRASH_RECOVERY_REPORT.md"
+    ]
+  },
+  "status": "VERIFIED"
+}

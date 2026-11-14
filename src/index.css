@@ -41,9 +41,55 @@
   --font-body: 'Manrope', 'Segoe UI', system-ui, sans-serif;
   --font-mono: 'JetBrains Mono', 'Cascadia Code', 'Consolas', monospace;
 
-  /* Layout */
+  /* Layout & Dimensions */
   --app-max: 1480px;
   --gap: 18px;
+  --topbar-height: 54px;
+  --sidebar-w-expanded: 240px;
+  --sidebar-w-collapsed: 64px;
+  --sidebar-width: var(--sidebar-w-expanded);
+
+  /* Premium Glassmorphism Design Tokens */
+  --glass-bg-base: rgba(5, 9, 16, 0.78);
+  --glass-bg-subtle: rgba(8, 14, 26, 0.52);
+  --glass-bg-card: linear-gradient(175deg, rgba(10, 16, 28, 0.88) 0%, rgba(5, 9, 16, 0.94) 100%);
+  --glass-bg-elevated: linear-gradient(165deg, rgba(12, 20, 36, 0.94) 0%, rgba(7, 12, 22, 0.96) 100%);
+  --glass-bg-hover: rgba(18, 28, 48, 0.65);
+  --glass-bg-active: rgba(0, 229, 255, 0.12);
+
+  --glass-border-faint: rgba(255, 255, 255, 0.05);
+  --glass-border-subtle: rgba(140, 210, 255, 0.12);
+  --glass-border-medium: rgba(140, 210, 255, 0.22);
+  --glass-border-glow: rgba(0, 229, 255, 0.45);
+
+  --glass-shadow-sm: 0 4px 16px rgba(0, 0, 0, 0.4);
+  --glass-shadow-md: 0 8px 32px rgba(0, 0, 0, 0.55), inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  --glass-shadow-lg: 0 16px 48px rgba(0, 0, 0, 0.7), inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  --glass-shadow-focused: 0 16px 48px rgba(0, 0, 0, 0.7), 0 0 24px rgba(0, 229, 255, 0.15), inset 0 1px 0 rgba(255, 255, 255, 0.12);
+
+  --glass-blur-sm: 8px;
+  --glass-blur-md: 14px;
+  --glass-blur-lg: 20px;
+
+  /* Standardized Radii */
+  --radius-xs: 4px;
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+  --radius-xl: 18px;
+  --radius-full: 9999px;
+
+  /* Deterministic Z-Index Stacking Context Scale */
+  --z-base: 10;
+  --z-topbar: 30;
+  --z-panels: 40;
+  --z-sidebar: 50;
+  --z-backdrop: 55;
+  --z-dock: 60;
+  --z-modal: 100;
+  --z-dialog: 110;
+  --z-popover: 120;
+  --z-tooltip: 200;
 
   /* Motion */
   --ease-out: cubic-bezier(0.16, 1, 0.3, 1);

@@ -114,6 +114,36 @@ export interface HttpServerOptions {
   log?: Logger
 }
 
+/**
+ * Explicit allowlist of metadata fields that unprivileged HTTP clients may provide.
+ * Security-critical fields (autoApprove, authorizedScopes, permissions, etc.) are strictly prohibited.
+ */
+export const ALLOWED_CLIENT_TASK_METADATA_FIELDS = new Set([
+  'clientRequestId',
+  'source',
+  'uiContext',
+  'displayMode',
+  'category',
+  'notes',
+  'description',
+  'customLabels',
+  'notificationLevel',
+  'projectPath',
+  'idempotencyKey',
+])
+
+export function sanitizeClientTaskMetadata(raw: unknown): Record<string, unknown> | undefined {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined
+  const clean: Record<string, unknown> = {}
+  for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
+    if (key === '__proto__' || key === 'constructor' || key === 'prototype') continue
+    if (ALLOWED_CLIENT_TASK_METADATA_FIELDS.has(key)) {
+      clean[key] = value
+    }
+  }
+  return Object.keys(clean).length > 0 ? clean : undefined
+}
+
 export interface RunningHttp {
   url: string
   port: number
@@ -411,6 +441,48 @@ export async function startHttpServer(options: HttpServerOptions): Promise<Runni
     try {
       /* ------------------------------- browser session + auth fence --------------- */
       if (req.method === 'GET' && pathname === '/api/session') {
+        // SEC-05: Strict origin & caller trust enforcement for session issuance
+        if (rawOrigin !== undefined) {
+          if (!origin || !trustedOrigins.has(origin)) {
+            json(res, 403, { ok: false, error: 'origin_denied' })
+            return
+          }
+        } else {
+          // No Origin header: verify local loopback trust or require authentication
+          const remoteIp = req.socket.remoteAddress
+          const isLoopback =
+            remoteIp === '127.0.0.1' ||
+            remoteIp === '::1' ||
+            remoteIp === '::ffff:127.0.0.1' ||
+            remoteIp === 'localhost'
+
+          if (!isLoopback && !isAuthorized(options.token, req)) {
+            json(res, 403, { ok: false, error: 'remote_session_issuance_forbidden' })
+            return
+          }
+
+          // Refuse cross-site fetches
+          const fetchSite = req.headers['sec-fetch-site']
+          if (fetchSite === 'cross-site') {
+            json(res, 403, { ok: false, error: 'cross_site_session_forbidden' })
+            return
+          }
+
+          const referer = req.headers.referer
+          if (typeof referer === 'string' && referer.trim()) {
+            try {
+              const refOrigin = new URL(referer).origin
+              if (!trustedOrigins.has(refOrigin)) {
+                json(res, 403, { ok: false, error: 'untrusted_referer' })
+                return
+              }
+            } catch {
+              json(res, 403, { ok: false, error: 'malformed_referer' })
+              return
+            }
+          }
+        }
+
         setSessionCookie(res, req, sessionId)
         json(res, 200, { ok: true })
         return
@@ -697,7 +769,10 @@ export async function startHttpServer(options: HttpServerOptions): Promise<Runni
           })
           return
         }
-        log.info('phone', 'pairing code generated', { code: begun.code, device: begun.deviceId, expiresInMs: begun.expiresInMs })
+        // The pairing code itself is a credential: it is returned to the
+        // caller (who must type it into the phone) but never written to logs,
+        // where the redaction regex (key names only) would not catch it.
+        log.info('phone', 'pairing code generated', { device: begun.deviceId, expiresInMs: begun.expiresInMs })
         json(res, 200, {
           ok: true,
           code: begun.code,
@@ -1098,21 +1173,36 @@ export async function startHttpServer(options: HttpServerOptions): Promise<Runni
         const title = typeof body.title === 'string' ? body.title.trim().slice(0, 200) : ''
         const objective = typeof body.objective === 'string' ? body.objective.trim().slice(0, 2000) : ''
         const priority = typeof body.priority === 'number' ? body.priority : 50
-        const subtasks = Array.isArray(body.subtasks) ? body.subtasks : []
+        const subtasks = Array.isArray(body.subtasks) ? body.subtasks : undefined
         const tags = Array.isArray(body.tags) ? body.tags.map(String) : []
+        const projectPath = typeof body.projectPath === 'string' ? body.projectPath.trim().slice(0, 500) : undefined
+        const idempotencyKey = typeof body.idempotencyKey === 'string' ? body.idempotencyKey.trim() : undefined
+        // CRIT-02 Remediation: Sanitize metadata against server allowlist; reject autoApprove & authorizedScopes
+        const metadata = sanitizeClientTaskMetadata(body.metadata)
 
-        if (!title || !objective) {
-          json(res, 400, { ok: false, error: 'title and objective are required' })
+        if (!objective) {
+          json(res, 400, { ok: false, error: 'objective is required' })
           return
         }
 
-        const task = await ctx.tasks.createTask({
-          title,
-          objective,
-          priority,
-          subtasks,
-          tags,
-        })
+        let task
+        try {
+          task = await ctx.tasks.createTask({
+            title: title || objective.slice(0, 80),
+            objective,
+            priority,
+            subtasks,
+            tags,
+            projectPath,
+            idempotencyKey,
+            metadata,
+          })
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err)
+          const status = message.startsWith('planning_unavailable') ? 503 : 400
+          json(res, status, { ok: false, error: message })
+          return
+        }
 
         json(res, 201, { ok: true, task })
         return
@@ -1175,6 +1265,18 @@ export async function startHttpServer(options: HttpServerOptions): Promise<Runni
               return
             }
             const ok = await ctx.tasks.rejectAction(taskId, approvalId, reason)
+            json(res, 200, { ok })
+            return
+          }
+          if (action === 'revoke') {
+            const body = asRecord(await readJsonBody(req))
+            const approvalId = typeof body.approvalId === 'string' ? body.approvalId : ''
+            const reason = typeof body.reason === 'string' ? body.reason : undefined
+            if (!approvalId) {
+              json(res, 400, { ok: false, error: 'approvalId is required' })
+              return
+            }
+            const ok = await (ctx.tasks as any).revokeAction(taskId, approvalId, reason)
             json(res, 200, { ok })
             return
           }

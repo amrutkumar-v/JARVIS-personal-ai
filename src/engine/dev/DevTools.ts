@@ -24,7 +24,8 @@ import type {
   ToolVerification,
 } from '../../tools/Tool'
 import type { ToolInputSchema } from '../provider'
-import { ensureBackendSession } from '../../backend/session'
+import { ensureBackendSession, ensureNodeBackendSession, getNodeSessionCookie } from '../../backend/session'
+import { getBackendConfig } from '../../backend/config'
 
 export type DevActionExecutor = (
   action: string,
@@ -60,7 +61,10 @@ async function dispatchDevAction(
     (typeof window !== 'undefined'
       ? (window as unknown as Record<string, unknown>).__JARVIS_BACKEND_URL__ as string
       : undefined) ||
-    'http://127.0.0.1:8787'
+    // The page session cookie is host-scoped: the HUD talks to the backend on
+    // `localhost`, so dev tools MUST use the same host as BackendClient rather
+    // than hard-coding 127.0.0.1 (a different cookie origin).
+    getBackendConfig().baseUrl
 
   const fetchFn =
     options?.fetchImpl ||
@@ -71,14 +75,21 @@ async function dispatchDevAction(
   }
 
   try {
-    if (typeof window !== 'undefined') {
+    if (typeof window === 'undefined') {
+      await ensureNodeBackendSession(baseUrl, fetchFn).catch(() => {})
+    } else {
       await ensureBackendSession(baseUrl, fetchFn).catch(() => {})
+    }
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+    }
+    const nodeCookie = getNodeSessionCookie()
+    if (nodeCookie) {
+      headers['Cookie'] = nodeCookie
     }
     const res = await fetchFn(`${baseUrl}/api/dev/execute`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
+      headers,
       credentials: 'include',
       body: JSON.stringify({ action, params }),
     })

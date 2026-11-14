@@ -15,12 +15,29 @@ export interface WorkspaceBounds {
   h: number
 }
 
-export function workspaceBounds(viewport: ViewportSize): WorkspaceBounds {
+export interface WorkspaceOffsets {
+  sidebarWidth?: number
+  topbarHeight?: number
+  dockHeight?: number
+  margin?: number
+}
+
+export function workspaceBounds(
+  viewport: ViewportSize,
+  offsets?: WorkspaceOffsets,
+): WorkspaceBounds {
+  const sidebarW = offsets?.sidebarWidth ?? RAIL_WIDTH
+  const topbarH = offsets?.topbarHeight ?? 0
+  const dockH = offsets?.dockHeight ?? 0
+  const margin = offsets?.margin ?? PANEL_MARGIN
+  const topY = topbarH > 0 ? topbarH + margin : margin
+  const bottomMargin = dockH > 0 ? dockH + margin : margin
+
   return {
-    x: RAIL_WIDTH + PANEL_MARGIN,
-    y: PANEL_MARGIN,
-    w: Math.max(0, viewport.w - RAIL_WIDTH - PANEL_MARGIN * 2),
-    h: Math.max(0, viewport.h - PANEL_MARGIN * 2),
+    x: sidebarW + margin,
+    y: topY,
+    w: Math.max(0, viewport.w - sidebarW - margin * 2),
+    h: Math.max(0, viewport.h - topY - bottomMargin),
   }
 }
 
@@ -85,9 +102,11 @@ function arrangeColumn(
     const p = panels[i]
     const h = Math.round(heights[i] * scale)
     remaining -= h
-    const w = Math.max(p.def.minSize.w, Math.min(p.state.w, bounds.w * 0.9))
+    const rawW = Math.max(p.def.minSize.w, Math.min(p.state.w, bounds.w * 0.9))
+    const w = Math.min(rawW, bounds.w)
+    const clampedX = Math.max(bounds.x, Math.min(bounds.x + bounds.w - w, edgeX))
     result.set(p.id, {
-      x: Math.round(edgeX),
+      x: Math.round(clampedX),
       y: Math.round(y),
       w: Math.round(w),
       h,
@@ -124,8 +143,10 @@ function arrangeRow(
   let z = 0
   for (let i = 0; i < panels.length; i++) {
     const p = panels[i]
-    const w = Math.round(widths[i] * scale)
-    const h = Math.max(p.def.minSize.h, Math.min(p.state.h, bounds.h * 0.9))
+    const rawW = Math.round(widths[i] * scale)
+    const w = Math.min(rawW, bounds.w)
+    const rawH = Math.max(p.def.minSize.h, Math.min(p.state.h, bounds.h * 0.9))
+    const h = Math.min(rawH, bounds.h)
     result.set(p.id, {
       x: Math.round(x),
       y: Math.round(edgeY),
@@ -145,8 +166,9 @@ export function computePanelRects(
   panels: Record<PanelId, PanelUiState>,
   registry: Map<PanelId, PanelDefinition>,
   viewport: ViewportSize,
+  offsets?: WorkspaceOffsets,
 ): Map<PanelId, PanelRect> {
-  const bounds = workspaceBounds(viewport)
+  const bounds = workspaceBounds(viewport, offsets)
   const result = new Map<PanelId, PanelRect>()
 
   const edgeGroups: Record<PanelPlacement, EdgePanel[]> = {
@@ -177,10 +199,12 @@ export function computePanelRects(
 
     if (state.placement === 'floating') {
       const clamped = clampFloating(state.x, state.y, state.w, state.h, bounds)
+      const w = Math.min(Math.round(state.w), bounds.w)
+      const h = Math.min(Math.round(state.h), bounds.h)
       result.set(id, {
         ...clamped,
-        w: Math.round(state.w),
-        h: Math.round(state.h),
+        w,
+        h,
         z: state.z,
         open: true,
         placement: 'floating',

@@ -31,6 +31,10 @@ export interface VoiceManagerCallbacks {
   onNotice?(kind: 'info' | 'warning' | 'error', text: string): void
   /** Called when a command is being delivered (before submitCommand). */
   onCommand?(text: string): void
+  /** Called when an interim partial transcript is recognized. */
+  onInterimTranscript?(text: string): void
+  /** Called when in-flight speech is interrupted (barge-in). */
+  onInterrupt?(): void
 }
 
 export interface VoiceManagerOptions {
@@ -67,6 +71,7 @@ export class VoiceManager {
   private wakeUnsub: (() => void) | null = null
   private wakeErrorUnsub: (() => void) | null = null
   private sttUnsub: (() => void) | null = null
+  private sttInterimUnsub: (() => void) | null = null
   private sttErrorUnsub: (() => void) | null = null
   private readonly diag: VoiceDiagnostics | null
 
@@ -87,6 +92,9 @@ export class VoiceManager {
       this.wakeErrorUnsub = this.wake.onError((message) => this.handleInputError(message))
     }
     this.sttUnsub = this.stt.onTranscript((text) => this.handleTranscript(text))
+    if (this.stt.onInterimTranscript) {
+      this.sttInterimUnsub = this.stt.onInterimTranscript((text) => this.handleInterimTranscript(text))
+    }
     this.sttErrorUnsub = this.stt.onError((message) => this.handleInputError(message))
   }
 
@@ -234,6 +242,19 @@ export class VoiceManager {
     }
   }
 
+  handleInterimTranscript(text: string): void {
+    if (this.disposed) return
+    this.callbacks.onInterimTranscript?.(text)
+    if (this.machine.state === 'SPEAKING') {
+      // Barge-in: user began speaking while assistant was speaking.
+      // Immediately cancel in-flight TTS and transition to command listening.
+      this.tts.stop()
+      this.callbacks.onInterrupt?.()
+      this.diag?.increment('speechInterrupted')
+      this.transition('LISTENING_FOR_COMMAND')
+    }
+  }
+
   /** Engine status feed — completes the PROCESSING → SPEAKING → LISTENING cycle. */
   engineStatus(status: string): void {
     if (this.disposed) return
@@ -258,6 +279,7 @@ export class VoiceManager {
     this.wakeUnsub?.()
     this.wakeErrorUnsub?.()
     this.sttUnsub?.()
+    this.sttInterimUnsub?.()
     this.sttErrorUnsub?.()
     this.tts.stop()
     this.transition('SLEEPING')

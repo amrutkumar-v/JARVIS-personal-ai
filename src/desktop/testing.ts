@@ -6,6 +6,7 @@ import type {
   DesktopKeyResult,
   DesktopMoveResult,
   DesktopScrollResult,
+  DesktopWindowStateResult,
   VirtualScreen,
 } from './provider'
 import { isDesktopKey } from './provider'
@@ -135,6 +136,9 @@ export class FakeDesktopInteractionProvider implements DesktopProvider {
       hotkey: this.available,
       type: this.available,
       focus: this.available,
+      minimize: this.available,
+      maximize: this.available,
+      restore: this.available,
     }
     const limits = {
       maxHotkeyKeys: DESKTOP_LIMITS.MAX_HOTKEY_KEYS,
@@ -263,5 +267,31 @@ export class FakeDesktopInteractionProvider implements DesktopProvider {
     this.foregroundId = win.id
     this.interactionLog.push({ name: 'focus', windowId: win.id, injected: true })
     return { windowId: win.id, focused: true, detail: 'Confirmed as the foreground window.' }
+  }
+
+  async minimizeWindow(windowId: string): Promise<DesktopWindowStateResult> {
+    this.throwIfClosed()
+    const win = this.requireWindow(windowId, 'minimize')
+    win.state.minimized = true
+    this.interactionLog.push({ name: 'minimize', windowId: win.id, injected: true })
+    return { windowId: win.id, action: 'minimize', success: true, detail: 'Window was minimized.' }
+  }
+
+  async maximizeWindow(windowId: string): Promise<DesktopWindowStateResult> {
+    this.throwIfClosed()
+    const win = this.requireWindow(windowId, 'maximize')
+    win.state.maximized = true
+    win.state.minimized = false
+    this.interactionLog.push({ name: 'maximize', windowId: win.id, injected: true })
+    return { windowId: win.id, action: 'maximize', success: true, detail: 'Window was maximized.' }
+  }
+
+  async restoreWindow(windowId: string): Promise<DesktopWindowStateResult> {
+    this.throwIfClosed()
+    const win = this.requireWindow(windowId, 'restore')
+    win.state.maximized = false
+    win.state.minimized = false
+    this.interactionLog.push({ name: 'restore', windowId: win.id, injected: true })
+    return { windowId: win.id, action: 'restore', success: true, detail: 'Window was restored.' }
   }
 }

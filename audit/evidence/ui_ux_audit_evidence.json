@@ -1,0 +1,1366 @@
+{
+  "testedAt": "2026-11-13T08:45:36.983Z",
+  "viewports": [
+    {
+      "resolution": {
+        "name": "1920x1080_desktop",
+        "width": 1920,
+        "height": 1080
+      },
+      "httpStatus": 200,
+      "overflow": {
+        "scrollWidth": 1920,
+        "clientWidth": 1920,
+        "innerWidth": 1920,
+        "hasHorizontalScroll": false,
+        "scrollHeight": 1080,
+        "innerHeight": 1080,
+        "hasVerticalScroll": false
+      },
+      "elementsSummary": {
+        "totalButtons": 28,
+        "visibleButtons": 23,
+        "buttons": [
+          {
+            "text": "",
+            "ariaLabel": "Toggle navigation menu",
+            "title": "Navigation Menu",
+            "className": "sidebar-mobile-toggle",
+            "disabled": false,
+            "visible": false
+          },
+          {
+            "text": "",
+            "ariaLabel": "Open settings",
+            "title": "Settings (AI model, keys & preferences)",
+            "className": "icon-button",
+            "disabled": false,
+            "visible": true
+          },
+          {
+            "text": "",
+            "ariaLabel": "Collapse sidebar (Ctrl+B)",
+            "title": "Collapse sidebar (Ctrl+B)",
+            "className": "taskbar-collapse-btn",
+            "disabled": false,
+            "visible": true
+          },
+          {
+            "text": "Overview\nCore runtime status &",
+            "ariaLabel": "Open Overview",
+            "title": null,
+            "className": "taskbar-nav-item  ",
+            "disabled": false,
+            "visible": true
+          },
+          {
+            "text": "Assistant\nInteractive conversa",
+            "ariaLabel": "Open Assistant",
+            "title": null,
+            "className": "taskbar-nav-item  ",
+            "disabled": false,
+            "visible": true
+          },
+          {
+            "text": "Tasks\nActive, queued & complet",
+            "ariaLabel": "Open Tasks",
+            "title": null,
+            "className": "taskbar-nav-item  ",
+            "disabled": false,
+            "visible": true
+          },
+          {
+            "text": "Applications\nDesktop apps & wi",
+            "ariaLabel": "Open Applications",
+            "title": null,
+            "className": "taskbar-nav-item  ",
+            "disabled": false,
+            "visible": true
+          },
+          {
+            "text": "Files\nStorage roots, documents",
+            "ariaLabel": "Open Files",
+            "title": null,
+            "className": "taskbar-nav-item  ",
+            "disabled": false,
+            "visible": true
+          },
+          {
+            "text": "Camera\nLive video viewfinder &",
+            "ariaLabel": "Open Camera",
+            "title": null,
+            "className": "taskbar-nav-item  ",
+            "disabled": false,
+            "visible": true
+          },
+          {
+            "text": "Vision\nVisual perception & scr",
+            "ariaLabel": "Open Vision",
+            "title": null,
+            "className": "taskbar-nav-item  ",
+            "disabled": false,
+            "visible": true
+          },
+          {
+            "text": "Activity\nExecution timeline & ",
+            "ariaLabel": "Close Activity",
+            "title": null,
+            "className": "taskbar-nav-item is-active ",
+            "disabled": false,
+            "visible": true
+          },
+          {
+            "text": "System Monitor\nCPU, memory, co",
+            "ariaLabel": "Open System Monitor",
+            "title": null,
+            "className": "taskbar-nav-item  ",
+            "disabled": false,
+            "visible": true
+          },
+          {
+            "text": "Devices\nHardware topology, pre",
+            "ariaLabel": "Open Devices",
+            "title": null,
+            "className": "taskbar-nav-item  ",
+            "disabled": false,
+            "visible": true
+          },
+          {
+            "text": "Environments\n3D visual HUD the",
+            "ariaLabel": "Open Environments",
+            "title": null,
+            "className": "taskbar-nav-item  ",
+            "disabled": false,
+            "visible": true
+          },
+          {
+            "text": "Settings\nPreferences, AI model",
+            "ariaLabel": "Open Settings",
+            "title": null,
+            "className": "taskbar-nav-item  ",
+            "disabled": false,
+            "visible": true
+          }
+        ],
+        "inputs": [
+          {
+            "type": "text",
+            "placeholder": "Ask me something…",
+            "visible": true
+          }
+        ],
+        "modalsCount": 1,
+        "navs": [
+          {
+            "tag": "HEADER",
+            "className": "jarvis-topbar",
+            "rect": {
+              "x": 240,
+              "y": 0,
+              "width": 1680,
+              "height": 54,
+              "top": 0,
+              "right": 1920,
+              "bottom": 54,
+              "left": 240
+            }
+          },
+          {
+            "tag": "ASIDE",
+            "className": "jarvis-taskbar is-expanded ",
+            "rect": {
+              "x": 0,
+              "y": 0,
+              "width": 240,
+              "height": 1080,
+              "top": 0,
+              "right": 240,
+              "bottom": 1080,
+              "left": 0
+            }
+          }
+        ]
+      },
+      "pageErrors": [],
+      "consoleErrors": [],
+      "screenshot": "D:\\JARVIS\\audit\\evidence\\ui_1920x1080_desktop_default.png"
+    },
+    {
+      "resolution": {
+        "name": "1440x900_laptop",
+        "width": 1440,
+        "height": 900
+      },
+      "httpStatus": 200,
+      "overflow": {
+        "scrollWidth": 1440,
+        "clientWidth": 1440,
+        "innerWidth": 1440,
+        "hasHorizontalScroll": false,
+        "scrollHeight": 900,
+        "innerHeight": 900,
+        "hasVerticalScroll": false
+      },
+      "elementsSummary": {
+        "totalButtons": 28,
+        "visibleButtons": 23,
+        "buttons": [
+          {
+            "text": "",
+            "ariaLabel": "Toggle navigation menu",
+            "title": "Navigation Menu",
+            "className": "sidebar-mobile-toggle",
+            "disabled": false,
+            "visible": false
+          },
+          {
+            "text": "",
+            "ariaLabel": "Open settings",
+            "title": "Settings (AI model, keys & preferences)",
+            "className": "icon-button",
+            "disabled": false,
+            "visible": true
+          },
+          {
+            "text": "",
+            "ariaLabel": "Collapse sidebar (Ctrl+B)",
+            "title": "Collapse sidebar (Ctrl+B)",
+            "className": "taskbar-collapse-btn",
+            "disabled": false,
+            "visible": true
+          },
+          {
+            "text": "Overview\nCore runtime status &",
+            "ariaLabel": "Open Overview",
+            "title": null,
+            "className": "taskbar-nav-item  ",
+            "disabled": false,
+            "visible": true
+          },
+          {
+            "text": "Assistant\nInteractive conversa",
+            "ariaLabel": "Open Assistant",
+            "title": null,
+            "className": "taskbar-nav-item  ",
+            "disabled": false,
+            "visible": true
+          },
+          {
+            "text": "Tasks\nActive, queued & complet",
+            "ariaLabel": "Open Tasks",
+            "title": null,
+            "className": "taskbar-nav-item  ",
+            "disabled": false,
+            "visible": true
+          },
+          {
+            "text": "Applications\nDesktop apps & wi",
+            "ariaLabel": "Open Applications",
+            "title": null,
+            "className": "taskbar-nav-item  ",
+            "disabled": false,
+            "visible": true
+          },
+          {
+            "text": "Files\nStorage roots, documents",
+            "ariaLabel": "Open Files",
+            "title": null,
+            "className": "taskbar-nav-item  ",
+            "disabled": false,
+            "visible": true
+          },
+          {
+            "text": "Camera\nLive video viewfinder &",
+            "ariaLabel": "Open Camera",
+            "title": null,
+            "className": "taskbar-nav-item  ",
+            "disabled": false,
+            "visible": true
+          },
+          {
+            "text": "Vision\nVisual perception & scr",
+            "ariaLabel": "Open Vision",
+            "title": null,
+            "className": "taskbar-nav-item  ",
+            "disabled": false,
+            "visible": true
+          },
+          {
+            "text": "Activity\nExecution timeline & ",
+            "ariaLabel": "Close Activity",
+            "title": null,
+            "className": "taskbar-nav-item is-active ",
+            "disabled": false,
+            "visible": true
+          },
+          {
+            "text": "System Monitor\nCPU, memory, co",
+            "ariaLabel": "Open System Monitor",
+            "title": null,
+            "className": "taskbar-nav-item  ",
+            "disabled": false,
+            "visible": true
+          },
+          {
+            "text": "Devices\nHardware topology, pre",
+            "ariaLabel": "Open Devices",
+            "title": null,
+            "className": "taskbar-nav-item  ",
+            "disabled": false,
+            "visible": true
+          },
+          {
+            "text": "Environments\n3D visual HUD the",
+            "ariaLabel": "Open Environments",
+            "title": null,
+            "className": "taskbar-nav-item  ",
+            "disabled": false,
+            "visible": true
+          },
+          {
+            "text": "Settings\nPreferences, AI model",
+            "ariaLabel": "Open Settings",
+            "title": null,
+            "className": "taskbar-nav-item  ",
+            "disabled": false,
+            "visible": true
+          }
+        ],
+        "inputs": [
+          {
+            "type": "text",
+            "placeholder": "Ask me something…",
+            "visible": true
+          }
+        ],
+        "modalsCount": 1,
+        "navs": [
+          {
+            "tag": "HEADER",
+            "className": "jarvis-topbar",
+            "rect": {
+              "x": 240,
+              "y": 0,
+              "width": 1200,
+              "height": 54,
+              "top": 0,
+              "right": 1440,
+              "bottom": 54,
+              "left": 240
+            }
+          },
+          {
+            "tag": "ASIDE",
+            "className": "jarvis-taskbar is-expanded ",
+            "rect": {
+              "x": 0,
+              "y": 0,
+              "width": 240,
+              "height": 900,
+              "top": 0,
+              "right": 240,
+              "bottom": 900,
+              "left": 0
+            }
+          }
+        ]
+      },
+      "pageErrors": [],
+      "consoleErrors": [],
+      "screenshot": "D:\\JARVIS\\audit\\evidence\\ui_1440x900_laptop_default.png"
+    },
+    {
+      "resolution": {
+        "name": "1366x768_standard",
+        "width": 1366,
+        "height": 768
+      },
+      "httpStatus": 200,
+      "overflow": {
+        "scrollWidth": 1366,
+        "clientWidth": 1366,
+        "innerWidth": 1366,
+        "hasHorizontalScroll": false,
+        "scrollHeight": 768,
+        "innerHeight": 768,
+        "hasVerticalScroll": false
+      },
+      "elementsSummary": {
+        "totalButtons": 28,
+        "visibleButtons": 23,
+        "buttons": [
+          {
+            "text": "",
+            "ariaLabel": "Toggle navigation menu",
+            "title": "Navigation Menu",
+            "className": "sidebar-mobile-toggle",
+            "disabled": false,
+            "visible": false
+          },
+          {
+            "text": "",
+            "ariaLabel": "Open settings",
+            "title": "Settings (AI model, keys & preferences)",
+            "className": "icon-button",
+            "disabled": false,
+            "visible": true
+          },
+          {
+            "text": "",
+            "ariaLabel": "Collapse sidebar (Ctrl+B)",
+            "title": "Collapse sidebar (Ctrl+B)",
+            "className": "taskbar-collapse-btn",
+            "disabled": false,
+            "visible": true
+          },
+          {
+            "text": "Overview\nCore runtime status &",
+            "ariaLabel": "Open Overview",
+            "title": null,
+            "className": "taskbar-nav-item  ",
+            "disabled": false,
+            "visible": true
+          },
+          {
+            "text": "Assistant\nInteractive conversa",
+            "ariaLabel": "Open Assistant",
+            "title": null,
+            "className": "taskbar-nav-item  ",
+            "disabled": false,
+            "visible": true
+          },
+          {
+            "text": "Tasks\nActive, queued & complet",
+            "ariaLabel": "Open Tasks",
+            "title": null,
+            "className": "taskbar-nav-item  ",
+            "disabled": false,
+            "visible": true
+          },
+          {
+            "text": "Applications\nDesktop apps & wi",
+            "ariaLabel": "Open Applications",
+            "title": null,
+            "className": "taskbar-nav-item  ",
+            "disabled": false,
+            "visible": true
+          },
+          {
+            "text": "Files\nStorage roots, documents",
+            "ariaLabel": "Open Files",
+            "title": null,
+            "className": "taskbar-nav-item  ",
+            "disabled": false,
+            "visible": true
+          },
+          {
+            "text": "Camera\nLive video viewfinder &",
+            "ariaLabel": "Open Camera",
+            "title": null,
+            "className": "taskbar-nav-item  ",
+            "disabled": false,
+            "visible": true
+          },
+          {
+            "text": "Vision\nVisual perception & scr",
+            "ariaLabel": "Open Vision",
+            "title": null,
+            "className": "taskbar-nav-item  ",
+            "disabled": false,
+            "visible": true
+          },
+          {
+            "text": "Activity\nExecution timeline & ",
+            "ariaLabel": "Close Activity",
+            "title": null,
+            "className": "taskbar-nav-item is-active ",
+            "disabled": false,
+            "visible": true
+          },
+          {
+            "text": "System Monitor\nCPU, memory, co",
+            "ariaLabel": "Open System Monitor",
+            "title": null,
+            "className": "taskbar-nav-item  ",
+            "disabled": false,
+            "visible": true
+          },
+          {
+            "text": "Devices\nHardware topology, pre",
+            "ariaLabel": "Open Devices",
+            "title": null,
+            "className": "taskbar-nav-item  ",
+            "disabled": false,
+            "visible": true
+          },
+          {
+            "text": "Environments\n3D visual HUD the",
+            "ariaLabel": "Open Environments",
+            "title": null,
+            "className": "taskbar-nav-item  ",
+            "disabled": false,
+            "visible": true
+          },
+          {
+            "text": "Settings\nPreferences, AI model",
+            "ariaLabel": "Open Settings",
+            "title": null,
+            "className": "taskbar-nav-item  ",
+            "disabled": false,
+            "visible": true
+          }
+        ],
+        "inputs": [
+          {
+            "type": "text",
+            "placeholder": "Ask me something…",
+            "visible": true
+          }
+        ],
+        "modalsCount": 1,
+        "navs": [
+          {
+            "tag": "HEADER",
+            "className": "jarvis-topbar",
+            "rect": {
+              "x": 240,
+              "y": 0,
+              "width": 1126,
+              "height": 54,
+              "top": 0,
+              "right": 1366,
+              "bottom": 54,
+              "left": 240
+            }
+          },
+          {
+            "tag": "ASIDE",
+            "className": "jarvis-taskbar is-expanded ",
+            "rect": {
+              "x": 0,
+              "y": 0,
+              "width": 240,
+              "height": 768,
+              "top": 0,
+              "right": 240,
+              "bottom": 768,
+              "left": 0
+            }
+          }
+        ]
+      },
+      "pageErrors": [],
+      "consoleErrors": [],
+      "screenshot": "D:\\JARVIS\\audit\\evidence\\ui_1366x768_standard_default.png"
+    },
+    {
+      "resolution": {
+        "name": "1024x768_tablet_landscape",
+        "width": 1024,
+        "height": 768
+      },
+      "httpStatus": 200,
+      "overflow": {
+        "scrollWidth": 1024,
+        "clientWidth": 1024,
+        "innerWidth": 1024,
+        "hasHorizontalScroll": false,
+        "scrollHeight": 768,
+        "innerHeight": 768,
+        "hasVerticalScroll": false
+      },
+      "elementsSummary": {
+        "totalButtons": 28,
+        "visibleButtons": 23,
+        "buttons": [
+          {
+            "text": "",
+            "ariaLabel": "Toggle navigation menu",
+            "title": "Navigation Menu",
+            "className": "sidebar-mobile-toggle",
+            "disabled": false,
+            "visible": false
+          },
+          {
+            "text": "",
+            "ariaLabel": "Open settings",
+            "title": "Settings (AI model, keys & preferences)",
+            "className": "icon-button",
+            "disabled": false,
+            "visible": true
+          },
+          {
+            "text": "",
+            "ariaLabel": "Expand sidebar (Ctrl+B)",
+            "title": "Expand sidebar (Ctrl+B)",
+            "className": "taskbar-collapse-btn",
+            "disabled": false,
+            "visible": true
+          },
+          {
+            "text": "",
+            "ariaLabel": "Open Overview",
+            "title": null,
+            "className": "taskbar-nav-item  is-compact",
+            "disabled": false,
+            "visible": true
+          },
+          {
+            "text": "",
+            "ariaLabel": "Open Assistant",
+            "title": null,
+            "className": "taskbar-nav-item  is-compact",
+            "disabled": false,
+            "visible": true
+          },
+          {
+            "text": "",
+            "ariaLabel": "Open Tasks",
+            "title": null,
+            "className": "taskbar-nav-item  is-compact",
+            "disabled": false,
+            "visible": true
+          },
+          {
+            "text": "",
+            "ariaLabel": "Open Applications",
+            "title": null,
+            "className": "taskbar-nav-item  is-compact",
+            "disabled": false,
+            "visible": true
+          },
+          {
+            "text": "",
+            "ariaLabel": "Open Files",
+            "title": null,
+            "className": "taskbar-nav-item  is-compact",
+            "disabled": false,
+            "visible": true
+          },
+          {
+            "text": "",
+            "ariaLabel": "Open Camera",
+            "title": null,
+            "className": "taskbar-nav-item  is-compact",
+            "disabled": false,
+            "visible": true
+          },
+          {
+            "text": "",
+            "ariaLabel": "Open Vision",
+            "title": null,
+            "className": "taskbar-nav-item  is-compact",
+            "disabled": false,
+            "visible": true
+          },
+          {
+            "text": "",
+            "ariaLabel": "Close Activity",
+            "title": null,
+            "className": "taskbar-nav-item is-active is-compact",
+            "disabled": false,
+            "visible": true
+          },
+          {
+            "text": "",
+            "ariaLabel": "Open System Monitor",
+            "title": null,
+            "className": "taskbar-nav-item  is-compact",
+            "disabled": false,
+            "visible": true
+          },
+          {
+            "text": "",
+            "ariaLabel": "Open Devices",
+            "title": null,
+            "className": "taskbar-nav-item  is-compact",
+            "disabled": false,
+            "visible": true
+          },
+          {
+            "text": "",
+            "ariaLabel": "Open Environments",
+            "title": null,
+            "className": "taskbar-nav-item  is-compact",
+            "disabled": false,
+            "visible": true
+          },
+          {
+            "text": "",
+            "ariaLabel": "Open Settings",
+            "title": null,
+            "className": "taskbar-nav-item  is-compact",
+            "disabled": false,
+            "visible": true
+          }
+        ],
+        "inputs": [
+          {
+            "type": "text",
+            "placeholder": "Ask me something…",
+            "visible": true
+          }
+        ],
+        "modalsCount": 1,
+        "navs": [
+          {
+            "tag": "HEADER",
+            "className": "jarvis-topbar",
+            "rect": {
+              "x": 64,
+              "y": 0,
+              "width": 960,
+              "height": 54,
+              "top": 0,
+              "right": 1024,
+              "bottom": 54,
+              "left": 64
+            }
+          },
+          {
+            "tag": "ASIDE",
+            "className": "jarvis-taskbar is-collapsed ",
+            "rect": {
+              "x": 0,
+              "y": 0,
+              "width": 64,
+              "height": 768,
+              "top": 0,
+              "right": 64,
+              "bottom": 768,
+              "left": 0
+            }
+          }
+        ]
+      },
+      "pageErrors": [],
+      "consoleErrors": [],
+      "screenshot": "D:\\JARVIS\\audit\\evidence\\ui_1024x768_tablet_landscape_default.png"
+    },
+    {
+      "resolution": {
+        "name": "768x1024_tablet_portrait",
+        "width": 768,
+        "height": 1024
+      },
+      "httpStatus": 200,
+      "overflow": {
+        "scrollWidth": 768,
+        "clientWidth": 768,
+        "innerWidth": 768,
+        "hasHorizontalScroll": false,
+        "scrollHeight": 1024,
+        "innerHeight": 1024,
+        "hasVerticalScroll": false
+      },
+      "elementsSummary": {
+        "totalButtons": 28,
+        "visibleButtons": 23,
+        "buttons": [
+          {
+            "text": "",
+            "ariaLabel": "Toggle navigation menu",
+            "title": "Navigation Menu",
+            "className": "sidebar-mobile-toggle",
+            "disabled": false,
+            "visible": true
+          },
+          {
+            "text": "",
+            "ariaLabel": "Open settings",
+            "title": "Settings (AI model, keys & preferences)",
+            "className": "icon-button",
+            "disabled": false,
+            "visible": true
+          },
+          {
+            "text": "",
+            "ariaLabel": "Expand sidebar (Ctrl+B)",
+            "title": "Expand sidebar (Ctrl+B)",
+            "className": "taskbar-collapse-btn",
+            "disabled": false,
+            "visible": false
+          },
+          {
+            "text": "",
+            "ariaLabel": "Open Overview",
+            "title": null,
+            "className": "taskbar-nav-item  is-compact",
+            "disabled": false,
+            "visible": true
+          },
+          {
+            "text": "",
+            "ariaLabel": "Open Assistant",
+            "title": null,
+            "className": "taskbar-nav-item  is-compact",
+            "disabled": false,
+            "visible": true
+          },
+          {
+            "text": "",
+            "ariaLabel": "Open Tasks",
+            "title": null,
+            "className": "taskbar-nav-item  is-compact",
+            "disabled": false,
+            "visible": true
+          },
+          {
+            "text": "",
+            "ariaLabel": "Open Applications",
+            "title": null,
+            "className": "taskbar-nav-item  is-compact",
+            "disabled": false,
+            "visible": true
+          },
+          {
+            "text": "",
+            "ariaLabel": "Open Files",
+            "title": null,
+            "className": "taskbar-nav-item  is-compact",
+            "disabled": false,
+            "visible": true
+          },
+          {
+            "text": "",
+            "ariaLabel": "Open Camera",
+            "title": null,
+            "className": "taskbar-nav-item  is-compact",
+            "disabled": false,
+            "visible": true
+          },
+          {
+            "text": "",
+            "ariaLabel": "Open Vision",
+            "title": null,
+            "className": "taskbar-nav-item  is-compact",
+            "disabled": false,
+            "visible": true
+          },
+          {
+            "text": "",
+            "ariaLabel": "Close Activity",
+            "title": null,
+            "className": "taskbar-nav-item is-active is-compact",
+            "disabled": false,
+            "visible": true
+          },
+          {
+            "text": "",
+            "ariaLabel": "Open System Monitor",
+            "title": null,
+            "className": "taskbar-nav-item  is-compact",
+            "disabled": false,
+            "visible": true
+          },
+          {
+            "text": "",
+            "ariaLabel": "Open Devices",
+            "title": null,
+            "className": "taskbar-nav-item  is-compact",
+            "disabled": false,
+            "visible": true
+          },
+          {
+            "text": "",
+            "ariaLabel": "Open Environments",
+            "title": null,
+            "className": "taskbar-nav-item  is-compact",
+            "disabled": false,
+            "visible": true
+          },
+          {
+            "text": "",
+            "ariaLabel": "Open Settings",
+            "title": null,
+            "className": "taskbar-nav-item  is-compact",
+            "disabled": false,
+            "visible": true
+          }
+        ],
+        "inputs": [
+          {
+            "type": "text",
+            "placeholder": "Ask me something…",
+            "visible": true
+          }
+        ],
+        "modalsCount": 1,
+        "navs": [
+          {
+            "tag": "HEADER",
+            "className": "jarvis-topbar",
+            "rect": {
+              "x": 0,
+              "y": 0,
+              "width": 768,
+              "height": 54,
+              "top": 0,
+              "right": 768,
+              "bottom": 54,
+              "left": 0
+            }
+          },
+          {
+            "tag": "ASIDE",
+            "className": "jarvis-taskbar is-collapsed ",
+            "rect": {
+              "x": -260,
+              "y": 0,
+              "width": 260,
+              "height": 1024,
+              "top": 0,
+              "right": 0,
+              "bottom": 1024,
+              "left": -260
+            }
+          }
+        ]
+      },
+      "pageErrors": [],
+      "consoleErrors": [],
+      "screenshot": "D:\\JARVIS\\audit\\evidence\\ui_768x1024_tablet_portrait_default.png"
+    },
+    {
+      "resolution": {
+        "name": "390x844_mobile_iphone",
+        "width": 390,
+        "height": 844
+      },
+      "httpStatus": 200,
+      "overflow": {
+        "scrollWidth": 390,
+        "clientWidth": 390,
+        "innerWidth": 390,
+        "hasHorizontalScroll": false,
+        "scrollHeight": 844,
+        "innerHeight": 844,
+        "hasVerticalScroll": false
+      },
+      "elementsSummary": {
+        "totalButtons": 28,
+        "visibleButtons": 23,
+        "buttons": [
+          {
+            "text": "",
+            "ariaLabel": "Toggle navigation menu",
+            "title": "Navigation Menu",
+            "className": "sidebar-mobile-toggle",
+            "disabled": false,
+            "visible": true
+          },
+          {
+            "text": "",
+            "ariaLabel": "Open settings",
+            "title": "Settings (AI model, keys & preferences)",
+            "className": "icon-button",
+            "disabled": false,
+            "visible": true
+          },
+          {
+            "text": "",
+            "ariaLabel": "Expand sidebar (Ctrl+B)",
+            "title": "Expand sidebar (Ctrl+B)",
+            "className": "taskbar-collapse-btn",
+            "disabled": false,
+            "visible": false
+          },
+          {
+            "text": "",
+            "ariaLabel": "Open Overview",
+            "title": null,
+            "className": "taskbar-nav-item  is-compact",
+            "disabled": false,
+            "visible": true
+          },
+          {
+            "text": "",
+            "ariaLabel": "Open Assistant",
+            "title": null,
+            "className": "taskbar-nav-item  is-compact",
+            "disabled": false,
+            "visible": true
+          },
+          {
+            "text": "",
+            "ariaLabel": "Open Tasks",
+            "title": null,
+            "className": "taskbar-nav-item  is-compact",
+            "disabled": false,
+            "visible": true
+          },
+          {
+            "text": "",
+            "ariaLabel": "Open Applications",
+            "title": null,
+            "className": "taskbar-nav-item  is-compact",
+            "disabled": false,
+            "visible": true
+          },
+          {
+            "text": "",
+            "ariaLabel": "Open Files",
+            "title": null,
+            "className": "taskbar-nav-item  is-compact",
+            "disabled": false,
+            "visible": true
+          },
+          {
+            "text": "",
+            "ariaLabel": "Open Camera",
+            "title": null,
+            "className": "taskbar-nav-item  is-compact",
+            "disabled": false,
+            "visible": true
+          },
+          {
+            "text": "",
+            "ariaLabel": "Open Vision",
+            "title": null,
+            "className": "taskbar-nav-item  is-compact",
+            "disabled": false,
+            "visible": true
+          },
+          {
+            "text": "",
+            "ariaLabel": "Close Activity",
+            "title": null,
+            "className": "taskbar-nav-item is-active is-compact",
+            "disabled": false,
+            "visible": true
+          },
+          {
+            "text": "",
+            "ariaLabel": "Open System Monitor",
+            "title": null,
+            "className": "taskbar-nav-item  is-compact",
+            "disabled": false,
+            "visible": true
+          },
+          {
+            "text": "",
+            "ariaLabel": "Open Devices",
+            "title": null,
+            "className": "taskbar-nav-item  is-compact",
+            "disabled": false,
+            "visible": true
+          },
+          {
+            "text": "",
+            "ariaLabel": "Open Environments",
+            "title": null,
+            "className": "taskbar-nav-item  is-compact",
+            "disabled": false,
+            "visible": true
+          },
+          {
+            "text": "",
+            "ariaLabel": "Open Settings",
+            "title": null,
+            "className": "taskbar-nav-item  is-compact",
+            "disabled": false,
+            "visible": true
+          }
+        ],
+        "inputs": [
+          {
+            "type": "text",
+            "placeholder": "Ask me something…",
+            "visible": true
+          }
+        ],
+        "modalsCount": 1,
+        "navs": [
+          {
+            "tag": "HEADER",
+            "className": "jarvis-topbar",
+            "rect": {
+              "x": 0,
+              "y": 0,
+              "width": 390,
+              "height": 54,
+              "top": 0,
+              "right": 390,
+              "bottom": 54,
+              "left": 0
+            }
+          },
+          {
+            "tag": "ASIDE",
+            "className": "jarvis-taskbar is-collapsed ",
+            "rect": {
+              "x": -260,
+              "y": 0,
+              "width": 260,
+              "height": 844,
+              "top": 0,
+              "right": 0,
+              "bottom": 844,
+              "left": -260
+            }
+          }
+        ]
+      },
+      "pageErrors": [],
+      "consoleErrors": [],
+      "screenshot": "D:\\JARVIS\\audit\\evidence\\ui_390x844_mobile_iphone_default.png"
+    },
+    {
+      "resolution": {
+        "name": "360x800_mobile_android",
+        "width": 360,
+        "height": 800
+      },
+      "httpStatus": 200,
+      "overflow": {
+        "scrollWidth": 360,
+        "clientWidth": 360,
+        "innerWidth": 360,
+        "hasHorizontalScroll": false,
+        "scrollHeight": 800,
+        "innerHeight": 800,
+        "hasVerticalScroll": false
+      },
+      "elementsSummary": {
+        "totalButtons": 28,
+        "visibleButtons": 23,
+        "buttons": [
+          {
+            "text": "",
+            "ariaLabel": "Toggle navigation menu",
+            "title": "Navigation Menu",
+            "className": "sidebar-mobile-toggle",
+            "disabled": false,
+            "visible": true
+          },
+          {
+            "text": "",
+            "ariaLabel": "Open settings",
+            "title": "Settings (AI model, keys & preferences)",
+            "className": "icon-button",
+            "disabled": false,
+            "visible": true
+          },
+          {
+            "text": "",
+            "ariaLabel": "Expand sidebar (Ctrl+B)",
+            "title": "Expand sidebar (Ctrl+B)",
+            "className": "taskbar-collapse-btn",
+            "disabled": false,
+            "visible": false
+          },
+          {
+            "text": "",
+            "ariaLabel": "Open Overview",
+            "title": null,
+            "className": "taskbar-nav-item  is-compact",
+            "disabled": false,
+            "visible": true
+          },
+          {
+            "text": "",
+            "ariaLabel": "Open Assistant",
+            "title": null,
+            "className": "taskbar-nav-item  is-compact",
+            "disabled": false,
+            "visible": true
+          },
+          {
+            "text": "",
+            "ariaLabel": "Open Tasks",
+            "title": null,
+            "className": "taskbar-nav-item  is-compact",
+            "disabled": false,
+            "visible": true
+          },
+          {
+            "text": "",
+            "ariaLabel": "Open Applications",
+            "title": null,
+            "className": "taskbar-nav-item  is-compact",
+            "disabled": false,
+            "visible": true
+          },
+          {
+            "text": "",
+            "ariaLabel": "Open Files",
+            "title": null,
+            "className": "taskbar-nav-item  is-compact",
+            "disabled": false,
+            "visible": true
+          },
+          {
+            "text": "",
+            "ariaLabel": "Open Camera",
+            "title": null,
+            "className": "taskbar-nav-item  is-compact",
+            "disabled": false,
+            "visible": true
+          },
+          {
+            "text": "",
+            "ariaLabel": "Open Vision",
+            "title": null,
+            "className": "taskbar-nav-item  is-compact",
+            "disabled": false,
+            "visible": true
+          },
+          {
+            "text": "",
+            "ariaLabel": "Close Activity",
+            "title": null,
+            "className": "taskbar-nav-item is-active is-compact",
+            "disabled": false,
+            "visible": true
+          },
+          {
+            "text": "",
+            "ariaLabel": "Open System Monitor",
+            "title": null,
+            "className": "taskbar-nav-item  is-compact",
+            "disabled": false,
+            "visible": true
+          },
+          {
+            "text": "",
+            "ariaLabel": "Open Devices",
+            "title": null,
+            "className": "taskbar-nav-item  is-compact",
+            "disabled": false,
+            "visible": true
+          },
+          {
+            "text": "",
+            "ariaLabel": "Open Environments",
+            "title": null,
+            "className": "taskbar-nav-item  is-compact",
+            "disabled": false,
+            "visible": true
+          },
+          {
+            "text": "",
+            "ariaLabel": "Open Settings",
+            "title": null,
+            "className": "taskbar-nav-item  is-compact",
+            "disabled": false,
+            "visible": true
+          }
+        ],
+        "inputs": [
+          {
+            "type": "text",
+            "placeholder": "Ask me something…",
+            "visible": true
+          }
+        ],
+        "modalsCount": 1,
+        "navs": [
+          {
+            "tag": "HEADER",
+            "className": "jarvis-topbar",
+            "rect": {
+              "x": 0,
+              "y": 0,
+              "width": 360,
+              "height": 54,
+              "top": 0,
+              "right": 360,
+              "bottom": 54,
+              "left": 0
+            }
+          },
+          {
+            "tag": "ASIDE",
+            "className": "jarvis-taskbar is-collapsed ",
+            "rect": {
+              "x": -260,
+              "y": 0,
+              "width": 260,
+              "height": 800,
+              "top": 0,
+              "right": 0,
+              "bottom": 800,
+              "left": -260
+            }
+          }
+        ]
+      },
+      "pageErrors": [],
+      "consoleErrors": [],
+      "screenshot": "D:\\JARVIS\\audit\\evidence\\ui_360x800_mobile_android_default.png"
+    }
+  ],
+  "interactions": [
+    {
+      "buttonIndex": 1,
+      "label": "Open settings",
+      "clicked": true,
+      "status": "SUCCESS"
+    },
+    {
+      "buttonIndex": 2,
+      "label": "Collapse sidebar (Ctrl+B)",
+      "clicked": false,
+      "error": "elementHandle.click: Timeout 2000ms exceeded.\nCall log:\n\u001b[2m  - attempting click action\u001b[22m\n\u001b[2m    2 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is visible, enabled and stable\u001b[22m\n\u001b[2m      - scrolling into view if needed\u001b[22m\n\u001b[2m      - done scrolling\u001b[22m\n\u001b[2m      - <div role=\"dialog\" class=\"overlay\" aria-modal=\"true\" aria-label=\"JARVIS settings\">…</div> intercepts pointer events\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m    - waiting 20ms\u001b[22m\n\u001b[2m    2 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is visible, enabled and stable\u001b[22m\n\u001b[2m      - scrolling into view if needed\u001b[22m\n\u001b[2m      - done scrolling\u001b[22m\n\u001b[2m      - <div role=\"dialog\" class=\"overlay\" aria-modal=\"true\" aria-label=\"JARVIS settings\">…</div> intercepts pointer events\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m      - waiting 100ms\u001b[22m\n\u001b[2m    2 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is visible, enabled and stable\u001b[22m\n\u001b[2m      - scrolling into view if needed\u001b[22m\n\u001b[2m      - done scrolling\u001b[22m\n\u001b[2m      - <div role=\"dialog\" class=\"overlay\" aria-modal=\"true\" aria-label=\"JARVIS settings\">…</div> intercepts pointer events\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m      - waiting 500ms\u001b[22m\n"
+    },
+    {
+      "buttonIndex": 3,
+      "label": "Overview\nCore runtime status & system summary",
+      "clicked": false,
+      "error": "elementHandle.click: Timeout 2000ms exceeded.\nCall log:\n\u001b[2m  - attempting click action\u001b[22m\n\u001b[2m    2 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is visible, enabled and stable\u001b[22m\n\u001b[2m      - scrolling into view if needed\u001b[22m\n\u001b[2m      - done scrolling\u001b[22m\n\u001b[2m      - <div role=\"dialog\" class=\"overlay\" aria-modal=\"true\" aria-label=\"JARVIS settings\">…</div> intercepts pointer events\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m    - waiting 20ms\u001b[22m\n\u001b[2m    2 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is visible, enabled and stable\u001b[22m\n\u001b[2m      - scrolling into view if needed\u001b[22m\n\u001b[2m      - done scrolling\u001b[22m\n\u001b[2m      - <div role=\"dialog\" class=\"overlay\" aria-modal=\"true\" aria-label=\"JARVIS settings\">…</div> intercepts pointer events\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m      - waiting 100ms\u001b[22m\n\u001b[2m    2 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is visible, enabled and stable\u001b[22m\n\u001b[2m      - scrolling into view if needed\u001b[22m\n\u001b[2m      - done scrolling\u001b[22m\n\u001b[2m      - <div role=\"dialog\" class=\"overlay\" aria-modal=\"true\" aria-label=\"JARVIS settings\">…</div> intercepts pointer events\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m      - waiting 500ms\u001b[22m\n\u001b[2m    - waiting for element to be visible, enabled and stable\u001b[22m\n"
+    },
+    {
+      "buttonIndex": 4,
+      "label": "Assistant\nInteractive conversation & session log",
+      "clicked": false,
+      "error": "elementHandle.click: Timeout 2000ms exceeded.\nCall log:\n\u001b[2m  - attempting click action\u001b[22m\n\u001b[2m    2 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is visible, enabled and stable\u001b[22m\n\u001b[2m      - scrolling into view if needed\u001b[22m\n\u001b[2m      - done scrolling\u001b[22m\n\u001b[2m      - <div role=\"dialog\" class=\"overlay\" aria-modal=\"true\" aria-label=\"JARVIS settings\">…</div> intercepts pointer events\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m    - waiting 20ms\u001b[22m\n\u001b[2m    2 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is visible, enabled and stable\u001b[22m\n\u001b[2m      - scrolling into view if needed\u001b[22m\n\u001b[2m      - done scrolling\u001b[22m\n\u001b[2m      - <div role=\"dialog\" class=\"overlay\" aria-modal=\"true\" aria-label=\"JARVIS settings\">…</div> intercepts pointer events\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m      - waiting 100ms\u001b[22m\n\u001b[2m    2 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is visible, enabled and stable\u001b[22m\n\u001b[2m      - scrolling into view if needed\u001b[22m\n\u001b[2m      - done scrolling\u001b[22m\n\u001b[2m      - <div role=\"dialog\" class=\"overlay\" aria-modal=\"true\" aria-label=\"JARVIS settings\">…</div> intercepts pointer events\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m      - waiting 500ms\u001b[22m\n\u001b[2m    - waiting for element to be visible, enabled and stable\u001b[22m\n"
+    },
+    {
+      "buttonIndex": 5,
+      "label": "Tasks\nActive, queued & completed autonomous workflows",
+      "clicked": false,
+      "error": "elementHandle.click: Timeout 2000ms exceeded.\nCall log:\n\u001b[2m  - attempting click action\u001b[22m\n\u001b[2m    2 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is visible, enabled and stable\u001b[22m\n\u001b[2m      - scrolling into view if needed\u001b[22m\n\u001b[2m      - done scrolling\u001b[22m\n\u001b[2m      - <div role=\"dialog\" class=\"overlay\" aria-modal=\"true\" aria-label=\"JARVIS settings\">…</div> intercepts pointer events\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m    - waiting 20ms\u001b[22m\n\u001b[2m    2 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is visible, enabled and stable\u001b[22m\n\u001b[2m      - scrolling into view if needed\u001b[22m\n\u001b[2m      - done scrolling\u001b[22m\n\u001b[2m      - <div role=\"dialog\" class=\"overlay\" aria-modal=\"true\" aria-label=\"JARVIS settings\">…</div> intercepts pointer events\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m      - waiting 100ms\u001b[22m\n\u001b[2m    2 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is visible, enabled and stable\u001b[22m\n\u001b[2m      - scrolling into view if needed\u001b[22m\n\u001b[2m      - done scrolling\u001b[22m\n\u001b[2m      - <div role=\"dialog\" class=\"overlay\" aria-modal=\"true\" aria-label=\"JARVIS settings\">…</div> intercepts pointer events\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m      - waiting 500ms\u001b[22m\n"
+    },
+    {
+      "buttonIndex": 6,
+      "label": "Applications\nDesktop apps & window observation",
+      "clicked": false,
+      "error": "elementHandle.click: Timeout 2000ms exceeded.\nCall log:\n\u001b[2m  - attempting click action\u001b[22m\n\u001b[2m    2 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is visible, enabled and stable\u001b[22m\n\u001b[2m      - scrolling into view if needed\u001b[22m\n\u001b[2m      - done scrolling\u001b[22m\n\u001b[2m      - <div role=\"dialog\" class=\"overlay\" aria-modal=\"true\" aria-label=\"JARVIS settings\">…</div> intercepts pointer events\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m    - waiting 20ms\u001b[22m\n\u001b[2m    2 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is visible, enabled and stable\u001b[22m\n\u001b[2m      - scrolling into view if needed\u001b[22m\n\u001b[2m      - done scrolling\u001b[22m\n\u001b[2m      - <div role=\"dialog\" class=\"overlay\" aria-modal=\"true\" aria-label=\"JARVIS settings\">…</div> intercepts pointer events\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m      - waiting 100ms\u001b[22m\n\u001b[2m    2 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is visible, enabled and stable\u001b[22m\n\u001b[2m      - scrolling into view if needed\u001b[22m\n\u001b[2m      - done scrolling\u001b[22m\n\u001b[2m      - <div role=\"dialog\" class=\"overlay\" aria-modal=\"true\" aria-label=\"JARVIS settings\">…</div> intercepts pointer events\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m      - waiting 500ms\u001b[22m\n"
+    },
+    {
+      "buttonIndex": 7,
+      "label": "Files\nStorage roots, documents & generated artifacts",
+      "clicked": false,
+      "error": "elementHandle.click: Timeout 2000ms exceeded.\nCall log:\n\u001b[2m  - attempting click action\u001b[22m\n\u001b[2m    2 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is visible, enabled and stable\u001b[22m\n\u001b[2m      - scrolling into view if needed\u001b[22m\n\u001b[2m      - done scrolling\u001b[22m\n\u001b[2m      - <div role=\"dialog\" class=\"overlay\" aria-modal=\"true\" aria-label=\"JARVIS settings\">…</div> intercepts pointer events\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m    - waiting 20ms\u001b[22m\n\u001b[2m    2 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is visible, enabled and stable\u001b[22m\n\u001b[2m      - scrolling into view if needed\u001b[22m\n\u001b[2m      - done scrolling\u001b[22m\n\u001b[2m      - <div role=\"dialog\" class=\"overlay\" aria-modal=\"true\" aria-label=\"JARVIS settings\">…</div> intercepts pointer events\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m      - waiting 100ms\u001b[22m\n\u001b[2m    2 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is visible, enabled and stable\u001b[22m\n\u001b[2m      - scrolling into view if needed\u001b[22m\n\u001b[2m      - done scrolling\u001b[22m\n\u001b[2m      - <div role=\"dialog\" class=\"overlay\" aria-modal=\"true\" aria-label=\"JARVIS settings\">…</div> intercepts pointer events\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m      - waiting 500ms\u001b[22m\n\u001b[2m    - waiting for element to be visible, enabled and stable\u001b[22m\n"
+    },
+    {
+      "buttonIndex": 8,
+      "label": "Camera\nLive video viewfinder & frame capture",
+      "clicked": false,
+      "error": "elementHandle.click: Timeout 2000ms exceeded.\nCall log:\n\u001b[2m  - attempting click action\u001b[22m\n\u001b[2m    2 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is visible, enabled and stable\u001b[22m\n\u001b[2m      - scrolling into view if needed\u001b[22m\n\u001b[2m      - done scrolling\u001b[22m\n\u001b[2m      - <div role=\"dialog\" class=\"overlay\" aria-modal=\"true\" aria-label=\"JARVIS settings\">…</div> intercepts pointer events\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m    - waiting 20ms\u001b[22m\n\u001b[2m    2 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is visible, enabled and stable\u001b[22m\n\u001b[2m      - scrolling into view if needed\u001b[22m\n\u001b[2m      - done scrolling\u001b[22m\n\u001b[2m      - <div role=\"dialog\" class=\"overlay\" aria-modal=\"true\" aria-label=\"JARVIS settings\">…</div> intercepts pointer events\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m      - waiting 100ms\u001b[22m\n\u001b[2m    2 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is visible, enabled and stable\u001b[22m\n\u001b[2m      - scrolling into view if needed\u001b[22m\n\u001b[2m      - done scrolling\u001b[22m\n\u001b[2m      - <div role=\"dialog\" class=\"overlay\" aria-modal=\"true\" aria-label=\"JARVIS settings\">…</div> intercepts pointer events\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m      - waiting 500ms\u001b[22m\n\u001b[2m    - waiting for element to be visible, enabled and stable\u001b[22m\n"
+    },
+    {
+      "buttonIndex": 9,
+      "label": "Vision\nVisual perception & screen inspection",
+      "clicked": false,
+      "error": "elementHandle.click: Timeout 2000ms exceeded.\nCall log:\n\u001b[2m  - attempting click action\u001b[22m\n\u001b[2m    2 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is visible, enabled and stable\u001b[22m\n\u001b[2m      - scrolling into view if needed\u001b[22m\n\u001b[2m      - done scrolling\u001b[22m\n\u001b[2m      - <div role=\"dialog\" class=\"overlay\" aria-modal=\"true\" aria-label=\"JARVIS settings\">…</div> intercepts pointer events\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m    - waiting 20ms\u001b[22m\n\u001b[2m    2 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is visible, enabled and stable\u001b[22m\n\u001b[2m      - scrolling into view if needed\u001b[22m\n\u001b[2m      - done scrolling\u001b[22m\n\u001b[2m      - <div role=\"dialog\" class=\"overlay\" aria-modal=\"true\" aria-label=\"JARVIS settings\">…</div> intercepts pointer events\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m      - waiting 100ms\u001b[22m\n\u001b[2m    2 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is visible, enabled and stable\u001b[22m\n\u001b[2m      - scrolling into view if needed\u001b[22m\n\u001b[2m      - done scrolling\u001b[22m\n\u001b[2m      - <div role=\"dialog\" class=\"overlay\" aria-modal=\"true\" aria-label=\"JARVIS settings\">…</div> intercepts pointer events\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m      - waiting 500ms\u001b[22m\n"
+    },
+    {
+      "buttonIndex": 10,
+      "label": "Activity\nExecution timeline & system audit logs\nOPEN",
+      "clicked": false,
+      "error": "elementHandle.click: Timeout 2000ms exceeded.\nCall log:\n\u001b[2m  - attempting click action\u001b[22m\n\u001b[2m    2 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is visible, enabled and stable\u001b[22m\n\u001b[2m      - scrolling into view if needed\u001b[22m\n\u001b[2m      - done scrolling\u001b[22m\n\u001b[2m      - <div role=\"dialog\" class=\"overlay\" aria-modal=\"true\" aria-label=\"JARVIS settings\">…</div> intercepts pointer events\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m    - waiting 20ms\u001b[22m\n\u001b[2m    2 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is visible, enabled and stable\u001b[22m\n\u001b[2m      - scrolling into view if needed\u001b[22m\n\u001b[2m      - done scrolling\u001b[22m\n\u001b[2m      - <div role=\"dialog\" class=\"overlay\" aria-modal=\"true\" aria-label=\"JARVIS settings\">…</div> intercepts pointer events\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m      - waiting 100ms\u001b[22m\n\u001b[2m    2 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is visible, enabled and stable\u001b[22m\n\u001b[2m      - scrolling into view if needed\u001b[22m\n\u001b[2m      - done scrolling\u001b[22m\n\u001b[2m      - <div role=\"dialog\" class=\"overlay\" aria-modal=\"true\" aria-label=\"JARVIS settings\">…</div> intercepts pointer events\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m      - waiting 500ms\u001b[22m\n"
+    },
+    {
+      "buttonIndex": 11,
+      "label": "System Monitor\nCPU, memory, connectivity & health telemetry",
+      "clicked": false,
+      "error": "elementHandle.click: Timeout 2000ms exceeded.\nCall log:\n\u001b[2m  - attempting click action\u001b[22m\n\u001b[2m    2 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is visible, enabled and stable\u001b[22m\n\u001b[2m      - scrolling into view if needed\u001b[22m\n\u001b[2m      - done scrolling\u001b[22m\n\u001b[2m      - <div role=\"dialog\" class=\"overlay\" aria-modal=\"true\" aria-label=\"JARVIS settings\">…</div> intercepts pointer events\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m    - waiting 20ms\u001b[22m\n\u001b[2m    2 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is visible, enabled and stable\u001b[22m\n\u001b[2m      - scrolling into view if needed\u001b[22m\n\u001b[2m      - done scrolling\u001b[22m\n\u001b[2m      - <div role=\"dialog\" class=\"overlay\" aria-modal=\"true\" aria-label=\"JARVIS settings\">…</div> intercepts pointer events\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m      - waiting 100ms\u001b[22m\n\u001b[2m    2 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is visible, enabled and stable\u001b[22m\n\u001b[2m      - scrolling into view if needed\u001b[22m\n\u001b[2m      - done scrolling\u001b[22m\n\u001b[2m      - <div role=\"dialog\" class=\"overlay\" aria-modal=\"true\" aria-label=\"JARVIS settings\">…</div> intercepts pointer events\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m      - waiting 500ms\u001b[22m\n"
+    },
+    {
+      "component": "Chat/Command Input",
+      "result": "SUBMITTED",
+      "screenshot": "D:\\JARVIS\\audit\\evidence\\ui_interactive_chat_state.png"
+    }
+  ]
+}

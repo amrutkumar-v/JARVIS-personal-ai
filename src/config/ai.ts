@@ -347,5 +347,5 @@ export const MOCK_PROVIDER_ID = 'mock'
  * engines are pinnable too, so "use Ollama for this task" is a real request the
  * router honors (and honestly refuses when nothing is running).
  */
-export const ROUTED_PROVIDER_IDS = ['gemini', 'openai', 'anthropic', 'openrouter', 'local', 'ollama', 'lmstudio'] as const
+export const ROUTED_PROVIDER_IDS = ['gemini', 'openai', 'anthropic', 'openrouter', 'local', 'ollama', 'lmstudio', 'llamacpp'] as const
 export type RoutedProviderId = (typeof ROUTED_PROVIDER_IDS)[number]

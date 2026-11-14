@@ -56,6 +56,70 @@ export type BrowserScreenshotResult = {
   format: 'png'
 }
 
+export type BrowserTabInfo = {
+  index: number
+  url: string
+  title: string
+  active: boolean
+}
+
+export type BrowserListTabsResult = {
+  success: boolean
+  tabs: BrowserTabInfo[]
+}
+
+export type BrowserNewTabResult = {
+  success: boolean
+  index: number
+  url: string
+  title: string
+}
+
+export type BrowserSwitchTabResult = {
+  success: boolean
+  index: number
+  url: string
+  title: string
+}
+
+export type BrowserCloseTabResult = {
+  success: boolean
+  remainingCount: number
+}
+
+export type BrowserFillFormResult = {
+  success: boolean
+  filled: string[]
+  failed: string[]
+}
+
+export type BrowserExtractedTable = {
+  headers: string[]
+  rows: string[][]
+}
+
+export type BrowserExtractedLink = {
+  text: string
+  href: string
+}
+
+export type BrowserExtractContentResult = {
+  success: boolean
+  title: string
+  url: string
+  headings: Array<{ level: number; text: string }>
+  text: string
+  tables: BrowserExtractedTable[]
+  links: BrowserExtractedLink[]
+}
+
+export type BrowserDownloadResult = {
+  success: boolean
+  path: string
+  size: number
+  sha256: string
+}
+
 export interface BrowserBackend {
   id: string
   testsOnly?: boolean
@@ -92,6 +156,27 @@ export interface BrowserBackend {
 
   /** Close the browser. */
   close(): Promise<{ success: boolean }>
+
+  /** List open browser tabs. */
+  listTabs(): Promise<BrowserListTabsResult>
+
+  /** Open a new tab, optionally navigating to URL. */
+  newTab(url?: string): Promise<BrowserNewTabResult>
+
+  /** Switch active tab by index. */
+  switchTab(index: number): Promise<BrowserSwitchTabResult>
+
+  /** Close a tab by index (or active tab if omitted). */
+  closeTab(index?: number): Promise<BrowserCloseTabResult>
+
+  /** Semantically fill form fields on the active page. */
+  fillForm(fields: Record<string, string>): Promise<BrowserFillFormResult>
+
+  /** Extract structured content (headings, text, tables, links). */
+  extractContent(opts?: { includeTables?: boolean; includeLinks?: boolean }): Promise<BrowserExtractContentResult>
+
+  /** Safely download a file to a destination within allowed roots. */
+  download(url: string, destinationPath: string, allowedRoots?: string[]): Promise<BrowserDownloadResult>
 }
 
 export const BROWSER_LIMITS = {

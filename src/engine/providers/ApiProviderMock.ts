@@ -137,7 +137,7 @@ export class ApiProvider implements AIProvider {
     const raw = prompt.trim()
 
     // Detect "calculate X and remember/save" intent
-    const calcMatch = raw.match(/(?:calculate|compute|what is|add|multiply|subtract|divide)\b.+/i)
+    const calcMatch = raw.match(/(?:calculate|compute|what is|evaluate|add|multiply|subtract|divide)\b.+/i)
     const hasMemorize = /\b(remember|save|store|keep)\b/i.test(q) || /\b(my|the)\b.*\b(budget|project|result)\b/i.test(q)
 
     if (calcMatch && hasMemorize) {
@@ -202,6 +202,8 @@ export class ApiProvider implements AIProvider {
 
   private extractArithmetic(text: string): string {
     const normalized = text
+      .replace(/(\d+(?:\.\d+)?)\s*(?:%|percent|percentage)\s+(?:of\s+)?(\d+(?:\.\d+)?)/gi, '($1/100)*$2')
+      .replace(/(\d+(?:\.\d+)?)\s*(?:to\s+the\s+power\s+of|\^|power\s+of)\s*(\d+(?:\.\d+)?)/gi, '$1^$2')
       .replace(/×/g, '*')
       .replace(/÷/g, '/')
       .replace(/\bplus\b/gi, '+')

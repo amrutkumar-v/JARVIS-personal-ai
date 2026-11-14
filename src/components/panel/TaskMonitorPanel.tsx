@@ -23,7 +23,7 @@ export function TaskMonitorPanel({
   const persistentTasks = useJarvisStore.use.persistentTasks()
   const activeTaskId = useJarvisStore.use.activeTaskId()
   const setActiveTaskId = useJarvisStore((s) => s.setActiveTaskId)
-  const setPersistentTasks = useJarvisStore((s) => s.setPersistentTasks)
+  const setPersistentTasks = useJarvisStore((s) => s.mergePersistentTasks)
 
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(activeTaskId)
   const [filter, setFilter] = useState<'all' | 'active' | 'completed' | 'failed'>('all')
@@ -294,8 +294,26 @@ function TaskDetailView({
 
       {/* Objective */}
       <div style={{ fontSize: '11px', color: 'var(--text-secondary)', background: 'rgba(255,255,255,0.02)', padding: '6px 8px', borderRadius: 4, borderLeft: '2px solid var(--accent)' }}>
-        {task.objective}
+        {typeof task.objective === 'string' ? task.objective : String(task.objective ?? '')}
       </div>
+
+      {/* Specialist Worker Summary (Phase 10/11) */}
+      {Boolean(task.metadata?.specialistSummary) && (
+        <div
+          style={{
+            fontSize: '10px',
+            fontFamily: 'var(--font-mono)',
+            background: 'hsl(196 90% 50% / 0.08)',
+            border: '1px solid var(--accent)',
+            borderRadius: 4,
+            padding: '6px 8px',
+            color: 'var(--text-primary)',
+          }}
+        >
+          <div style={{ fontWeight: 600, color: 'var(--accent)', marginBottom: 2 }}>SPECIALIST WORKER SYNTHESIS</div>
+          <div>{String(task.metadata.specialistSummary)}</div>
+        </div>
+      )}
 
       {/* Real Progress Bar */}
       <div>
@@ -314,6 +332,52 @@ function TaskDetailView({
           />
         </div>
       </div>
+
+      {/* Objective Verification Status & Proof */}
+      {task.state === 'COMPLETED' && Boolean(task.metadata?.completionEvidence) && (
+        <div
+          style={{
+            fontSize: '10px',
+            fontFamily: 'var(--font-mono)',
+            background: 'hsl(142 70% 45% / 0.1)',
+            border: '1px solid var(--success)',
+            borderRadius: 4,
+            padding: '6px 8px',
+            color: 'var(--text-primary)',
+          }}
+        >
+          <div style={{ fontWeight: 600, color: 'var(--success)', marginBottom: 2 }}>
+            OBJECTIVE VERIFICATION: VERIFIED
+          </div>
+          {Array.isArray((task.metadata?.completionEvidence as any)?.files) && (task.metadata?.completionEvidence as any).files.length > 0 && (
+            <div style={{ color: 'var(--text-secondary)' }}>
+              Files on disk: {(task.metadata.completionEvidence as any).files.map((f: any) => `${f.path} (${f.bytes}B)`).join(', ')}
+            </div>
+          )}
+          {Array.isArray((task.metadata?.completionEvidence as any)?.executions) && (task.metadata?.completionEvidence as any).executions.length > 0 && (
+            <div style={{ color: 'var(--text-secondary)', marginTop: 2 }}>
+              Execution verified: {(task.metadata.completionEvidence as any).executions.map((e: any) => `${e.command} (exit ${e.exitCode})`).join(', ')}
+            </div>
+          )}
+        </div>
+      )}
+
+      {task.state === 'FAILED' && Boolean(task.error) && (
+        <div
+          style={{
+            fontSize: '10px',
+            fontFamily: 'var(--font-mono)',
+            background: 'hsl(0 70% 50% / 0.1)',
+            border: '1px solid var(--error)',
+            borderRadius: 4,
+            padding: '6px 8px',
+            color: 'var(--error)',
+          }}
+        >
+          <div style={{ fontWeight: 600, marginBottom: 2 }}>OBJECTIVE VERIFICATION: BLOCKED / FAILED</div>
+          <div>{String(task.error)}</div>
+        </div>
+      )}
 
       {/* Action Controls */}
       <div style={{ display: 'flex', gap: 6, marginTop: 2 }}>
@@ -490,20 +554,52 @@ function SubtaskRow({ subtask, index }: { subtask: Subtask; index: number }) {
           <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--accent)', fontSize: '10px' }}>{index}.</span>
           <span>{subtask.title}</span>
         </div>
-        <span
-          style={{
-            fontSize: '8.5px',
-            fontFamily: 'var(--font-mono)',
-            padding: '1px 5px',
-            borderRadius: 3,
-            background: `hsl(var(--accent-h) var(--accent-s) var(--accent-l) / 0.1)`,
-            color: stateColor,
-            border: `1px solid ${stateColor}`,
-            fontWeight: 'bold',
-          }}
-        >
-          {subtask.state}
-        </span>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          {subtask.workerRole && (
+            <span
+              style={{
+                fontSize: '8px',
+                fontFamily: 'var(--font-mono)',
+                padding: '1px 4px',
+                borderRadius: 2,
+                background:
+                  subtask.workerRole === 'researcher'
+                    ? 'hsl(196 90% 50% / 0.15)'
+                    : subtask.workerRole === 'coder'
+                    ? 'hsl(38 90% 50% / 0.15)'
+                    : subtask.workerRole === 'verifier'
+                    ? 'hsl(140 70% 50% / 0.15)'
+                    : 'rgba(255,255,255,0.06)',
+                color:
+                  subtask.workerRole === 'researcher'
+                    ? 'var(--accent)'
+                    : subtask.workerRole === 'coder'
+                    ? 'var(--warning)'
+                    : subtask.workerRole === 'verifier'
+                    ? 'var(--success)'
+                    : 'var(--text-faint)',
+                border: '1px solid rgba(255,255,255,0.1)',
+                textTransform: 'uppercase',
+              }}
+            >
+              {subtask.workerRole}
+            </span>
+          )}
+          <span
+            style={{
+              fontSize: '8.5px',
+              fontFamily: 'var(--font-mono)',
+              padding: '1px 5px',
+              borderRadius: 3,
+              background: `hsl(var(--accent-h) var(--accent-s) var(--accent-l) / 0.1)`,
+              color: stateColor,
+              border: `1px solid ${stateColor}`,
+              fontWeight: 'bold',
+            }}
+          >
+            {subtask.state}
+          </span>
+        </div>
       </div>
 
       <div style={{ display: 'flex', gap: 8, fontSize: '9px', fontFamily: 'var(--font-mono)', color: 'var(--text-faint)', marginTop: 2 }}>

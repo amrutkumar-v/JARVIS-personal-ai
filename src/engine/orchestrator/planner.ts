@@ -682,7 +682,7 @@ function planRequestCore(
       return block('send_device_notification is not available on any online device right now.')
     }
     return block(
-      'Recognized a local operation, but no connected capability in this environment can perform it.',
+      'Recognized a local operation, but that service is not connected in this environment.',
     )
   }
 

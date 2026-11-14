@@ -1,0 +1,11 @@
+const test = require('node:test');
+const assert = require('node:assert');
+const { add, multiply } = require('./math');
+
+test('add works', () => {
+  assert.strictEqual(add(2, 3), 5);
+});
+
+test('multiply works', () => {
+  assert.strictEqual(multiply(4, 5), 20);
+});

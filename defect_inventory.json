@@ -1,0 +1,149 @@
+{
+  "topbar": {
+    "x": 240,
+    "y": 0,
+    "w": 1200,
+    "h": 54
+  },
+  "taskbar": {
+    "x": 0,
+    "y": 0,
+    "w": 240,
+    "h": 900
+  },
+  "stage": {
+    "x": 240,
+    "y": 54,
+    "w": 1200,
+    "h": 561
+  },
+  "panels": [
+    {
+      "label": "Camera",
+      "rect": {
+        "x": 256,
+        "y": 70,
+        "w": 260,
+        "h": 280,
+        "right": 516,
+        "bottom": 350
+      },
+      "style": {
+        "placement": "transform: translate(256px, 70px); width: 260px; height: 280px; z-index: 100;",
+        "zIndex": "100"
+      }
+    },
+    {
+      "label": "Session Log",
+      "rect": {
+        "x": 1156,
+        "y": 70,
+        "w": 268,
+        "h": 352,
+        "right": 1424,
+        "bottom": 422
+      },
+      "style": {
+        "placement": "transform: translate(1156px, 70px); width: 268px; height: 352px; z-index: 100;",
+        "zIndex": "100"
+      }
+    },
+    {
+      "label": "Activity",
+      "rect": {
+        "x": 1156,
+        "y": 434,
+        "w": 268,
+        "h": 260,
+        "right": 1424,
+        "bottom": 694
+      },
+      "style": {
+        "placement": "transform: translate(1156px, 434px); width: 268px; height: 260px; z-index: 101;",
+        "zIndex": "101"
+      }
+    },
+    {
+      "label": "System",
+      "rect": {
+        "x": 256,
+        "y": 362,
+        "w": 280,
+        "h": 120,
+        "right": 536,
+        "bottom": 482
+      },
+      "style": {
+        "placement": "transform: translate(256px, 362px); width: 280px; height: 120px; z-index: 101;",
+        "zIndex": "101"
+      }
+    },
+    {
+      "label": "Task Monitor",
+      "rect": {
+        "x": 256,
+        "y": 70,
+        "w": 380,
+        "h": 460,
+        "right": 636,
+        "bottom": 530
+      },
+      "style": {
+        "placement": "transform: translate(256px, 70px); width: 380px; height: 460px; z-index: 110;",
+        "zIndex": "110"
+      }
+    }
+  ],
+  "defects": [
+    {
+      "elementName": "Task Monitor Panel (.panel-window)",
+      "parentContainer": ".panel-host",
+      "actualXY": "(256, 70)",
+      "actualWH": "380x460",
+      "expectedPosition": "In center workspace or floating with proper cascaded offset without colliding with Camera",
+      "overlappingElement": "Camera Panel (256, 70)",
+      "ruleCausingIssue": "src/panel/types.ts defaultPanelState hardcodes x: PANEL_MARGIN, y: PANEL_MARGIN for all panels; and registry.ts marks tasks as defaultOpen: true with floating placement, resulting in identical (256, 70) starting coordinates.",
+      "correctiveAction": "Cascade initial floating positions, avoid opening 5 overlapping windows on initial launch, or provide dedicated dashboard layout."
+    },
+    {
+      "elementName": "Core Caption (.core-caption)",
+      "parentContainer": ".jarvis-stage",
+      "actualXY": "(240, 54)",
+      "actualWH": "1200x561",
+      "expectedPosition": "Above or cleanly integrated with ArcReactor centerpiece without occupying full stage inset",
+      "overlappingElement": "Arc Reactor centerpiece (723, 173)",
+      "ruleCausingIssue": "src/App.css .core-caption has position: absolute; inset: 0;, while .arc-reactor has position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); causing text lines to paint directly over the reactor rings.",
+      "correctiveAction": "Refactor stage into a coherent flex/grid document flow where hero title and living text sit above or neatly frame the core status indicator."
+    },
+    {
+      "elementName": "Core Caption (.core-caption full-width container)",
+      "parentContainer": ".jarvis-stage",
+      "actualXY": "(240, 54)",
+      "actualWH": "1200x561",
+      "expectedPosition": "Contained in center workspace between left and right panel columns",
+      "overlappingElement": "Edge panels (Camera: 256, Session Log: 1156)",
+      "ruleCausingIssue": ".core-caption spans full width (1200px) from left to right edge of stage, intersecting with side-docked panels.",
+      "correctiveAction": "Constrain dashboard center stage to central column or render panels inside the structured grid."
+    },
+    {
+      "elementName": "Voice Button (.voice-button) & Goal Composer (.goal-composer)",
+      "parentContainer": ".jarvis-dock",
+      "actualXY": "Voice: (796, 623), Composer: (500, 812)",
+      "actualWH": "Voice: 88x88, Composer: 680x49",
+      "expectedPosition": "Unified, compact command bar at bottom of workspace without competing orbital rings",
+      "overlappingElement": "None directly intersecting, but excessive vertical footprint (303px height) crowding the stage",
+      "ruleCausingIssue": ".jarvis-dock is a column with 12px gap, 88px voice button + 52px rings + status + composer + hints, consuming over 300px of vertical viewport.",
+      "correctiveAction": "Integrate the voice button and input controls into a unified horizontal or streamlined command bar, saving over 160px of vertical space."
+    },
+    {
+      "elementName": "Panel Host System (.panel-host with 5 open windows on launch)",
+      "parentContainer": ".jarvis-shell",
+      "actualXY": "Across entire screen",
+      "actualWH": "Multiple 260px-380px cards",
+      "expectedPosition": "Clean dashboard with core metrics; windows open on demand when user clicks sidebar items or requests them",
+      "overlappingElement": "All 5 panels compete with center stage, ArcReactor, and dock",
+      "ruleCausingIssue": "PANEL_DEFINITIONS in src/panel/registry.ts sets defaultOpen: true on 5 panels simultaneously.",
+      "correctiveAction": "Structure the initial view as a pristine, professional dashboard with organized cards (Overview, Activity, Quick Actions) and allow panels to open cleanly as focused workspace views or drawers on demand."
+    }
+  ]
+}

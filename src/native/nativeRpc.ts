@@ -2,7 +2,7 @@ import { FileSystemError, fsError } from '../filesystem'
 import type { NativePlatformStatus } from '../filesystem'
 import type { NativeIdentity, NativeResponse } from '../../native/src/protocol'
 import type { NativeErrorCode } from '../../native/src/protocol'
-import { ensureBackendSession } from '../backend/session'
+import { ensureBackendSession, getNodeSessionCookie } from '../backend/session'
 
 /**
  * Web-side RPC client for the native Windows agent (Phase 1.2/1.3).
@@ -147,11 +147,16 @@ export class NativeAgentRpc {
     const timer = setTimeout(() => controller.abort(), timeoutMs ?? this.requestTimeoutMs)
     let response: Response
     try {
+      const headers: Record<string, string> = {
+        'content-type': 'application/json',
+      }
+      const nodeCookie = getNodeSessionCookie()
+      if (nodeCookie) {
+        headers['Cookie'] = nodeCookie
+      }
       response = await this.fetchImpl(`${this.baseUrl}/api/native/rpc`, {
         method: 'POST',
-        headers: {
-          'content-type': 'application/json',
-        },
+        headers,
         credentials: 'include',
         body: JSON.stringify({ jsonrpc: '2.0', id: this.nextId(), method, params }),
         signal: controller.signal,

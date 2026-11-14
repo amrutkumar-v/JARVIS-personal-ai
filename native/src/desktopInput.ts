@@ -11,6 +11,7 @@ import type {
   NativeDesktopFocusResult,
   NativeDesktopMoveResult,
   NativeDesktopScrollResult,
+  NativeDesktopWindowStateResult,
 } from './protocol.js'
 import type { DesktopCancellationSignal, DesktopInteractionBackend } from './desktop.js'
 
@@ -54,6 +55,10 @@ const SM_YVIRTUALSCREEN = 77
 const SM_CXVIRTUALSCREEN = 78
 const SM_CYVIRTUALSCREEN = 79
 
+const SW_MAXIMIZE = 3
+const SW_MINIMIZE = 6
+const SW_RESTORE = 9
+
 type Input = {
   type: number
   u: {
@@ -74,6 +79,7 @@ interface Win32Input {
   clientToScreenOrigin(hwnd: bigint): { x: number; y: number }
   getForegroundWindow(): bigint
   setForegroundWindow(hwnd: bigint): boolean
+  showWindow(hwnd: bigint, nCmdShow: number): boolean
   inject(inputs: Input[]): boolean
 }
 
@@ -109,6 +115,7 @@ function getApi(): Win32Input {
     const ClientToScreenFn = user32.func('int ClientToScreen(uint64 hwnd, int *pt)')
     const GetForegroundWindowFn = user32.func('uint64 GetForegroundWindow()')
     const SetForegroundWindowFn = user32.func('int SetForegroundWindow(uint64 hwnd)')
+    const ShowWindowFn = user32.func('int ShowWindow(uint64 hwnd, int nCmdShow)')
     const GetSystemMetricsFn = user32.func('int GetSystemMetrics(int nIndex)')
 
     const clientToScreenOrigin = (hwnd: bigint): { x: number; y: number } => {
@@ -156,6 +163,9 @@ function getApi(): Win32Input {
       },
       setForegroundWindow(hwnd) {
         return !!SetForegroundWindowFn(hwnd)
+      },
+      showWindow(hwnd, nCmdShow) {
+        return !!ShowWindowFn(hwnd, nCmdShow)
       },
       inject(inputs) {
         const count = SendInputFn(inputs.length, inputs, koffi.sizeof('DESK_INPUT'))
@@ -445,6 +455,51 @@ export class RealDesktopInteractionBackend implements DesktopInteractionBackend 
         ? 'The target window could not be made foreground; the OS did not award it activation.'
         : 'Another window became foreground after the focus attempt.'
     return { windowId, focused, detail }
+  }
+
+  async minimizeWindow(windowId: string): Promise<NativeDesktopWindowStateResult> {
+    const obs = getApi()
+    const hwnd = hwndOf(windowId)
+    if (!obs.isWindow(hwnd)) {
+      throw nativeError('window_not_found', `Window "${windowId}" no longer exists.`, windowId)
+    }
+    const ok = obs.showWindow(hwnd, SW_MINIMIZE)
+    return {
+      windowId,
+      action: 'minimize',
+      success: ok,
+      detail: ok ? 'Window was minimized.' : 'Window could not be minimized.',
+    }
+  }
+
+  async maximizeWindow(windowId: string): Promise<NativeDesktopWindowStateResult> {
+    const obs = getApi()
+    const hwnd = hwndOf(windowId)
+    if (!obs.isWindow(hwnd)) {
+      throw nativeError('window_not_found', `Window "${windowId}" no longer exists.`, windowId)
+    }
+    const ok = obs.showWindow(hwnd, SW_MAXIMIZE)
+    return {
+      windowId,
+      action: 'maximize',
+      success: ok,
+      detail: ok ? 'Window was maximized.' : 'Window could not be maximized.',
+    }
+  }
+
+  async restoreWindow(windowId: string): Promise<NativeDesktopWindowStateResult> {
+    const obs = getApi()
+    const hwnd = hwndOf(windowId)
+    if (!obs.isWindow(hwnd)) {
+      throw nativeError('window_not_found', `Window "${windowId}" no longer exists.`, windowId)
+    }
+    const ok = obs.showWindow(hwnd, SW_RESTORE)
+    return {
+      windowId,
+      action: 'restore',
+      success: ok,
+      detail: ok ? 'Window was restored.' : 'Window could not be restored.',
+    }
   }
 }
 

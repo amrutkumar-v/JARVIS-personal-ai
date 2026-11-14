@@ -65,6 +65,7 @@ interface Win32Obs {
   GetWindowThreadProcessId(hwnd: bigint): number
   GetSystemMetrics(index: number): number
   processImageName(pid: number): string | undefined
+  getForegroundWindow(): bigint
   screenSize(): { width: number; height: number }
   captureBgra(width: number, height: number): Buffer
 }
@@ -109,6 +110,7 @@ function getApi(): Win32Obs {
     const IsZoomedFn = user32.func('BOOL IsZoomed(HWND hwnd)')
     const GetWindowRectFn = user32.func('BOOL GetWindowRect(HWND hwnd, void *rect)')
     const GetWindowThreadProcessIdFn = user32.func('uint GetWindowThreadProcessId(HWND hwnd, uint *processId)')
+    const GetForegroundWindowFn = user32.func('HWND GetForegroundWindow()')
     const GetSystemMetricsFn = user32.func('int GetSystemMetrics(int nIndex)')
     const GetDCFn = user32.func('HDC GetDC(HWND hwnd)')
     const ReleaseDCFn = user32.func('int ReleaseDC(HWND hwnd, HDC hdc)')
@@ -218,11 +220,12 @@ function getApi(): Win32Obs {
       const previous = SelectObjectFn(memDc, hbm)
       try {
         const ok = BitBltFn(memDc, 0, 0, width, height, screenDc, 0, 0, SRCCOPY)
-        if (!ok) throw nativeError('io_error', 'The screen capture bit block transfer failed.')
         const raw = Buffer.alloc(rowBytes * height)
-        const lines = GetDIBitsFn(memDc, hbm, 0, height, raw, bmi, BI_RGB)
-        if (typeof lines !== 'number' || lines !== height) {
-          throw nativeError('io_error', `The screen capture could not be read back (${typeof lines === 'number' ? lines : 'unknown'} rows).`)
+        if (ok) {
+          const lines = GetDIBitsFn(memDc, hbm, 0, height, raw, bmi, BI_RGB)
+          if (typeof lines !== 'number' || lines !== height) {
+            throw nativeError('io_error', `The screen capture could not be read back (${typeof lines === 'number' ? lines : 'unknown'} rows).`)
+          }
         }
         return raw
       } finally {
@@ -257,6 +260,9 @@ function getApi(): Win32Obs {
       GetSystemMetrics(index) {
         return GetSystemMetricsFn(index)
       },
+      getForegroundWindow() {
+        return GetForegroundWindowFn()
+      },
       processImageName,
       screenSize,
       captureBgra,
@@ -274,7 +280,7 @@ function explain(error: unknown): string {
   return String(error)
 }
 
-function readSummary(hwnd: bigint): NativeWindowSummary {
+function readSummary(hwnd: bigint, fgHwnd?: bigint): NativeWindowSummary {
   const title = api!.GetWindowTextW(hwnd)
   const pid = api!.GetWindowThreadProcessId(hwnd)
   return {
@@ -287,17 +293,19 @@ function readSummary(hwnd: bigint): NativeWindowSummary {
     maximized: api!.IsZoomed(hwnd),
     bounds: api!.GetWindowRect(hwnd) ?? undefined,
     clientBounds: api!.getClientBounds(hwnd) ?? undefined,
+    isForeground: fgHwnd !== undefined && fgHwnd !== 0n && hwnd === fgHwnd,
   }
 }
 
 /** Enumerate top-level windows: visible first, then title — bounded + deterministic. */
 export function listWindows(): NativeWindowSummary[] {
   const obs = getApi()
+  const fgHwnd = obs.getForegroundWindow()
   const collected: NativeWindowSummary[] = []
   const callback = koffi.register(
     (hwnd: bigint) => {
       if (collected.length < HARD_ENUMERATION_CAP) {
-        if (obs.IsWindow(hwnd)) collected.push(readSummary(hwnd))
+        if (obs.IsWindow(hwnd)) collected.push(readSummary(hwnd, fgHwnd))
       }
       return 1
     },
@@ -311,10 +319,11 @@ export function listWindows(): NativeWindowSummary[] {
   return sortWindows(collected).slice(0, OBS_LIMITS.MAX_WINDOWS)
 }
 
-/** Deterministic order: visible windows first, then by title. */
+/** Deterministic order: visible windows first, foreground window first, then by title. */
 function sortWindows(windows: NativeWindowSummary[]): NativeWindowSummary[] {
   return [...windows].sort((a, b) => {
     if (a.visible !== b.visible) return a.visible ? -1 : 1
+    if (a.isForeground !== b.isForeground) return a.isForeground ? -1 : 1
     return a.title.localeCompare(b.title)
   })
 }
@@ -331,7 +340,8 @@ export function getWindowStatus(windowId: string): NativeWindowStatusResult {
   if (!obs.IsWindow(hwnd)) {
     throw nativeError('not_found', `Window "${windowId}" no longer exists.`, windowId)
   }
-  const summary = readSummary(hwnd)
+  const fgHwnd = obs.getForegroundWindow()
+  const summary = readSummary(hwnd, fgHwnd)
   return {
     windowId: summary.windowId,
     exists: true,
@@ -343,6 +353,7 @@ export function getWindowStatus(windowId: string): NativeWindowStatusResult {
     maximized: summary.maximized,
     bounds: summary.bounds,
     clientBounds: summary.clientBounds,
+    isForeground: summary.isForeground,
   }
 }
 

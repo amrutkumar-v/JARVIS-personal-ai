@@ -414,6 +414,8 @@ function providerDisplayName(id: string): string {
       return 'Ollama (local server)'
     case 'lmstudio':
       return 'LM Studio (local server)'
+    case 'llamacpp':
+      return 'llama.cpp (local server)'
     case 'legacy':
       return 'Custom / legacy endpoint'
     case 'none':

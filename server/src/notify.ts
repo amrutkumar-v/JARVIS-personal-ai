@@ -36,7 +36,7 @@ $notify.BalloonTipTitle = "${cleanTitle}"
 $notify.BalloonTipText = "${cleanMessage}"
 $notify.Visible = $True
 $notify.ShowBalloonTip(5000)
-Start-Sleep -Milliseconds 500
+Start-Sleep -Seconds 5
 $notify.Dispose()
 `
 

@@ -31,6 +31,13 @@ JARVIS autonomously:
   Tool Resolution → Input Validation → Capability Check → Permission Gate (Default-Deny) → Tool Execution → Verification Evidence Rail
   ```
 
+### Deterministic Development Planning
+- Natural-language development objectives are planned by `src/engine/dev/DevelopmentPlanner.ts`, not by an LLM.
+- The planner emits only canonical `dev.*` steps with explicit dependencies. The circle-area objective produces an 8-step DAG: inspect → Git status → safety checkpoint → implementation → tests file → real test run → on-disk verification → execution report.
+- Paths are normalized before planning: sentence punctuation (for example `D:\JARVIS-Test.`) is stripped, so Windows never addresses an unreachable trailing-dot directory.
+- A development request can never select `application_status`, and the word `"results"` is never treated as an application id.
+- `npm run build:engine` (part of `npm run build`) regenerates `server/dist/engine.mjs`; the backend never runs a stale engine bundle.
+
 ### Memory and Continuity Separation
 To avoid pollution between personal preferences and project mechanics:
 - **Personal Memory (`MemoryManager`):** Holds user preferences, facts, and conversation episodes.
@@ -127,6 +134,12 @@ JARVIS operates reliably in the background without requiring the UI window to re
 └─────────────────────────────────────────────────────────────┘
 ```
 
+### Execution Hosts
+- **HUD-initiated development tasks** are planned and sequenced by the HUD `AssistantEngine`/`PersistentTaskOrchestrator`. Every `dev.*` step is dispatched over the authenticated `POST /api/dev/execute` endpoint and executes in the backend `DevEngine`; the HUD never imports Node filesystem/Git/child-process modules.
+- **Backend `/api/tasks` tasks** are durable: `TaskService` persists them under the server data directory, executes them headlessly through the bundled `server/dist/engine.mjs` (or the direct `dev.*` executor), and survives HUD disconnects and restarts.
+- Backend submission is serialized: concurrent identical requests with the same idempotency key resolve to one task instead of starting duplicate runs. Sensitive backend `dev.*` capabilities are default-deny until an explicit approval is recorded and persisted.
+- The Task Monitor merges both sources by task id. Backend polling can no longer erase a HUD-owned task from the panel.
+
 ### Windows Restart & Recovery Engine
 1. **Periodic & Step-Level Checkpoints:** Every subtask completion generates a cryptographically hashed execution checkpoint saved to `.jarvis/tasks/` (or `%USERPROFILE%/.jarvis/tasks/`).
 2. **Crash & Restart Recovery:** Upon backend initialization (`TaskService.start()`), `recoverInterruptedTasks()` scans for tasks that were mid-execution (`EXECUTING` or `OBSERVING`). They are transitioned to `RECOVERY_REQUIRED` and resumed safely from their last verified checkpoint without re-running completed subtasks.
@@ -148,6 +161,25 @@ A specialized tool suite enables autonomous engineering on software repositories
 | `dev.runTests` | Executes test runner commands (`npm test`, `pytest`, etc.). | Honest evaluation: parses exit codes, stdout/stderr, passed/failed test counts. |
 | `dev.auditProject` | Runs linters and typecheckers (`npm run lint`, `tsc --noEmit`). | Captures warnings and syntax errors. |
 | `dev.generateReport` | Compiles comprehensive markdown audit and completion reports. | Includes diffs, verification hashes, and test results. |
+
+### Honest Verification Evidence
+- `dev.inspectProject` verifies the resolved directory and (when requested) required files with byte and SHA-256 evidence.
+- `dev.patchFile` refuses blind overwrites, re-reads the written file from disk, and returns its SHA-256.
+- `dev.runTests` parses the real process exit code and pass/fail counts; a missing runner is reported as such, never fabricated.
+- `dev.generateReport` accepts only evidence produced by earlier verified subtasks (`buildDevPayload`), writes the report, and re-reads it before reporting success.
+- The backend `TaskService` re-verifies every `dev.*` result (`verifyDevResult`) instead of trusting `ok: true`.
+
+### Deterministic Circle-Area Plan
+For `Inspect D:\JARVIS-Test. Create a Python circle-area program and tests, execute and verify them, and generate a report`:
+
+1. `dev.inspectProject` (create the explicit leaf directory only when the user named it)
+2. `dev.gitStatus`
+3. `dev.gitCheckpoint` (local checkpoint branch; never a push)
+4. `dev.patchFile` → `circle.py`
+5. `dev.patchFile` → `test_circle.py`
+6. `dev.runTests` → `python -m unittest test_circle.py`
+7. `dev.inspectProject` → require `circle.py` and `test_circle.py` on disk
+8. `dev.generateReport` → `JARVIS_EXECUTION_REPORT.md`
 
 ---
 
@@ -194,6 +226,7 @@ Integrated directly into the JARVIS HUD workspace as a dockable panel:
   - Concrete verification evidence cards showing verified status and details.
 - **Approval Actions:** Prominently highlights pending permission requests with contextual impact warnings.
 - **Task Controls:** Real-time `Pause`, `Resume`, and `Cancel` buttons synchronizing with both the local engine and backend SSE event streams.
+- **Merged Task Sources:** Backend `/api/tasks` polling is merged by task id with the live HUD orchestrator tasks, so neither source erases the other.
 - **Execution Timeline:** Displays checkpoint timestamps, subtask milestones, and cryptographic execution state hashes.
 
 ---
@@ -228,5 +261,40 @@ Users can interact with the autonomous system using conversational language:
 | Project Context Store | `src/memory/projectContext.ts` | `src/memory/projectContext.test.ts` (4/4 passed) |
 | AssistantEngine Integration | `src/engine/AssistantEngine.ts` | `src/engine/AssistantEngine.tasks.test.ts` (5/5 passed) |
 | HUD Task Monitor UI | `src/components/panel/TaskMonitorPanel.tsx` | Full Vite client build & TypeScript compilation clean |
-| Global Test Suite | Entire JARVIS test suite | **2,527 passed across 194 test files** |
+| HUD live autonomous execution | `AssistantEngine` → `DevTools` → `POST /api/dev/execute` → `DevEngine` | Browser E2E: one command, 8/8 verified, real `python -m unittest` exit 0, report written |
+| Engine bundle freshness | `scripts/build-engine.mjs` | `npm run build` regenerates `server/dist/engine.mjs` |
+| Native Desktop Automation (Phase 4) | `DesktopEngine.ts`, `DesktopObservationView.tsx`, `obsWin32.ts`, `desktopInput.ts` | `test/acceptance/desktopAutomationAcceptance.test.ts` (8/8 passed), `scripts/verify-phase4-desktop.ts` (7/7 passed) |
+| Global Test Suite | Entire JARVIS test suite | **2,555+ passed across 197 test files** |
+
+---
+
+## 12. Phase 4: Native Desktop Automation
+
+Phase 4 elevates JARVIS from repository development into full Windows 11 desktop awareness and bounded interaction:
+
+### Architecture & Safety Boundaries
+- **Eyes vs. Hands Separation:**
+  - Read-only observation (`native/src/obsWin32.ts`): Koffi Win32 FFI (`EnumWindows`, `BitBlt`, `GetForegroundWindow`). Zero child processes, zero shell commands. Resilient to display sleep and secure desktop lock screen.
+  - Controlled interaction (`native/src/desktopInput.ts`): Win32 `ShowWindow` (`SW_MINIMIZE`, `SW_MAXIMIZE`, `SW_RESTORE`) and bounded input synthesis with strict rate limits.
+- **Protocol Parity:** 51 native RPC methods registered in lockstep between `protocol.ts` and `server/src/nativeMethods.ts`.
+- **13 Registered Desktop Tools:** `desktop.launchApp`, `desktop.closeApp`, `desktop.focusWindow`, `window.minimize`, `window.maximize`, `window.restore`, `desktop.screenshot`, `desktop.listWindows`, `desktop.cursor`, `desktop.move`, `desktop.click`, `desktop.typeText`, `desktop.keyPress`.
+
+### Universal Intent Classification (`DESKTOP_ACTION`)
+The `UniversalIntentRouter` classifies 7 distinct desktop intents:
+1. `screenshot`: e.g. *"Take a screenshot of my desktop."*
+2. `list_windows`: e.g. *"Which applications are currently open?"*
+3. `open_app`: e.g. *"Open Notepad."*
+4. `close_app`: e.g. *"Close Notepad."*
+5. `switch_app`: e.g. *"Switch to my browser."*
+6. `visual_inspect`: e.g. *"Take a screenshot and tell me what is currently visible."*
+7. `multi_step_desktop`: e.g. *"Open Calculator and calculate 125 multiplied by 48."*
+
+### Durable Background Execution & DAG Checkpoints
+Multi-step desktop operations compile into prioritized DAGs executed durably by backend `TaskService`:
+- Launches desktop target -> Settle & verification -> Foreground focus -> Mathematical evaluation & keystroke injection -> Evidence screenshot checkpoint.
+- Survives HUD reloads, disconnects, and restarts.
+
+### React HUD Integration
+`DesktopObservationView.tsx` provides live display telemetry, foreground application badges, a live top-level window inventory with one-click `Focus`, `Min`, and `Max` controls, and verified screenshot inspection.
+
 

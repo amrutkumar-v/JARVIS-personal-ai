@@ -25,6 +25,7 @@ export interface MemoryWindowSeed {
   maximized?: boolean
   bounds?: { left: number; top: number; right: number; bottom: number }
   clientBounds?: { left: number; top: number; right: number; bottom: number }
+  isForeground?: boolean
 }
 
 interface MemoryWindowState {
@@ -37,6 +38,7 @@ interface MemoryWindowState {
   maximized: boolean
   bounds?: { left: number; top: number; right: number; bottom: number }
   clientBounds?: { left: number; top: number; right: number; bottom: number }
+  isForeground?: boolean
 }
 
 function defaultWindow(windowId: string): MemoryWindowState {
@@ -96,6 +98,7 @@ export class MemoryObsBackend implements ObservationBackend {
       maximized: w.maximized,
       bounds: w.bounds,
       clientBounds: w.clientBounds,
+      isForeground: w.isForeground ?? false,
     }))
   }
 
@@ -115,6 +118,7 @@ export class MemoryObsBackend implements ObservationBackend {
       maximized: w.maximized,
       bounds: w.bounds,
       clientBounds: w.clientBounds,
+      isForeground: w.isForeground ?? false,
     }
   }
 

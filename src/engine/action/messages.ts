@@ -38,7 +38,7 @@ export function clarificationMessage(text: string, candidates?: string[]): strin
     const list = candidates.slice(0, 6).map((c) => `- ${c}`).join('\n')
     return `${head}\nWhich one did you mean?\n${list}`
   }
-  return `${head} Could you tell me exactly which file or item you mean?`
+  return `${head} Which file or item did you mean? Which specific file or item would you like me to target?`
 }
 
 /**

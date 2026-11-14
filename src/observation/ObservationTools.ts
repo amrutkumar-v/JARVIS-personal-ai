@@ -114,13 +114,29 @@ export class WindowListTool extends ObservationTool {
       // with one observation, while the raw windows stay available for ids.
       const report = deriveRunningApps(windows)
       const inventory = renderRunningApps(report)
+      const fgWindow = windows.find((w) => w.isForeground)
+      const fgApp = report.apps.find((a) => a.isForeground)
+      const fgNote = fgApp
+        ? ` Active foreground: ${fgApp.label}${fgWindow?.title ? ` ("${fgWindow.title.slice(0, 60)}")` : ''}.`
+        : ''
       const appNote = inventory
         ? ` ${report.apps.length} user-facing application${report.apps.length === 1 ? '' : 's'} observed: ${inventory}.`
         : ' No visible, titled window could be attributed to a user-facing application.'
       return {
         ok: true,
-        message: `${windows.length} window${windows.length === 1 ? '' : 's'} observed (${visible} visible).${appNote}`,
-        data: { windows, count: windows.length, visible, apps: report.apps, appCount: report.apps.length, appsExcludedShell: report.excludedShell, appsNotAttributable: report.notAttributable },
+        message: `${windows.length} window${windows.length === 1 ? '' : 's'} observed (${visible} visible).${fgNote}${appNote}`,
+        data: {
+          windows,
+          count: windows.length,
+          visible,
+          apps: report.apps,
+          appCount: report.apps.length,
+          activeWindow: fgWindow,
+          activeApp: fgApp,
+          appsExcludedShell: report.excludedShell,
+          appsNotAttributable: report.notAttributable,
+          timestamp: Date.now(),
+        },
       }
     } catch (error) {
       return obsFailure(error)

@@ -79,7 +79,6 @@ PRIVATE_V4.addSubnet('240.0.0.0', 4)
 
 const PRIVATE_V6 = new BlockList()
 PRIVATE_V6.addSubnet('::1', 128, 'ipv6')
-PRIVATE_V6.addSubnet('64:ff9b::', 96, 'ipv6')
 PRIVATE_V6.addSubnet('64:ff9b:1::', 48, 'ipv6')
 PRIVATE_V6.addSubnet('100::', 64, 'ipv6')
 PRIVATE_V6.addSubnet('2001:db8::', 32, 'ipv6')
@@ -95,6 +94,22 @@ export function isBlockedAddress(address: string, family: number): boolean {
   if (lower.startsWith('::ffff:')) {
     const mapped = lower.slice('::ffff:'.length)
     return PRIVATE_V4.check(mapped, 'ipv4') || PRIVATE_V6.check(address, 'ipv6')
+  }
+  // RFC 6052 Well-Known Prefix (64:ff9b::/96) IPv4/IPv6 translation: evaluate translated IPv4
+  if (lower.startsWith('64:ff9b::')) {
+    const suffix = lower.slice('64:ff9b::'.length)
+    if (/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(suffix)) {
+      return PRIVATE_V4.check(suffix, 'ipv4')
+    }
+    const parts = suffix.split(':')
+    if (parts.length === 2) {
+      const p1 = parseInt(parts[0], 16)
+      const p2 = parseInt(parts[1], 16)
+      if (!isNaN(p1) && !isNaN(p2)) {
+        const ip4 = `${(p1 >> 8) & 0xff}.${p1 & 0xff}.${(p2 >> 8) & 0xff}.${p2 & 0xff}`
+        return PRIVATE_V4.check(ip4, 'ipv4')
+      }
+    }
   }
   // Explicit literal checks for addresses BlockList may not cover with /128.
   if (lower === '::1') return true

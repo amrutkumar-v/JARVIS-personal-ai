@@ -96,6 +96,7 @@ export class FakeSpeechToTextProvider implements SpeechToTextProvider {
   private reason: string | undefined
   private activeFlag = false
   private transcriptHandlers: ((text: string) => void)[] = []
+  private interimHandlers: ((text: string) => void)[] = []
   private startHandlers: (() => void)[] = []
   private endHandlers: ((reason: 'done' | 'aborted' | 'error') => void)[] = []
   private errorHandlers: ((message: string) => void)[] = []
@@ -135,6 +136,10 @@ export class FakeSpeechToTextProvider implements SpeechToTextProvider {
     for (const handler of [...this.transcriptHandlers]) handler(text)
   }
 
+  emitInterimTranscript(text: string): void {
+    for (const handler of [...this.interimHandlers]) handler(text)
+  }
+
   emitStart(): void {
     for (const handler of [...this.startHandlers]) handler()
   }
@@ -151,6 +156,13 @@ export class FakeSpeechToTextProvider implements SpeechToTextProvider {
     this.transcriptHandlers.push(handler)
     return () => {
       this.transcriptHandlers = this.transcriptHandlers.filter((h) => h !== handler)
+    }
+  }
+
+  onInterimTranscript(handler: (text: string) => void): () => void {
+    this.interimHandlers.push(handler)
+    return () => {
+      this.interimHandlers = this.interimHandlers.filter((h) => h !== handler)
     }
   }
 
@@ -195,6 +207,7 @@ export class FakeTextToSpeechProvider implements TextToSpeechProvider {
   private activeFlag = false
   private doneHandler: ((ok: boolean) => void) | null = null
   private utterances: SpokenEntry[] = []
+  stopCalls = 0
 
   constructor(options: FakeWakeOptions = {}) {
     this.supported = options.supported ?? true
@@ -235,6 +248,7 @@ export class FakeTextToSpeechProvider implements TextToSpeechProvider {
   }
 
   stop(): void {
+    this.stopCalls += 1
     const handler = this.doneHandler
     this.doneHandler = null
     this.activeFlag = false

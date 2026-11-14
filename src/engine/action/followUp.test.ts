@@ -200,3 +200,72 @@ describe('Phase 2.6 — execution context store', () => {
     expect(classifyExecutionOutcome({ finalState: 'completed', executedSteps: 2, failedSteps: 0, verifiedSteps: 1, refutedSteps: 0, unverifiedSteps: 1 })).toBe('partial')
   })
 })
+
+describe('Phase 1 — Extended follow-up actions', () => {
+  it('resolves retry_last to replay the previous request', () => {
+    const last = ctxWithFiles(['C:/docs/report.pdf'])
+    const res1 = resolveFollowUp('retry', last, now)
+    expect(res1).toEqual({ kind: 'retry_last', requestText: 'list the folder' })
+
+    const res2 = resolveFollowUp('try again', last, now)
+    expect(res2).toEqual({ kind: 'retry_last', requestText: 'list the folder' })
+
+    const res3 = resolveFollowUp('run it again', last, now)
+    expect(res3).toEqual({ kind: 'retry_last', requestText: 'list the folder' })
+  })
+
+  it('asks what the user means when retry has no fresh context', () => {
+    expect(resolveFollowUp('retry', undefined, now)).toEqual({ kind: 'ask_what' })
+    const stale = ctxWithFiles(['C:/a.txt'], { requestedAt: now - 30 * 60_000 })
+    expect(resolveFollowUp('try again', stale, now)).toEqual({ kind: 'ask_what' })
+  })
+
+  it('resolves explain_last targeting the last execution context', () => {
+    const last = ctxWithFiles(['C:/docs/report.pdf'])
+    const res1 = resolveFollowUp('why did you do that?', last, now)
+    expect(res1.kind).toBe('explain_last')
+    if (res1.kind === 'explain_last') {
+      expect(res1.targetContext.requestText).toBe('list the folder')
+    }
+
+    const res2 = resolveFollowUp('explain what you just did', last, now)
+    expect(res2.kind).toBe('explain_last')
+  })
+
+  it('asks what the user means when explain has no fresh context', () => {
+    expect(resolveFollowUp('why did you do that?', undefined, now)).toEqual({ kind: 'ask_what' })
+  })
+
+  it('resolves save_last with the primary artifact', () => {
+    const last = ctxWithFiles(['C:/docs/report.pdf', 'C:/docs/data.csv'])
+    const res = resolveFollowUp('save that', last, now)
+    expect(res.kind).toBe('save_last')
+    if (res.kind === 'save_last') {
+      expect(res.artifact?.path).toBe('C:/docs/report.pdf')
+    }
+  })
+
+  it('resolves candidate indexing for numeric and ordinal options', () => {
+    const last = ctxWithFiles(['C:/docs/opt1.txt', 'C:/docs/opt2.txt', 'C:/docs/opt3.txt'])
+    
+    // "option 2"
+    const res1 = resolveFollowUp('choose option 2', last, now)
+    expect(res1).toEqual({ kind: 'candidate_select', index: 1, candidateText: 'C:/docs/opt2.txt' })
+
+    // "What about the second option?"
+    const res2 = resolveFollowUp('what about the second option?', last, now)
+    expect(res2).toEqual({ kind: 'candidate_select', index: 1, candidateText: 'C:/docs/opt2.txt' })
+
+    // "the first one"
+    const res3 = resolveFollowUp('pick the first one', last, now)
+    expect(res3).toEqual({ kind: 'candidate_select', index: 0, candidateText: 'C:/docs/opt1.txt' })
+
+    // "do that for option 3"
+    const res4 = resolveFollowUp('do that for option 3', last, now)
+    expect(res4).toEqual({ kind: 'candidate_select', index: 2, candidateText: 'C:/docs/opt3.txt' })
+  })
+
+  it('asks what the user means when candidate selection has no context', () => {
+    expect(resolveFollowUp('choose option 2', undefined, now)).toEqual({ kind: 'ask_what' })
+  })
+})

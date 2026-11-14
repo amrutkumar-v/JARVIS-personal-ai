@@ -24,7 +24,15 @@ const ACTION_ALIASES: Record<string, MemoryAction> = {
   list: 'list_memory',
 }
 
-const ALLOWED_TYPES: MemoryType[] = ['PROFILE', 'PREFERENCE', 'FACT', 'NOTE']
+const ALLOWED_TYPES: MemoryType[] = [
+  'PROFILE',
+  'PREFERENCE',
+  'PROJECT_DECISION',
+  'WORKFLOW',
+  'REFERENCE',
+  'FACT',
+  'NOTE',
+]
 
 function parseType(raw: unknown): MemoryType | undefined {
   if (typeof raw !== 'string') return undefined
